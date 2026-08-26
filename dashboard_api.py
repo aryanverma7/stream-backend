@@ -10,7 +10,9 @@ All protected by auth.auth_middleware except where explicitly left open
 """
 from aiohttp import web
 
+import credit_ocr
 import points
+import roulette
 from config import config
 from logger import LOG_FILE, get_logger
 from streamerbot_client import streamerbot
@@ -96,9 +98,36 @@ async def get_logs(request: web.Request) -> web.Response:
 
 # ---------- Status / health panel ----------
 
+def _credit_prediction() -> dict:
+    """
+    The same number the roulette's affordability filter will use for the
+    next session, surfaced so it can be tracked from the dashboard rather
+    than only being visible on the overlay mid-round.
+
+    Deliberately calls roulette.affordable_weapons() rather than filtering
+    a copy of the creds table here, so the dashboard can never disagree
+    with what the roulette will actually do - including every fail-open
+    path (no prediction yet, the filter switched off in config, or a creds
+    table that would leave nothing votable), all of which come back as the
+    full roster here exactly as they do there.
+    """
+    predicted = credit_ocr.get_predicted_credits()
+    votable = roulette.affordable_weapons(predicted)
+    return {
+        "predicted_credits": predicted,
+        "readings": credit_ocr.recent_readings(),
+        "filter_enabled": config.get("roulette_affordability_filter_enabled", True),
+        "votable_count": len(votable),
+        "total_weapons": len(roulette.WEAPONS),
+        "votable_weapons": votable,
+        "weapon_creds_costs": {w: roulette.creds_cost_for(w) for w in votable},
+    }
+
+
 async def get_status(request: web.Request) -> web.Response:
     return web.json_response({
         "streamerbot_connected": streamerbot.is_connected,
+        "credit_prediction": _credit_prediction(),
         "widget_connections": {
             "total": widget_hub.connected_count(),
             "roulette": widget_hub.connected_count("roulette"),

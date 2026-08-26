@@ -293,6 +293,16 @@ def get_predicted_credits() -> "int | None":
     return min(_recent_readings)
 
 
+def recent_readings() -> list:
+    """
+    A copy of the current rolling window, oldest first - read-only view for
+    the admin dashboard's status panel, which shows how many valid readings
+    the prediction is actually standing on. Copied rather than handing out
+    the deque itself so a caller can't mutate the consensus history.
+    """
+    return list(_recent_readings)
+
+
 async def handle_credit_report(request: web.Request) -> web.Response:
     """POST /api/ocr/credit-report - receives a cropped screenshot from the gaming-PC agent."""
     expected_secret = config.get("ocr_agent_secret", "")
