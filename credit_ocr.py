@@ -56,6 +56,29 @@ the window - the window was shrunk from 8 to 5 and then to 4 readings
 specifically to limit how long such a bad reading can linger before
 rolling off.
 
+Real-world finding #4: the number is prefixed on screen by Valorant's own
+credit glyph (a custom icon, closest standard codepoint U+00A4), and
+Tesseract intermittently reads that glyph as a leading 1 - a real 4200
+coming back as 14200. This is finding #1 all over again: an unwhitelisted
+character is not skipped, it is forced into the nearest character the
+whitelist DOES allow. Two changes, one addressing the cause and one the
+symptom, because the cause fix is not guaranteed to hold for a custom
+game glyph the stock `eng` model was never trained on:
+  1. The glyph is now in the whitelist, so Tesseract can output it as
+     itself and have it stripped as punctuation instead of guessing.
+  2. Values above Valorant's own 9000 credit cap are rejected outright.
+     Every reading inflated by a leading 1 lands above the cap, so this
+     catches the whole class regardless of what the model does.
+  The case this deliberately does NOT catch: a true value under 1000, where
+  the leading 1 produces a number that is still under the cap and still a
+  multiple of 10 (a real 900 read as 1900). Nothing in the text alone can
+  distinguish that from a genuine 1900. It survives in practice only
+  because the misread is intermittent and the consensus takes the MINIMUM
+  of the window, so any clean frame in the same burst wins - but if this
+  ever shows up as a systematic +10000 or +1000 offset rather than an
+  occasional one, the next lever is upscaling the crop before OCR, not
+  more validation.
+
 Requires the native `tesseract` binary installed on the Mac Mini - not a
 pure-Python dependency. On this project's specific Mac Mini (2012,
 Catalina), Homebrew's tesseract formula hit a real, unresolvable
@@ -116,7 +139,17 @@ for candidate in ("/opt/local/bin/tesseract", "/usr/local/bin/tesseract"):
 # "MIN NEXT ROUND" label text alongside the number itself, per finding #2
 # above. Verified this doesn't hurt digit recognition at all; see
 # test_credit_ocr.py's comma and multi-digit tests.
-_TESSERACT_CONFIG = "--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789, :"
+#
+# The currency glyph is whitelisted for the same reason the comma is
+# (finding #4): a character Tesseract is not allowed to output does not
+# get dropped, it gets forced into the nearest character that IS allowed,
+# and for this glyph that is the digit 1. Allowing it means Tesseract can
+# emit it as itself, after which the digit-stripping regex below removes
+# it harmlessly. U+00A4 is the closest standard codepoint to Valorant's
+# own icon; whether the stock `eng` model can actually produce it for a
+# custom game glyph is not guaranteed, which is why the value cap below
+# exists as an independent second defense rather than a nicety.
+_TESSERACT_CONFIG = "--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,¤ :"
 
 _EXPECTED_LABEL = "MINNEXTROUND"  # normalized (spaces removed, uppercased) - see _contains_expected_label()
 
@@ -139,6 +172,12 @@ _EXPECTED_LABEL = "MINNEXTROUND"  # normalized (spaces removed, uppercased) - se
 # Note that 422s ("no number found") are never appended, so the window
 # always holds the last 4 VALID readings no matter how many blank frames
 # follow them - closing the buy menu can't flush the real answer out.
+# Valorant hard-caps a player's credits at 9000, so "min next round" - a
+# projection of next round's balance - can never legitimately exceed it
+# either. Any larger value is a misread by definition, which makes this a
+# cheap, absolute check that does not depend on Tesseract behaving.
+_MAX_CREDITS = 9000
+
 _READING_HISTORY_SIZE = 4
 _recent_readings: deque = deque(maxlen=_READING_HISTORY_SIZE)
 
@@ -200,6 +239,21 @@ def extract_credits(image_bytes: bytes) -> "int | None":
         return None
 
     value = int(digits)
+
+    # Real-world finding #4: the currency glyph in front of the number is
+    # a custom Valorant icon, and Tesseract intermittently reads it as a
+    # leading 1 - turning a real 4200 into 14200. Every such reading is
+    # above the game's own 9000 cap, so the cap catches the whole class
+    # outright. Deliberately DISCARDED rather than repaired by stripping
+    # the leading digit: the consensus takes the minimum of the window, so
+    # a repaired-but-wrong value would become the floor and stay wrong for
+    # the rest of the burst, whereas discarding costs nothing while the
+    # misread is intermittent - the clean frames in the same window still
+    # supply the answer.
+    if value > _MAX_CREDITS:
+        log.warning(f"Detected {value}, which is above Valorant's {_MAX_CREDITS} credit cap - almost certainly the "
+                    f"currency glyph being read as a leading 1 (raw output: {raw_text!r}). Discarding.")
+        return None
 
     # Real-world fix, not a guess: Valorant's entire economy (starting
     # credits, loss bonuses, weapon/ability/shield costs) operates in

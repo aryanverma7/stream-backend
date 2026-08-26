@@ -28,9 +28,21 @@ class TestExtractCredits:
         image_bytes = (FIXTURES / "credits_4900.png").read_bytes()
         assert credit_ocr.extract_credits(image_bytes) == 4900
 
-    def test_extracts_a_five_digit_number_confirming_it_is_not_just_a_lucky_case(self):
+    def test_extracts_a_second_different_number_confirming_it_is_not_just_a_lucky_case(self):
+        image_bytes = (FIXTURES / "credits_8700.png").read_bytes()
+        assert credit_ocr.extract_credits(image_bytes) == 8700
+
+    def test_rejects_a_five_digit_value_above_valorant_s_own_credit_cap(self):
+        """
+        This fixture used to be asserted as a VALID 13100 reading, back
+        when the only size-related worry was "does multi-digit OCR work at
+        all". It is now the cap test instead: Valorant caps credits at
+        9000, so 13100 was never a reachable balance, and the shape of it -
+        a real four-digit value with an extra leading digit - is exactly
+        what the credit glyph misread produces (finding #4).
+        """
         image_bytes = (FIXTURES / "credits_13100.png").read_bytes()
-        assert credit_ocr.extract_credits(image_bytes) == 13100
+        assert credit_ocr.extract_credits(image_bytes) is None
 
     def test_still_correct_with_blur_and_jpeg_compression_closer_to_a_real_screen_capture(self):
         image_bytes = (FIXTURES / "credits_noisy.jpg").read_bytes()
@@ -103,6 +115,64 @@ class TestExtractCredits:
 
         with pytest.raises(credit_ocr.TesseractUnavailableError):
             credit_ocr.extract_credits(image_bytes)
+
+
+class TestCreditCapValidation:
+    """
+    Drives extract_credits() through a faked Tesseract output rather than a
+    real render, so the validation rule itself is tested directly - no new
+    image fixture needed, and no dependence on how a given tesseract build
+    happens to read a custom game glyph.
+    """
+
+    @staticmethod
+    def _ocr_returning(text):
+        return lambda *args, **kwargs: text
+
+    def _extract_with_ocr_output(self, monkeypatch, text):
+        monkeypatch.setattr(credit_ocr.pytesseract, "image_to_string", self._ocr_returning(text))
+        return credit_ocr.extract_credits((FIXTURES / "credits_4900.png").read_bytes())
+
+    def test_the_cap_is_valorant_s_own_9000_credit_maximum(self):
+        assert credit_ocr._MAX_CREDITS == 9000
+
+    def test_rejects_the_exact_glyph_misread_shape_a_real_4200_read_as_14200(self, monkeypatch):
+        """
+        The reported bug: the credit glyph in front of the number is read
+        as a leading 1. 14200 passes the label check and passes the
+        multiple-of-10 check, so the cap is the only thing standing
+        between it and the consensus window.
+        """
+        assert self._extract_with_ocr_output(monkeypatch, "MIN NEXT ROUND 14200") is None
+
+    def test_accepts_the_cap_itself_rather_than_rejecting_the_boundary(self, monkeypatch):
+        assert self._extract_with_ocr_output(monkeypatch, "MIN NEXT ROUND 9000") == 9000
+
+    def test_accepts_the_uncorrupted_reading_the_same_burst_would_also_produce(self, monkeypatch):
+        assert self._extract_with_ocr_output(monkeypatch, "MIN NEXT ROUND 4200") == 4200
+
+    def test_the_glyph_is_stripped_as_punctuation_when_tesseract_does_emit_it(self, monkeypatch):
+        """
+        The cause-side half of the fix: with the glyph whitelisted,
+        Tesseract can output it instead of guessing a digit, and the
+        digit-stripping regex then removes it - same handling the comma
+        already gets.
+        """
+        assert self._extract_with_ocr_output(monkeypatch, "MIN NEXT ROUND \u00a44200") == 4200
+
+    def test_the_glyph_is_in_the_whitelist_so_tesseract_is_not_forced_to_guess(self):
+        assert "\u00a4" in credit_ocr._TESSERACT_CONFIG
+
+    def test_a_value_under_the_cap_inflated_by_the_glyph_is_the_known_uncaught_case(self, monkeypatch):
+        """
+        Pinned deliberately as a KNOWN LIMIT, not as desired behaviour: a
+        real 900 misread as 1900 is under the cap and a multiple of 10, so
+        nothing in the text alone can reject it. Documented in finding #4.
+        If this ever becomes systematic rather than intermittent, the fix
+        is upscaling the crop before OCR - not another validation rule,
+        because there is no rule that can tell these apart.
+        """
+        assert self._extract_with_ocr_output(monkeypatch, "MIN NEXT ROUND 1900") == 1900
 
 
 class TestContainsExpectedLabel:
