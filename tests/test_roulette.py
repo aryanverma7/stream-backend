@@ -79,6 +79,10 @@ class TestTriggerRoulette:
         monkeypatch.setattr(roulette, "get_user_points", AsyncMock(return_value=1000))
         monkeypatch.setattr(roulette, "subtract_points", AsyncMock())
         monkeypatch.setattr(roulette.widget_hub, "broadcast", mock_broadcast)
+        # Pinned explicitly rather than relying on the OCR module's
+        # deque happening to be empty - that is another module's shared
+        # state, and this test is about the broadcast, not about it.
+        monkeypatch.setattr(roulette.credit_ocr, "get_predicted_credits", lambda: None)
 
         await roulette.trigger_roulette("someviewer")
 
@@ -87,6 +91,225 @@ class TestTriggerRoulette:
         assert payload[0]["type"] == "roulette_started"
         assert set(payload[0]["weapons"]) == set(roulette.WEAPONS)
         assert kwargs["tag"] == "roulette"
+
+
+class TestAffordableWeapons:
+    """
+    The pure filter, tested without a session - the trigger/vote paths get
+    their own coverage below.
+    """
+
+    def test_no_prediction_available_opens_the_whole_roster(self, monkeypatch):
+        """
+        The single most important behaviour here. get_predicted_credits()
+        returns None whenever OCR is down, or the agent has just reset the
+        history, or no buy phase has been captured yet - none of which
+        should stop viewers using a feature they pay points for.
+        """
+        monkeypatch.setattr(config, "_data", {})
+        assert roulette.affordable_weapons(None) == list(roulette.WEAPONS)
+
+    def test_filters_to_what_the_predicted_credits_actually_cover(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+        votable = roulette.affordable_weapons(1000)
+
+        assert "classic" in votable      # 0
+        assert "ghost" in votable        # 500
+        assert "sheriff" in votable      # 800
+        assert "marshal" in votable      # 950
+        assert "spectre" not in votable  # 1600
+        assert "vandal" not in votable   # 2900
+        assert "operator" not in votable # 4700
+
+    def test_a_weapon_priced_exactly_at_the_prediction_is_affordable(self, monkeypatch):
+        """Boundary, and a real one - buying with exactly enough creds is a buy, not a near miss."""
+        monkeypatch.setattr(config, "_data", {})
+        assert "vandal" in roulette.affordable_weapons(roulette.WEAPON_CREDS_COSTS["vandal"])
+        assert "vandal" not in roulette.affordable_weapons(roulette.WEAPON_CREDS_COSTS["vandal"] - 10)
+
+    def test_zero_predicted_credits_still_leaves_the_free_classic_votable(self, monkeypatch):
+        """
+        A real eco round, not an edge case: 0 creds is a state credit_ocr
+        has its own fixture for. The wheel must still have something on it.
+        """
+        monkeypatch.setattr(config, "_data", {})
+        assert roulette.affordable_weapons(0) == ["classic"]
+
+    def test_preserves_the_rosters_own_ordering_rather_than_reordering_by_price(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+        votable = roulette.affordable_weapons(3000)
+        assert votable == [w for w in roulette.WEAPONS if w in votable]
+
+    def test_the_filter_can_be_switched_off_entirely_in_config(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"roulette_affordability_filter_enabled": False})
+        assert roulette.affordable_weapons(0) == list(roulette.WEAPONS)
+
+    def test_a_config_override_beats_the_built_in_price(self, monkeypatch):
+        """
+        Riot retunes weapon prices between patches, so this has to be
+        fixable without a deploy.
+        """
+        monkeypatch.setattr(config, "_data", {"roulette_weapon_creds_costs": {"operator": 100}})
+        assert roulette.creds_cost_for("operator") == 100
+        assert "operator" in roulette.affordable_weapons(100)
+
+    def test_an_override_leaves_every_other_weapons_price_alone(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"roulette_weapon_creds_costs": {"operator": 100}})
+        assert roulette.creds_cost_for("vandal") == roulette.WEAPON_CREDS_COSTS["vandal"]
+
+    def test_a_misconfigured_table_that_affords_nothing_falls_back_to_the_full_roster(self, monkeypatch):
+        """
+        Fails open, like every other path here. An empty votable list would
+        mean opening a session nobody can vote in while still charging the
+        trigger cost.
+        """
+        monkeypatch.setattr(config, "_data", {
+            "roulette_weapon_creds_costs": {w: 99999 for w in roulette.WEAPONS},
+        })
+        assert roulette.affordable_weapons(1000) == list(roulette.WEAPONS)
+
+    def test_every_weapon_in_the_roster_has_a_price(self):
+        """
+        Guards the two lists drifting apart - a weapon added to WEAPONS
+        without a price would otherwise fall through to the 0 default and
+        be silently votable on an eco round.
+        """
+        assert set(roulette.WEAPON_CREDS_COSTS) == set(roulette.WEAPONS)
+
+
+class TestAffordabilityDuringASession:
+    @pytest.mark.asyncio
+    async def test_trigger_snapshots_the_votable_set_and_only_weights_those(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+        monkeypatch.setattr(roulette, "get_user_points", AsyncMock(return_value=100000))
+        monkeypatch.setattr(roulette, "subtract_points", AsyncMock())
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        monkeypatch.setattr(roulette.credit_ocr, "get_predicted_credits", lambda: 1000)
+
+        await roulette.trigger_roulette("someviewer")
+
+        assert roulette._state.predicted_credits == 1000
+        assert "operator" not in roulette._state.votable_weapons
+        # The weights dict is what end_roulette() picks a winner from, so an
+        # unaffordable weapon must not be in it either.
+        assert "operator" not in roulette._state.weights
+        assert "ghost" in roulette._state.weights
+
+    @pytest.mark.asyncio
+    async def test_the_started_broadcast_carries_the_prediction_and_the_prices(self, monkeypatch):
+        mock_broadcast = AsyncMock()
+        monkeypatch.setattr(config, "_data", {})
+        monkeypatch.setattr(roulette, "get_user_points", AsyncMock(return_value=100000))
+        monkeypatch.setattr(roulette, "subtract_points", AsyncMock())
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", mock_broadcast)
+        monkeypatch.setattr(roulette.credit_ocr, "get_predicted_credits", lambda: 1000)
+
+        await roulette.trigger_roulette("someviewer")
+
+        payload = mock_broadcast.call_args[0][0]
+        assert payload["predicted_credits"] == 1000
+        assert "operator" not in payload["weapons"]
+        assert payload["weapon_creds_costs"]["ghost"] == 500
+        # Only priced for what is on the wheel - no point sending prices for
+        # options nobody can pick.
+        assert set(payload["weapon_creds_costs"]) == set(payload["weapons"])
+
+    @pytest.mark.asyncio
+    async def test_rejects_a_vote_for_an_unaffordable_weapon_without_charging_points(self, monkeypatch):
+        mock_subtract = AsyncMock()
+        monkeypatch.setattr(config, "_data", {})
+        monkeypatch.setattr(roulette, "get_user_points", AsyncMock(return_value=100000))
+        monkeypatch.setattr(roulette, "subtract_points", mock_subtract)
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        roulette._state.is_active = True
+        roulette._state.predicted_credits = 1000
+        roulette._state.votable_weapons = roulette.affordable_weapons(1000)
+        roulette._state.weights = {w: 0 for w in roulette._state.votable_weapons}
+
+        result = await roulette.vote("someviewer", "operator")
+
+        assert result["ok"] is False
+        assert "4700" in result["reason"]
+        mock_subtract.assert_not_called()
+        assert "operator" not in roulette._state.weights
+
+    @pytest.mark.asyncio
+    async def test_an_unaffordable_vote_is_reported_separately_from_an_invalid_one(self, monkeypatch):
+        """
+        "You can't afford that next round" and "that isn't a weapon" are
+        different messages for the viewer, so they get different event
+        types rather than sharing invalid_vote.
+        """
+        mock_broadcast = AsyncMock()
+        monkeypatch.setattr(config, "_data", {})
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", mock_broadcast)
+        roulette._state.is_active = True
+        roulette._state.predicted_credits = 1000
+        roulette._state.votable_weapons = roulette.affordable_weapons(1000)
+        roulette._state.weights = {w: 0 for w in roulette._state.votable_weapons}
+
+        await roulette.vote("someviewer", "operator")
+
+        payload = mock_broadcast.call_args[0][0]
+        assert payload["type"] == "unaffordable_vote"
+        assert payload["attempted"] == "operator"
+        assert payload["creds_cost"] == 4700
+        assert payload["predicted_credits"] == 1000
+
+    @pytest.mark.asyncio
+    async def test_an_affordable_weapon_still_votes_normally(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"roulette_weapon_base_costs": {}, "roulette_vote_cost_increment": 25})
+        monkeypatch.setattr(roulette, "get_user_points", AsyncMock(return_value=100000))
+        monkeypatch.setattr(roulette, "subtract_points", AsyncMock())
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        roulette._state.is_active = True
+        roulette._state.predicted_credits = 1000
+        roulette._state.votable_weapons = roulette.affordable_weapons(1000)
+        roulette._state.weights = {w: 0 for w in roulette._state.votable_weapons}
+
+        result = await roulette.vote("someviewer", "ghost")
+
+        assert result["ok"] is True
+        assert roulette._state.weights["ghost"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_later_ocr_reading_cannot_invalidate_a_vote_mid_session(self, monkeypatch):
+        """
+        The reason the votable set is snapshotted at trigger time instead
+        of recomputed per vote. The OCR window keeps filling while voting
+        runs, and its consensus only ever drops - so a live lookup could
+        pull a weapon off the wheel that viewers were shown, after some of
+        them had already paid points for it.
+        """
+        monkeypatch.setattr(config, "_data", {})
+        monkeypatch.setattr(roulette, "get_user_points", AsyncMock(return_value=100000))
+        monkeypatch.setattr(roulette, "subtract_points", AsyncMock())
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        monkeypatch.setattr(roulette.credit_ocr, "get_predicted_credits", lambda: 3000)
+
+        await roulette.trigger_roulette("someviewer")
+        assert "vandal" in roulette._state.votable_weapons
+
+        # Buy phase continues, a lower reading lands, consensus drops.
+        monkeypatch.setattr(roulette.credit_ocr, "get_predicted_credits", lambda: 200)
+
+        result = await roulette.vote("someviewer", "vandal")
+        assert result["ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_unrecognized_weapon_is_still_invalid_not_unaffordable(self, monkeypatch):
+        """The two rejections must not blur into each other once both exist."""
+        mock_broadcast = AsyncMock()
+        monkeypatch.setattr(config, "_data", {})
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", mock_broadcast)
+        roulette._state.is_active = True
+        roulette._state.votable_weapons = roulette.affordable_weapons(1000)
+        roulette._state.weights = {w: 0 for w in roulette._state.votable_weapons}
+
+        result = await roulette.vote("someviewer", "not_a_real_gun")
+
+        assert "isn't a recognized weapon" in result["reason"].lower()
+        assert mock_broadcast.call_args[0][0]["type"] == "invalid_vote"
 
 
 class TestVote:

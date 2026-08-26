@@ -282,10 +282,11 @@ def get_predicted_credits() -> "int | None":
     majority-vote failure this replaced. With no readings yet, returns
     None.
 
-    Exposed for other modules (e.g. a future Roulette affordability
-    filter) to read the current value - deliberately not wired into
-    Roulette's own gun-list filtering yet, since that wasn't asked for in
-    this pass.
+    Consumed by roulette.trigger_roulette(), which reads this ONCE per
+    session to decide which weapons are votable. Returning None matters as
+    much as returning a number there: roulette treats it as "no filter",
+    opening the full roster rather than a short one, so OCR being down
+    degrades the wheel's accuracy and never its availability.
     """
     if not _recent_readings:
         return None

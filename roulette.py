@@ -11,11 +11,18 @@ buy for the next round, per the actual confirmed mechanic:
      receives - not a single global escalating cost, a per-weapon one.
   4. Whichever weapon has the most weight when the timer ends is the
      "winner" - the one the streamer is forced to buy next round.
-  5. Affordability filtering (limiting options to what's actually buyable
-     next round, based on predicted credits) is deliberately NOT done here
-     yet - explicit decision, since that needs the OCR credit-detection
-     system this project hasn't built. All weapons are always available
-     to vote on for now.
+  5. Affordability filtering limits the options to what is actually
+     buyable next round, using credit_ocr's predicted credits. The
+     affordable set is snapshotted ONCE when the session starts and used
+     for the whole voting window - viewers vote against the list they were
+     actually shown, and a late OCR reading can't retroactively invalidate
+     a vote someone already paid points for.
+
+     Degrades open, never closed: with no prediction available (OCR down,
+     no buy phase seen yet, history just reset) every weapon is votable,
+     which is the pre-OCR behaviour. Same if the filter is switched off via
+     roulette_affordability_filter_enabled, or if a misconfigured creds
+     table would otherwise leave nothing votable at all.
 
 Chat commands, via the existing streamerbot.on_event() listener pattern:
   !roulette   - trigger a new session
@@ -24,6 +31,7 @@ Chat commands, via the existing streamerbot.on_event() listener pattern:
 import asyncio
 import time
 
+import credit_ocr
 from config import config
 from logger import get_logger
 from points import get_user_points, subtract_points
@@ -45,6 +53,40 @@ WEAPONS = [
     "ares", "odin",
 ]
 
+# Valorant's own in-game creds prices - a DIFFERENT thing from WEAPONS'
+# channel-point costs above, and the only place the two systems meet: this
+# table decides what is buyable, those decide what a vote costs a viewer.
+#
+# Riot retunes individual weapon prices from patch to patch (the Marshal,
+# Judge, Ares and Stinger have all moved at least once), so every entry is
+# overridable per-weapon through config.json's roulette_weapon_creds_costs
+# without touching this file - see creds_cost_for().
+WEAPON_CREDS_COSTS = {
+    "classic": 0,       # always issued free, so always votable
+    "shorty": 300,
+    "frenzy": 450,
+    "ghost": 500,
+    "sheriff": 800,
+    "stinger": 1100,
+    "spectre": 1600,
+    "bucky": 850,
+    "judge": 1850,
+    "bulldog": 2050,
+    "guardian": 2250,
+    "phantom": 2900,
+    "vandal": 2900,
+    "marshal": 950,
+    "outlaw": 1800,
+    "operator": 4700,
+    "ares": 1550,
+    "odin": 3200,
+}
+
+# A weapon with no price entry at all. Deliberately 0, not a large number:
+# an unpriced weapon stays votable rather than silently disappearing from
+# the wheel, which matches how the rest of this filter fails open.
+DEFAULT_WEAPON_CREDS_COST = 0
+
 DEFAULT_TRIGGER_COST = 500
 DEFAULT_VOTE_BASE_COST = 50
 DEFAULT_VOTE_COST_INCREMENT = 25
@@ -62,6 +104,10 @@ class RouletteState:
     def __init__(self):
         self.is_active = False
         self.weights: dict[str, int] = {}
+        # Snapshotted at trigger time, not recomputed per vote - see the
+        # module docstring's point 5. None means "no session has set one".
+        self.votable_weapons: list[str] | None = None
+        self.predicted_credits: int | None = None
         self.last_triggered_at: float = 0.0
         self._end_task: asyncio.Task | None = None
         # Task #11's Forced Buy badge state - separate from is_active/weights
@@ -100,6 +146,46 @@ def vote_cost_for(weapon: str) -> int:
     return base + votes_so_far * increment
 
 
+def creds_cost_for(weapon: str) -> int:
+    """
+    What this weapon costs in Valorant's own creds. config.json's
+    roulette_weapon_creds_costs overrides individual entries, so a patch
+    that retunes one gun is a config edit, not a deploy.
+    """
+    overrides = config.get("roulette_weapon_creds_costs", {})
+    if weapon in overrides:
+        return overrides[weapon]
+    return WEAPON_CREDS_COSTS.get(weapon, DEFAULT_WEAPON_CREDS_COST)
+
+
+def affordable_weapons(predicted_credits: "int | None") -> list[str]:
+    """
+    The weapons buyable with predicted_credits, in WEAPONS' own order.
+
+    Every failure path returns the full roster rather than a short one -
+    losing the filter is a much smaller problem than a wheel that silently
+    drops most of its options because OCR happened to be down:
+      - filter switched off in config
+      - no prediction yet (OCR down, or no buy phase read since the last
+        reset - get_predicted_credits() returns None for both)
+      - a creds table so misconfigured that nothing at all is affordable
+    """
+    if not config.get("roulette_affordability_filter_enabled", True):
+        return list(WEAPONS)
+    if predicted_credits is None:
+        return list(WEAPONS)
+
+    affordable = [w for w in WEAPONS if creds_cost_for(w) <= predicted_credits]
+    if not affordable:
+        log.warning(
+            f"Predicted credits {predicted_credits} made every weapon unaffordable - that shouldn't be possible "
+            f"while the Classic is priced at 0, so the creds table is likely misconfigured. Falling back to the "
+            f"full roster rather than opening a roulette nobody can vote in."
+        )
+        return list(WEAPONS)
+    return affordable
+
+
 async def trigger_roulette(username: str) -> dict:
     """
     Starts a new voting session. Returns a result dict rather than raising,
@@ -133,17 +219,42 @@ async def trigger_roulette(username: str) -> dict:
             log.warning(f"{username} tried to trigger roulette but points deduction failed: {e}")
             return {"ok": False, "reason": "Points deduction failed"}
 
+    # Read the prediction once, here, and hold it for the session. The OCR
+    # window is still filling in the background while voting runs, so
+    # re-reading it per vote would let the votable set shift underneath
+    # viewers who have already spent points against the list they were
+    # shown.
+    predicted = credit_ocr.get_predicted_credits()
+    votable = affordable_weapons(predicted)
+
     _state.is_active = True
-    _state.weights = {w: 0 for w in WEAPONS}
+    _state.predicted_credits = predicted
+    _state.votable_weapons = votable
+    _state.weights = {w: 0 for w in votable}
     _state.last_triggered_at = _now()
     await clear_forced_buy()  # a new session starting means any previous badge is now stale
 
     duration = config.get("roulette_voting_duration_seconds", DEFAULT_VOTING_DURATION_SECONDS)
     await widget_hub.broadcast(
-        {"type": "roulette_started", "triggered_by": username, "weapons": WEAPONS, "duration_seconds": duration},
+        {
+            "type": "roulette_started",
+            "triggered_by": username,
+            "weapons": votable,
+            "duration_seconds": duration,
+            # Both new keys are additive - the overlay renders its pie from
+            # weight_updated events and ignores everything else on this
+            # message, so no widget change is needed for it to keep working.
+            "predicted_credits": predicted,
+            "weapon_creds_costs": {w: creds_cost_for(w) for w in votable},
+        },
         tag="roulette",
     )
-    log.info(f"{username} triggered a roulette - voting open for {duration}s")
+    if predicted is None:
+        log.info(f"{username} triggered a roulette - voting open for {duration}s, all {len(votable)} weapons votable "
+                 f"(no credit prediction available)")
+    else:
+        log.info(f"{username} triggered a roulette - voting open for {duration}s, {len(votable)}/{len(WEAPONS)} "
+                 f"weapons affordable at {predicted} predicted creds")
 
     _state._end_task = asyncio.create_task(_end_after_delay(duration))
     return {"ok": True}
@@ -159,6 +270,32 @@ async def vote(username: str, weapon: str) -> dict:
             tag="roulette",
         )
         return {"ok": False, "reason": f"'{weapon}' isn't a recognized weapon"}
+
+    # A real weapon, but not one this session opened voting on. Checked
+    # against the snapshot taken at trigger time rather than against a
+    # fresh prediction, so this answer is the same for the whole window.
+    # Separate from the invalid_vote path above and reported with its own
+    # event type: "you can't afford that next round" is a different thing
+    # to tell a viewer than "that isn't a weapon", and the overlay's
+    # handler chain ignores event types it doesn't know, so adding one
+    # can't break the existing widget.
+    if _state.votable_weapons is not None and weapon not in _state.votable_weapons:
+        cost = creds_cost_for(weapon)
+        await widget_hub.broadcast(
+            {
+                "type": "unaffordable_vote",
+                "attempted": weapon,
+                "creds_cost": cost,
+                "predicted_credits": _state.predicted_credits,
+                "voted_by": username,
+            },
+            tag="roulette",
+        )
+        return {
+            "ok": False,
+            "reason": f"{weapon} costs {cost} creds, more than the {_state.predicted_credits} predicted for "
+                      f"next round",
+        }
 
     # The cost calculation AND the weight increment both live inside this
     # same lock, not just the balance check/subtract - otherwise two rapid
