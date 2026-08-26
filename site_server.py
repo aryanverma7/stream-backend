@@ -16,6 +16,19 @@ automatically, confirmed by testing against a real Next.js static export:
      the existing /health, /api/*, /auth/*, /ws/widgets routes, so those
      specific routes are matched first and only truly unmatched paths fall
      through to serving site content.
+
+Real bug this cost us: the catch-all used to be `/{filename}`, which
+aiohttp matches against a SINGLE path segment only. That was fine while
+the export was flat, but Next 16's client-side router fetches its route
+data from NESTED paths - navigating to /admin without a full page load
+requests /admin/__next._tree.txt and /admin/__next.admin.__PAGE__.txt,
+both of which the export really does contain (out/admin/) and neither of
+which a single-segment route can ever match. The router got a 404 for its
+route data and rendered "This page couldn't load"; pressing reload worked
+because that is a real document request for /admin, which serve_admin
+answers from admin.html without any route data being involved. The
+catch-all now matches a full path and resolves it the way a normal static
+web server would, so anything the export emits at any depth is served.
 """
 from pathlib import Path
 
@@ -48,30 +61,52 @@ async def serve_admin(request: web.Request) -> web.Response:
     return web.FileResponse(out_dir / "admin.html")
 
 
-async def serve_root_file(request: web.Request) -> web.Response:
+def _resolve_within(out_dir: Path, relative: str) -> "Path | None":
     """
-    Generic catch-all for any file sitting directly in the out/ root -
-    favicon.ico, dragon-original.js, and anything else dropped into the
-    frontend project's public/ folder in the future. Replaces the earlier
-    favicon-only route, since this exact class of bug (a new public/ file
-    getting silently 401'd because nothing explicitly serves or allows it)
-    has now happened twice - once for favicon.ico, once for
-    dragon-original.js. A generic route fixes the SERVING side for any
-    future file; the corresponding auth.py open_paths entry still needs to
-    be added explicitly per file, deliberately, as a safety allowlist
+    Maps a request path onto a real file inside out_dir, or None if there
+    isn't one. Tries the three forms a static host is expected to
+    understand, in the order a normal web server would:
+
+      /admin/__next._tree.txt -> out/admin/__next._tree.txt   (exact file)
+      /some-page              -> out/some-page.html           (Next's own
+                                  extensionless page naming)
+      /some-dir               -> out/some-dir/index.html      (directory
+                                  default document)
+
+    The containment check below is the security-relevant part: resolve()
+    collapses any ".." before the comparison, so a crafted path can only
+    ever land on a file that is genuinely inside out_dir.
+    """
+    root = out_dir.resolve()
+    base = (out_dir / relative).resolve()
+    if base != root and root not in base.parents:
+        return None
+
+    candidates = (base, base.with_name(base.name + ".html"), base / "index.html")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+async def serve_site_file(request: web.Request) -> web.Response:
+    """
+    Generic catch-all for everything in the export that isn't one of the
+    explicit routes above - favicon.ico, dragon-original.js, the Next.js
+    router's own route-data .txt files, and anything else dropped into the
+    frontend project's public/ folder in the future. This replaced a
+    favicon-only route first, then a single-segment one, because this exact
+    class of bug (something in the export getting silently 404'd or 401'd
+    because nothing explicitly serves or allows it) has now happened three
+    times - favicon.ico, dragon-original.js, and the router's nested route
+    data. A generic route fixes the SERVING side for anything the export
+    emits; the corresponding auth.py open_paths entry still needs to be
+    added explicitly per public file, deliberately, as a safety allowlist
     rather than a blanket opt-out.
     """
     out_dir = _get_out_dir()
-    filename = request.match_info["filename"]
-
-    # Path traversal guard - aiohttp's {filename} pattern already only
-    # matches a single path segment (no slashes), but this is cheap
-    # insurance against any unexpected match.
-    if "/" in filename or ".." in filename:
-        raise web.HTTPNotFound()
-
-    file_path = out_dir / filename
-    if not file_path.is_file():
+    file_path = _resolve_within(out_dir, request.match_info["path"])
+    if file_path is None:
         raise web.HTTPNotFound()
 
     return web.FileResponse(file_path)
@@ -88,8 +123,10 @@ def register_site_routes(app: web.Application):
     # handles this correctly since these ARE exact-filename requests.
     app.router.add_static("/_next", out_dir / "_next", show_index=False)
 
-    # Registered LAST among these - only truly unmatched single-segment
-    # paths (favicon.ico, dragon-original.js, etc.) fall through to this.
-    app.router.add_get("/{filename}", serve_root_file)
+    # Registered LAST among these - only truly unmatched paths fall
+    # through to this. The pattern matches a full path including slashes,
+    # not one segment, so nested export files (the Next.js router's own
+    # /admin/__next.*.txt route data) are reachable.
+    app.router.add_get("/{path:.*}", serve_site_file)
 
     log.info(f"Serving site from {out_dir}")
