@@ -35,6 +35,7 @@ import credit_ocr
 from config import config
 from logger import get_logger
 from points import get_user_points, subtract_points
+from streamerbot_client import parse_chat_message, streamerbot
 from widget_hub import widget_hub
 
 log = get_logger("Roulette")
@@ -108,6 +109,9 @@ class RouletteState:
         # module docstring's point 5. None means "no session has set one".
         self.votable_weapons: list[str] | None = None
         self.predicted_credits: int | None = None
+        # Which chat the session was triggered from, so the winner is
+        # announced back there rather than always to Twitch.
+        self.platform: str = "twitch"
         self.last_triggered_at: float = 0.0
         self._end_task: asyncio.Task | None = None
         # Task #11's Forced Buy badge state - separate from is_active/weights
@@ -186,11 +190,15 @@ def affordable_weapons(predicted_credits: "int | None") -> list[str]:
     return affordable
 
 
-async def trigger_roulette(username: str) -> dict:
+async def trigger_roulette(username: str, platform: str = "twitch") -> dict:
     """
     Starts a new voting session. Returns a result dict rather than raising,
     so the chat-command layer can decide how to log/respond without a
     try/except at every call site.
+
+    `platform` is remembered only so the end-of-session announcement lands
+    in the chat the trigger came from; it defaults to Twitch, which is
+    where every existing caller speaks.
     """
     if _state.is_active:
         return {"ok": False, "reason": "A roulette is already in progress"}
@@ -228,6 +236,7 @@ async def trigger_roulette(username: str) -> dict:
     votable = affordable_weapons(predicted)
 
     _state.is_active = True
+    _state.platform = platform or "twitch"
     _state.predicted_credits = predicted
     _state.votable_weapons = votable
     _state.weights = {w: 0 for w in votable}
@@ -355,7 +364,10 @@ async def end_roulette() -> "str | None":
     log.info(f"Roulette ended - winner: {winner or 'none (no votes)'}")
 
     if winner:
+        await _reply_in_chat(_state.platform, f"Roulette locked in: {winner}. Forced buy next round.")
         await _start_forced_buy(winner)
+    else:
+        await _reply_in_chat(_state.platform, "Roulette closed with no votes - no forced buy this round.")
 
     return winner
 
@@ -409,19 +421,40 @@ async def clear_forced_buy() -> None:
     _state.forced_buy_phase = None
 
 
+async def _reply_in_chat(platform: str, text: str) -> None:
+    """
+    Answers a viewer in the chat they spoke in. Every refusal path in
+    trigger_roulette()/vote() already produces a human-readable `reason`;
+    before this existed those strings were computed and then dropped on
+    the floor, so somebody who typed !roulette without enough points saw
+    absolutely nothing happen and had no way to tell that from the bot
+    being down.
+
+    Off by a single config flag, because SendMessage is the one request
+    Streamer.bot documents as requiring authentication on its WebSocket
+    server - if that is switched on at the gaming PC end, every reply is
+    rejected and turning them off is better than logging a rejection per
+    command.
+    """
+    if not config.get("roulette_chat_replies_enabled", True):
+        return
+    await streamerbot.send_chat_message(text, platform=platform or "twitch")
+
+
 async def handle_chat_command(event: dict):
     """
-    Registered via streamerbot.on_event() - parses ChatMessage events for
-    !roulette and !<weapon> commands. Matches forward_chat_to_widgets'
-    exact event shape, since both listeners subscribe to the same stream.
+    Registered via streamerbot.on_event() - parses chat events for
+    !roulette and !<weapon> commands, and answers the viewer in chat.
+    Shares parse_chat_message() with forward_chat_to_widgets so the two
+    listeners cannot disagree about the payload shape.
     """
-    if event.get("event", {}).get("type") != "ChatMessage":
+    chat = parse_chat_message(event)
+    if chat is None:
         return
 
-    data = event.get("data", {})
-    message_data = data.get("message", {})
-    username = message_data.get("username", "")
-    text = message_data.get("message", "").strip()
+    username = chat["username"]
+    text = chat["text"].strip()
+    platform = chat["platform"]
 
     if not text.startswith("!") or not username:
         return
@@ -429,9 +462,18 @@ async def handle_chat_command(event: dict):
     command = text[1:].lower().split()[0] if len(text) > 1 else ""
 
     if command == "roulette":
-        await trigger_roulette(username)
+        result = await trigger_roulette(username, platform=platform)
+        if result.get("ok"):
+            await _reply_in_chat(platform, _roulette_open_announcement())
+        else:
+            await _reply_in_chat(platform, f"@{username} {result['reason']}")
     elif command in WEAPONS:
-        await vote(username, command)
+        result = await vote(username, command)
+        # A successful vote stays silent on purpose - the overlay already
+        # shows it, and one chat line per vote would drown the channel
+        # during a busy window.
+        if not result.get("ok"):
+            await _reply_in_chat(platform, f"@{username} {result['reason']}")
     elif command and _state.is_active:
         # Only treated as a likely mistaken vote attempt (worth feedback)
         # while a session is actually active - otherwise, an unrelated
@@ -439,4 +481,25 @@ async def handle_chat_command(event: dict):
         # other bot setup) would get incorrectly flagged as an "invalid
         # weapon" every time it happened to coincide with a live roulette,
         # which isn't what this is meant to catch.
-        await vote(username, command)
+        result = await vote(username, command)
+        if not result.get("ok"):
+            await _reply_in_chat(platform, f"@{username} {result['reason']}")
+
+
+def _roulette_open_announcement() -> str:
+    """
+    The line posted when a session opens. Reports the budget the same way
+    the overlay does, so chat and stream agree: a number when OCR has one,
+    and an explicit "every weapon" when it doesn't, rather than quietly
+    implying a filter is running when it isn't.
+    """
+    duration = config.get("roulette_voting_duration_seconds", DEFAULT_VOTING_DURATION_SECONDS)
+    weapons = _state.votable_weapons or WEAPONS
+    if _state.predicted_credits is None:
+        budget = "no credit reading, so every weapon is in play"
+    else:
+        budget = f"{_state.predicted_credits} creds next round"
+    return (
+        f"Roulette is open for {duration}s - vote with !weapon. "
+        f"{len(weapons)} weapons available ({budget})."
+    )

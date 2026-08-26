@@ -438,6 +438,45 @@ class TestEndRoulette:
         assert winner is None
 
 
+    @pytest.mark.asyncio
+    async def test_announces_the_winner_in_chat(self, monkeypatch):
+        roulette._state.is_active = True
+        roulette._state.platform = "twitch"
+        roulette._state.weights = {"vandal": 3, "phantom": 1}
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        monkeypatch.setattr(roulette, "_start_forced_buy", AsyncMock())
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+
+        assert await roulette.end_roulette() == "vandal"
+        assert "vandal" in mock_send.await_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_says_so_in_chat_when_nobody_voted(self, monkeypatch):
+        roulette._state.is_active = True
+        roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+
+        assert await roulette.end_roulette() is None
+        assert "no votes" in mock_send.await_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_the_winner_announcement_goes_to_the_triggering_platform(self, monkeypatch):
+        roulette._state.is_active = True
+        roulette._state.platform = "youtube"
+        roulette._state.weights = {"vandal": 2}
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        monkeypatch.setattr(roulette, "_start_forced_buy", AsyncMock())
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+
+        await roulette.end_roulette()
+
+        assert mock_send.await_args[1]["platform"] == "youtube"
+
+
 class TestForcedBuyBadge:
     @pytest.mark.asyncio
     async def test_ending_with_a_winner_starts_the_forced_buy_as_queued(self, monkeypatch):
@@ -526,25 +565,31 @@ class TestForcedBuyBadge:
 
 
 class TestHandleChatCommand:
-    def make_chat_event(self, username: str, message: str) -> dict:
+    def make_chat_event(self, username: str, message: str, source: str = "Twitch") -> dict:
+        """The current Streamer.bot Twitch shape - `data.user` plus
+        `data.text`. The older nested-message shape this backend was first
+        written against is covered in test_streamerbot_client.py, since
+        both go through the same parse_chat_message()."""
         return {
-            "event": {"type": "ChatMessage"},
-            "data": {"message": {"username": username, "message": message}},
+            "event": {"source": source, "type": "ChatMessage"},
+            "data": {"user": {"login": username, "name": username}, "text": message},
         }
 
     @pytest.mark.asyncio
     async def test_roulette_command_triggers_a_session(self, monkeypatch):
-        mock_trigger = AsyncMock()
+        mock_trigger = AsyncMock(return_value={"ok": True})
         monkeypatch.setattr(roulette, "trigger_roulette", mock_trigger)
+        monkeypatch.setattr(roulette, "_reply_in_chat", AsyncMock())
 
         await roulette.handle_chat_command(self.make_chat_event("someviewer", "!roulette"))
 
-        mock_trigger.assert_called_once_with("someviewer")
+        mock_trigger.assert_called_once_with("someviewer", platform="twitch")
 
     @pytest.mark.asyncio
     async def test_weapon_command_casts_a_vote(self, monkeypatch):
-        mock_vote = AsyncMock()
+        mock_vote = AsyncMock(return_value={"ok": True})
         monkeypatch.setattr(roulette, "vote", mock_vote)
+        monkeypatch.setattr(roulette, "_reply_in_chat", AsyncMock())
 
         await roulette.handle_chat_command(self.make_chat_event("someviewer", "!vandal"))
 
@@ -552,10 +597,11 @@ class TestHandleChatCommand:
 
     @pytest.mark.asyncio
     async def test_ignores_messages_that_are_not_commands(self, monkeypatch):
-        mock_trigger = AsyncMock()
-        mock_vote = AsyncMock()
+        mock_trigger = AsyncMock(return_value={"ok": True})
+        mock_vote = AsyncMock(return_value={"ok": True})
         monkeypatch.setattr(roulette, "trigger_roulette", mock_trigger)
         monkeypatch.setattr(roulette, "vote", mock_vote)
+        monkeypatch.setattr(roulette, "_reply_in_chat", AsyncMock())
 
         await roulette.handle_chat_command(self.make_chat_event("someviewer", "gg that was close"))
 
@@ -564,7 +610,7 @@ class TestHandleChatCommand:
 
     @pytest.mark.asyncio
     async def test_ignores_non_chat_message_events(self, monkeypatch):
-        mock_trigger = AsyncMock()
+        mock_trigger = AsyncMock(return_value={"ok": True})
         monkeypatch.setattr(roulette, "trigger_roulette", mock_trigger)
 
         await roulette.handle_chat_command({"event": {"type": "Follow"}, "data": {}})
@@ -579,8 +625,9 @@ class TestHandleChatCommand:
         vote attempt at all - there's nothing to vote on, so silently
         ignoring it avoids incorrectly flagging unrelated commands.
         """
-        mock_vote = AsyncMock()
+        mock_vote = AsyncMock(return_value={"ok": True})
         monkeypatch.setattr(roulette, "vote", mock_vote)
+        monkeypatch.setattr(roulette, "_reply_in_chat", AsyncMock())
 
         await roulette.handle_chat_command(self.make_chat_event("someviewer", "!notarealgunorcommand"))
 
@@ -595,8 +642,9 @@ class TestHandleChatCommand:
         shown to the person who tried.
         """
         roulette._state.is_active = True
-        mock_vote = AsyncMock()
+        mock_vote = AsyncMock(return_value={"ok": True})
         monkeypatch.setattr(roulette, "vote", mock_vote)
+        monkeypatch.setattr(roulette, "_reply_in_chat", AsyncMock())
 
         await roulette.handle_chat_command(self.make_chat_event("someviewer", "!notarealgun"))
 
@@ -617,3 +665,107 @@ class TestHandleChatCommand:
         assert payload[0]["type"] == "invalid_vote"
         assert payload[0]["attempted"] == "not_a_real_gun"
         assert kwargs["tag"] == "roulette"
+
+    @pytest.mark.asyncio
+    async def test_answers_the_viewer_in_chat_when_a_trigger_is_refused(self, monkeypatch):
+        """
+        The whole point of this path: before it existed, every refusal
+        reason was computed and then thrown away, so somebody who typed
+        !roulette without enough points saw nothing at all happen and had
+        no way to tell that from the bot being down.
+        """
+        monkeypatch.setattr(
+            roulette, "trigger_roulette", AsyncMock(return_value={"ok": False, "reason": "Need 500 points, you have 20"})
+        )
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+
+        await roulette.handle_chat_command(self.make_chat_event("someviewer", "!roulette"))
+
+        mock_send.assert_awaited_once()
+        text, kwargs = mock_send.await_args
+        assert text[0] == "@someviewer Need 500 points, you have 20"
+        assert kwargs["platform"] == "twitch"
+
+    @pytest.mark.asyncio
+    async def test_answers_the_viewer_in_chat_when_a_vote_is_refused(self, monkeypatch):
+        monkeypatch.setattr(
+            roulette, "vote", AsyncMock(return_value={"ok": False, "reason": "operator costs 4700 creds"})
+        )
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+
+        await roulette.handle_chat_command(self.make_chat_event("someviewer", "!operator"))
+
+        assert mock_send.await_args[0][0] == "@someviewer operator costs 4700 creds"
+
+    @pytest.mark.asyncio
+    async def test_stays_silent_on_a_successful_vote(self, monkeypatch):
+        """One chat line per vote would drown the channel during a busy
+        window - the overlay already shows the vote landing."""
+        monkeypatch.setattr(roulette, "vote", AsyncMock(return_value={"ok": True, "new_weight": 3}))
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+
+        await roulette.handle_chat_command(self.make_chat_event("someviewer", "!vandal"))
+
+        mock_send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_replies_go_back_to_the_platform_the_command_came_from(self, monkeypatch):
+        monkeypatch.setattr(
+            roulette, "trigger_roulette", AsyncMock(return_value={"ok": False, "reason": "Roulette is on cooldown"})
+        )
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+
+        event = self.make_chat_event("someviewer", "!roulette", source="YouTube")
+        await roulette.handle_chat_command(event)
+
+        assert mock_send.await_args[1]["platform"] == "youtube"
+
+    @pytest.mark.asyncio
+    async def test_chat_replies_can_be_switched_off(self, monkeypatch):
+        """SendMessage is the one request Streamer.bot documents as needing
+        authentication on its WebSocket server; if that is enabled at the
+        gaming PC end, silence beats a rejection logged per command."""
+        monkeypatch.setattr(config, "_data", {"roulette_chat_replies_enabled": False})
+        monkeypatch.setattr(
+            roulette, "trigger_roulette", AsyncMock(return_value={"ok": False, "reason": "nope"})
+        )
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+
+        await roulette.handle_chat_command(self.make_chat_event("someviewer", "!roulette"))
+
+        mock_send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_announces_the_open_session_with_its_real_roster_size(self, monkeypatch):
+        monkeypatch.setattr(roulette, "trigger_roulette", AsyncMock(return_value={"ok": True}))
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+        monkeypatch.setattr(config, "_data", {"roulette_voting_duration_seconds": 18})
+        roulette._state.votable_weapons = ["classic", "shorty", "frenzy", "ghost", "sheriff"]
+        roulette._state.predicted_credits = 900
+
+        await roulette.handle_chat_command(self.make_chat_event("someviewer", "!roulette"))
+
+        announcement = mock_send.await_args[0][0]
+        assert "5 weapons available" in announcement
+        assert "900 creds next round" in announcement
+        assert "18s" in announcement
+
+    @pytest.mark.asyncio
+    async def test_announcement_says_so_when_there_is_no_credit_reading(self, monkeypatch):
+        monkeypatch.setattr(roulette, "trigger_roulette", AsyncMock(return_value={"ok": True}))
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+        roulette._state.votable_weapons = list(roulette.WEAPONS)
+        roulette._state.predicted_credits = None
+
+        await roulette.handle_chat_command(self.make_chat_event("someviewer", "!roulette"))
+
+        announcement = mock_send.await_args[0][0]
+        assert "every weapon is in play" in announcement
+        assert f"{len(roulette.WEAPONS)} weapons available" in announcement
