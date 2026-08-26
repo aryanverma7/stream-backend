@@ -127,6 +127,10 @@ def _credit_prediction() -> dict:
 async def get_status(request: web.Request) -> web.Response:
     return web.json_response({
         "streamerbot_connected": streamerbot.is_connected,
+        # Reported separately from the connection above on purpose: an open
+        # socket with no accepted event subscription delivers nothing, and
+        # looks exactly like a quiet chat. See streamerbot_client's docstring.
+        "streamerbot_subscribed": streamerbot.is_subscribed,
         "credit_prediction": _credit_prediction(),
         "widget_connections": {
             "total": widget_hub.connected_count(),

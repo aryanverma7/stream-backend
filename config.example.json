@@ -5,6 +5,7 @@
   "http_port": 8765,
 
   "streamerbot_ws_url": "ws://localhost:8080/",
+  "streamerbot_subscribe_events": {"Twitch": ["ChatMessage"], "YouTube": ["Message"]},
 
   "_comment_future": "The keys below aren't used yet - they're placeholders for later tasks so this stays ONE evolving config file rather than needing new files created each task. Fill them in when you actually reach that task.",
 
@@ -20,6 +21,8 @@
   "roulette_vote_cost_increment": 25,
   "roulette_voting_duration_seconds": 18,
   "roulette_cooldown_seconds": 90,
+  "roulette_chat_replies_enabled": true,
+  "roulette_affordability_filter_enabled": true,
   "roulette_weapon_base_costs": {},
   "forced_buy_queued_duration_seconds": 30,
 
