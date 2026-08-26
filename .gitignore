@@ -1,0 +1,31 @@
+# Real secrets - GitHub client secret, Streamlabs client secret/access
+# token, Twitch client secret, ocr_agent_secret, etc. config.example.json
+# is the safe, committable template and is NOT covered by this pattern -
+# only the exact filename "config.json" is ignored.
+config.json
+
+# Python virtual environment
+venv/
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Test cache
+.pytest_cache/
+
+# Runtime logs
+logs/
+*.log
+
+# User-uploaded clip video files - large binary content, not source code
+clips/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/

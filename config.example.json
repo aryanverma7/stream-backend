@@ -1,0 +1,48 @@
+{
+  "_comment": "Copy this file to config.json and fill in real values. config.json is never committed anywhere - it's the single local secrets file per Task #3's design (Section 3).",
+
+  "http_host": "0.0.0.0",
+  "http_port": 8765,
+
+  "streamerbot_ws_url": "ws://localhost:8080/",
+
+  "_comment_future": "The keys below aren't used yet - they're placeholders for later tasks so this stays ONE evolving config file rather than needing new files created each task. Fill them in when you actually reach that task.",
+
+  "streamlabs_client_id": "",
+  "streamlabs_client_secret": "",
+  "streamlabs_redirect_uri": "https://hub.dualbladex.org/auth/streamlabs/callback",
+  "streamlabs_access_token": "",
+  "streamlabs_refresh_token": "",
+  "streamlabs_channel": "",
+  "points_exchange_rate_per_inr": 10,
+
+  "roulette_trigger_cost": 500,
+  "roulette_vote_cost_increment": 25,
+  "roulette_voting_duration_seconds": 18,
+  "roulette_cooldown_seconds": 90,
+  "roulette_weapon_base_costs": {},
+  "forced_buy_queued_duration_seconds": 30,
+
+  "ocr_agent_secret": "",
+
+  "github_client_id": "",
+  "github_client_secret": "",
+  "authorized_github_usernames": [],
+  "public_base_url": "",
+
+  "spotify_client_id": "",
+  "spotify_client_secret": "",
+  "spotify_refresh_token": "",
+
+  "twitch_client_id": "",
+  "twitch_client_secret": "",
+  "twitch_user_access_token": "",
+  "twitch_channel": "",
+
+  "youtube_api_key": "",
+  "youtube_channel_id": "",
+
+  "cloudflare_tunnel_domain": "",
+
+  "site_out_dir": ""
+}

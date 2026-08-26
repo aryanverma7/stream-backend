@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.dualbladex.backend</string>
+
+    <!--
+      IMPORTANT: update both paths below before installing this.
+      /path/to/mac_mini_backend must match wherever you actually put this
+      project folder on the Mac Mini. See the README for install steps.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/path/to/mac_mini_backend/main.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/path/to/mac_mini_backend</string>
+
+    <!-- launchd runs services with its own minimal default PATH, NOT the
+         interactive shell's PATH from .zshrc - confirmed the hard way:
+         tesseract worked fine typed directly in Terminal but wasn't
+         reachable by this service at all, since MacPorts installs to
+         /opt/local/bin, which isn't on launchd's default PATH. credit_ocr.py
+         also explicitly points at the tesseract binary directly as its own
+         independent fix, but this covers anything else MacPorts/Homebrew-
+         installed that this backend might need to find in the PATH itself,
+         not just this one binary. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <!-- Starts automatically when you log in / when launchd loads this file -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Auto-restarts if the process crashes for any reason - this is what
+         actually makes "always-on" mean something, rather than just leaving
+         a terminal window open (Section 3's stated reasoning) -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- launchd-level stdout/stderr, separate from our own app logger.py -
+         useful if the process crashes before logger.py even gets to run -->
+    <key>StandardOutPath</key>
+    <string>/tmp/mac_mini_backend.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/mac_mini_backend.err.log</string>
+</dict>
+</plist>
