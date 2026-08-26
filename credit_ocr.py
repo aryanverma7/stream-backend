@@ -36,11 +36,25 @@ against this:
   guess a digit for it.
 
 Real-world finding #3: even a validated reading can occasionally be a
-one-off misread while otherwise passing both checks above. Rather than
-trust a single reading, the last few valid readings are kept in a
-rolling window, and the reported value is whichever number appears most
-often in that window - a majority vote, giving one bad reading less
-power to override several consistent ones.
+one-off misread while otherwise passing both checks above. The last few
+valid readings are kept in a rolling window to guard against that - but
+the reported value is the MINIMUM of that window, not a majority vote
+(an earlier version of this file used majority vote and got this wrong
+in real testing: within one buy-phase burst, "min next round" only ever
+goes DOWN as you spend more, never up, so the several readings from
+before your last purchase are legitimately stale, not "more correct"
+just because there are more of them - a real captured burst read 4200
+four times, then 3400 once, then 2400 once right before the menu
+closed, and majority vote reported the stale 4200 even though 2400 was
+the genuinely correct final answer). Taking the minimum instead
+correctly tracks a monotonically-decreasing value, and still rejects an
+upward misread like a stray "9999" among consistent "4900"s, since an
+increase can never be the true minimum. The real remaining risk this
+does NOT protect against: a single misread that comes out anomalously
+LOW would incorrectly become the new floor for as long as it stays in
+the window - the window was shrunk from 8 to 5 and then to 4 readings
+specifically to limit how long such a bad reading can linger before
+rolling off.
 
 Requires the native `tesseract` binary installed on the Mac Mini - not a
 pure-Python dependency. On this project's specific Mac Mini (2012,
@@ -64,7 +78,7 @@ secret got rejected with a 401 before the handler ever ran.
 import re
 import io
 import os
-from collections import deque, Counter
+from collections import deque
 
 import pytesseract
 from PIL import Image
@@ -106,15 +120,26 @@ _TESSERACT_CONFIG = "--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWX
 
 _EXPECTED_LABEL = "MINNEXTROUND"  # normalized (spaces removed, uppercased) - see _contains_expected_label()
 
-# Rolling window of the last few valid readings, for the majority-vote
+# Rolling window of the last few valid readings, for the minimum-value
 # consensus (finding #3). A plain deque, not persisted to config.json -
 # this is transient per-round state, not a setting.
-# Rolling window of the last few valid readings, for the majority-vote
-# consensus (finding #3). A plain deque, not persisted to config.json -
-# this is transient per-round state, not a setting. Sized at 8 to match
-# the agent's 4-images/second capture rate, covering roughly the same
-# ~2-second real time span as the original 4-reading window did at 2/sec.
-_READING_HISTORY_SIZE = 8
+#
+# Sized at 4, down from 5 (and 8 before that). Two reasons, both of them
+# about the same thing - how long a stray anomalously-LOW misread can sit
+# in the window and hold the minimum down (finding #3's one remaining
+# weakness). First, a smaller window rolls a bad reading off sooner.
+# Second, the window is measured in READINGS, not seconds, so raising the
+# agent's real capture rate to a true 4 images/second (see agent.py's
+# "Real-world fix #5") silently doubled how much wall-clock history any
+# given size represents. At that real rate 4 readings is ~1 second of
+# history: enough to span the gap between your last purchase and closing
+# the menu, and short enough that it can't reach back into spending
+# you've already superseded.
+#
+# Note that 422s ("no number found") are never appended, so the window
+# always holds the last 4 VALID readings no matter how many blank frames
+# follow them - closing the buy menu can't flush the real answer out.
+_READING_HISTORY_SIZE = 4
 _recent_readings: deque = deque(maxlen=_READING_HISTORY_SIZE)
 
 
@@ -181,8 +206,8 @@ def extract_credits(image_bytes: bytes) -> "int | None":
     # multiples of 10 - there is no valid "min next round" value that
     # isn't. Not a perfect filter on its own - a stray misread COULD
     # coincidentally be a multiple of 10 - which is exactly why this is
-    # paired with the label check above and the majority vote below,
-    # rather than relied on alone.
+    # paired with the label check above and the minimum-value consensus
+    # below, rather than relied on alone.
     if value % 10 != 0:
         log.warning(f"Detected {value}, which isn't a multiple of 10 - Valorant credit values always are, "
                     f"so this is very likely a misread despite finding the expected label. Discarding.")
@@ -193,10 +218,15 @@ def extract_credits(image_bytes: bytes) -> "int | None":
 
 def get_predicted_credits() -> "int | None":
     """
-    Returns the majority-vote value across the recent reading history,
-    not just the single latest one - one bad reading (that still somehow
-    passed both validations above) shouldn't override several consistent
-    ones. With no readings yet, returns None.
+    Returns the minimum value across the recent reading history (the last
+    _READING_HISTORY_SIZE valid readings), not just the single latest one -
+    "min next round" only ever decreases as you spend during a single
+    buy-phase burst, so the smallest validated
+    reading is the closest approximation of the true final amount,
+    regardless of how many earlier (larger, now-stale) readings sit
+    alongside it in the window. See finding #3 above for the real
+    majority-vote failure this replaced. With no readings yet, returns
+    None.
 
     Exposed for other modules (e.g. a future Roulette affordability
     filter) to read the current value - deliberately not wired into
@@ -205,8 +235,7 @@ def get_predicted_credits() -> "int | None":
     """
     if not _recent_readings:
         return None
-    most_common_value, _count = Counter(_recent_readings).most_common(1)[0]
-    return most_common_value
+    return min(_recent_readings)
 
 
 async def handle_credit_report(request: web.Request) -> web.Response:
@@ -230,7 +259,7 @@ async def handle_credit_report(request: web.Request) -> web.Response:
 
     _recent_readings.append(detected)
     consensus = get_predicted_credits()
-    log.info(f"Detected {detected} (this reading) - current majority-vote value: {consensus}")
+    log.info(f"Detected {detected} (this reading) - current minimum-value consensus: {consensus}")
     return web.json_response({"credits": detected, "consensus": consensus})
 
 
@@ -240,7 +269,7 @@ async def handle_reset(request: web.Request) -> web.Response:
     agent calls this once at the start of each genuinely NEW buy phase
     (not when re-opening the same one) - without it, the previous round's
     readings were still sitting in the window, contaminating the new
-    round's majority vote until enough fresh readings pushed them out.
+    round's consensus until enough fresh readings pushed them out.
     """
     expected_secret = config.get("ocr_agent_secret", "")
     provided_secret = request.headers.get("X-Agent-Secret", "")

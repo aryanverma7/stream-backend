@@ -123,7 +123,7 @@ class TestContainsExpectedLabel:
         assert credit_ocr._contains_expected_label("") is False
 
 
-class TestMajorityVoteConsensus:
+class TestMinimumValueConsensus:
     def test_no_readings_yet_returns_none(self):
         assert credit_ocr.get_predicted_credits() is None
 
@@ -132,25 +132,52 @@ class TestMajorityVoteConsensus:
         assert credit_ocr.get_predicted_credits() == 4900
 
     def test_the_exact_scenario_described_10000_5300_4900_4900_picks_4900(self):
-        """The exact real example given: whichever value repeats most in
-        the recent history wins, even when it isn't the most recent one."""
+        """The exact real example given: the smallest value in the recent
+        history wins, whether or not it's the most recent one - here it
+        happens to be both."""
         for value in [10000, 5300, 4900, 4900]:
             credit_ocr._recent_readings.append(value)
         assert credit_ocr.get_predicted_credits() == 4900
 
-    def test_only_keeps_the_last_8_readings_older_ones_roll_off(self):
-        readings = [1110, 2220, 3330, 4440, 10000, 5300, 4900, 4900, 4900]  # 9 readings, window size 8
+    def test_only_keeps_the_last_4_readings_older_ones_roll_off(self):
+        readings = [1110, 2220, 3330, 4440, 10000, 5300, 4900, 4900, 4900]  # 9 readings, window size 4
         for value in readings:
             credit_ocr._recent_readings.append(value)
-        # 1110 (the very first, now 9th-oldest) should have rolled off
-        # entirely - confirms the window is bounded, not an ever-growing history
+        # The window is bounded, not an ever-growing history: only the last
+        # four survive, so 1110 - which would otherwise win the minimum
+        # outright - has rolled off entirely.
+        assert list(credit_ocr._recent_readings) == [5300, 4900, 4900, 4900]
         assert 1110 not in credit_ocr._recent_readings
         assert credit_ocr.get_predicted_credits() == 4900
 
-    def test_one_bad_reading_does_not_override_three_consistent_ones(self):
+    def test_the_window_is_four_readings_about_one_second_at_the_real_capture_rate(self):
+        """
+        Pinned deliberately rather than left implicit. The size is in
+        READINGS, so it only means "the last ~1 second" while the agent
+        genuinely captures 4 images/second - if that rate changes, this
+        number has to be revisited alongside it.
+        """
+        assert credit_ocr._READING_HISTORY_SIZE == 4
+        assert credit_ocr._recent_readings.maxlen == 4
+
+    def test_one_upward_misread_does_not_override_three_consistent_ones(self):
+        """Credits only ever decrease within a single burst, so a reading
+        HIGHER than everything else (like a stray "9999" here) can never
+        be the true minimum - the minimum-based consensus rejects it for
+        the same reason majority vote used to, just via a different rule."""
         for value in [4900, 4900, 4900, 9999]:
             credit_ocr._recent_readings.append(value)
         assert credit_ocr.get_predicted_credits() == 4900
+
+    def test_the_real_bug_this_replaced_a_late_lower_reading_beats_an_earlier_majority(self):
+        """The exact real capture log that motivated switching away from
+        majority vote: four readings held at 4200 (before any purchase),
+        then 3400, then 2400 right before the menu closed. Majority vote
+        picked the stale, already-spent 4200 (four votes to one); the
+        true final "min next round" was 2400."""
+        for value in [4200, 4200, 4200, 4200, 3400, 2400]:
+            credit_ocr._recent_readings.append(value)
+        assert credit_ocr.get_predicted_credits() == 2400
 
 
 async def make_client():
