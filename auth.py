@@ -9,12 +9,20 @@ Flow:
   GET /auth/callback -> exchange the returned code for a token, fetch the
                          GitHub username, check it against the one
                          authorized account, issue a session cookie if it
-                         matches
+                         matches, and send the browser back to whatever
+                         path started the login
+
+The `state` parameter carries that path across the round trip and doubles
+as the OAuth CSRF check. Before it existed the callback always redirected
+to "/", which meant the hidden dragon gesture opened the login flow and
+then dropped the person back on the homepage with a valid session but no
+dashboard - so the gesture had to be repeated to get anywhere.
 
 Session storage is a simple in-memory set - appropriate for a single-admin
 personal tool in one process, no need for anything heavier.
 """
 import secrets
+from urllib.parse import urlencode
 
 import aiohttp
 from aiohttp import web
@@ -33,6 +41,32 @@ SESSION_COOKIE_NAME = "dashboard_session"
 # In-memory session store. Fine for this scale - one admin, one process.
 _valid_sessions: set[str] = set()
 
+# Logins in flight, keyed by the random `state` value handed to GitHub and
+# mapping to the path the person was originally trying to reach. This does
+# two jobs at once: it carries the destination across the round trip to
+# GitHub (which otherwise loses it entirely), and it is the OAuth `state`
+# CSRF check - a callback whose state we did not issue is rejected.
+_pending_logins: dict[str, str] = {}
+
+# A login that never completes leaves its entry behind, so the dict is
+# capped rather than left to grow for the process's whole lifetime.
+_MAX_PENDING_LOGINS = 32
+
+DEFAULT_POST_LOGIN_PATH = "/admin"
+
+
+def _safe_next_path(candidate: str) -> str:
+    """
+    Only ever returns a path on this site. GitHub sends the browser wherever
+    the callback says, so an attacker-supplied ?next= would otherwise be an
+    open redirect: "//evil.example" and "https://evil.example" are both
+    valid targets for a Location header, and the second slash in "//" is
+    what makes the first one protocol-relative rather than local.
+    """
+    if not candidate.startswith("/") or candidate.startswith("//"):
+        return DEFAULT_POST_LOGIN_PATH
+    return candidate
+
 
 def _redirect_uri() -> str:
     """
@@ -49,19 +83,37 @@ def _redirect_uri() -> str:
 
 async def handle_login(request: web.Request) -> web.Response:
     client_id = config.get("github_client_id", "")
+
+    next_path = _safe_next_path(request.query.get("next", DEFAULT_POST_LOGIN_PATH))
+    state = secrets.token_urlsafe(24)
+    if len(_pending_logins) >= _MAX_PENDING_LOGINS:
+        _pending_logins.pop(next(iter(_pending_logins)))
+    _pending_logins[state] = next_path
+
     params = {
         "client_id": client_id,
         "redirect_uri": _redirect_uri(),
         "scope": "read:user",
+        "state": state,
     }
-    query = "&".join(f"{k}={v}" for k, v in params.items())
-    raise web.HTTPFound(f"{GITHUB_AUTHORIZE_URL}?{query}")
+    # urlencode, not manual joining: redirect_uri and next_path both contain
+    # characters ("/", ":") that have to be escaped to survive the round trip.
+    raise web.HTTPFound(f"{GITHUB_AUTHORIZE_URL}?{urlencode(params)}")
 
 
 async def handle_callback(request: web.Request) -> web.Response:
     code = request.query.get("code")
     if not code:
         return web.Response(status=400, text="Missing code parameter")
+
+    state = request.query.get("state", "")
+    if state not in _pending_logins:
+        # Either a genuine CSRF attempt, or a stale callback: the pending
+        # logins live in memory, so a backend restart mid-login lands here
+        # too. Both cases want the same answer - start over.
+        log.warning("Rejected an OAuth callback whose state we did not issue")
+        return web.Response(status=400, text="Login session expired - visit /auth/login again")
+    next_path = _pending_logins.pop(state)
 
     async with aiohttp.ClientSession() as session:
         # Exchange the code for an access token
@@ -103,7 +155,10 @@ async def handle_callback(request: web.Request) -> web.Response:
     _valid_sessions.add(session_token)
     log.info(f"Dashboard login successful: {github_username}")
 
-    response = web.HTTPFound("/")
+    # Back to whatever they were trying to open, not the homepage. Sending
+    # them to "/" meant the hidden gesture had to be performed a second
+    # time before /admin would actually open.
+    response = web.HTTPFound(next_path)
     response.set_cookie(SESSION_COOKIE_NAME, session_token, httponly=True, samesite="Lax")
     raise response
 
@@ -159,7 +214,7 @@ async def auth_middleware(request: web.Request, handler):
         # a plain 401, since those are called by code, not a person
         # navigating a browser.
         if request.path == "/admin":
-            raise web.HTTPFound("/auth/login")
+            raise web.HTTPFound(f"/auth/login?{urlencode({'next': request.path_qs})}")
         return web.Response(status=401, text="Not authenticated - visit /auth/login first")
 
     return await handler(request)
