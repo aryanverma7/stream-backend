@@ -25,8 +25,12 @@ buy for the next round, per the actual confirmed mechanic:
      table would otherwise leave nothing votable at all.
 
 Chat commands, via the existing streamerbot.on_event() listener pattern:
-  !roulette   - trigger a new session
-  !<weapon>   - vote for a weapon during an active session (e.g. !vandal)
+  !roulette          - trigger a new session
+  !<weapon>          - vote for a weapon during an active session (e.g. !vandal)
+  !help / !commands  - lists the above, since neither Twitch nor YouTube chat
+                        offers autocomplete for a custom command regardless of
+                        what parses it - a viewer has no way to discover
+                        !roulette or the weapon names except being told
 """
 import asyncio
 import time
@@ -474,6 +478,11 @@ async def handle_chat_command(event: dict):
         # during a busy window.
         if not result.get("ok"):
             await _reply_in_chat(platform, f"@{username} {result['reason']}")
+    elif command in ("help", "commands"):
+        # Answered regardless of whether a session is active - this is
+        # the one command a viewer needs to be able to reach at any time,
+        # since it's the only way they find out !roulette exists at all.
+        await _reply_in_chat(platform, _help_message())
     elif command and _state.is_active:
         # Only treated as a likely mistaken vote attempt (worth feedback)
         # while a session is actually active - otherwise, an unrelated
@@ -484,6 +493,21 @@ async def handle_chat_command(event: dict):
         result = await vote(username, command)
         if not result.get("ok"):
             await _reply_in_chat(platform, f"@{username} {result['reason']}")
+
+
+def _help_message() -> str:
+    """
+    Answers !help / !commands. Lists the exact same weapon spelling
+    !<weapon> checks against, since a viewer guessing at a name (!ares vs
+    !aries) is the other half of the discoverability problem - telling
+    them !roulette exists doesn't help if they still can't spell the gun.
+    """
+    cost = config.get("roulette_trigger_cost", DEFAULT_TRIGGER_COST)
+    weapons = ", ".join(WEAPONS)
+    return (
+        f"!roulette ({cost} points) opens a vote for next round's forced buy - "
+        f"vote with !<weapon> while it's open. Weapons: {weapons}."
+    )
 
 
 def _roulette_open_announcement() -> str:

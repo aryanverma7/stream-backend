@@ -769,3 +769,50 @@ class TestHandleChatCommand:
         announcement = mock_send.await_args[0][0]
         assert "every weapon is in play" in announcement
         assert f"{len(roulette.WEAPONS)} weapons available" in announcement
+
+    @pytest.mark.asyncio
+    async def test_help_command_replies_with_trigger_command_and_full_weapon_list(self, monkeypatch):
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+
+        await roulette.handle_chat_command(self.make_chat_event("someviewer", "!help"))
+
+        reply = mock_send.await_args[0][0]
+        assert "!roulette" in reply
+        for weapon in roulette.WEAPONS:
+            assert weapon in reply
+
+    @pytest.mark.asyncio
+    async def test_commands_is_an_alias_for_help(self, monkeypatch):
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+
+        await roulette.handle_chat_command(self.make_chat_event("someviewer", "!commands"))
+
+        assert "!roulette" in mock_send.await_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_help_works_even_with_no_session_active(self, monkeypatch):
+        """Unlike a bare weapon-shaped word, !help must never be swallowed
+        by the mistaken-vote catch-all - it's the one command a viewer
+        needs whether or not a roulette happens to be running."""
+        mock_vote = AsyncMock(return_value={"ok": True})
+        monkeypatch.setattr(roulette, "vote", mock_vote)
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+        assert roulette._state.is_active is False
+
+        await roulette.handle_chat_command(self.make_chat_event("someviewer", "!help"))
+
+        mock_vote.assert_not_called()
+        mock_send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_help_reports_the_configured_trigger_cost(self, monkeypatch):
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+        monkeypatch.setattr(config, "_data", {"roulette_trigger_cost": 750})
+
+        await roulette.handle_chat_command(self.make_chat_event("someviewer", "!help"))
+
+        assert "750" in mock_send.await_args[0][0]
