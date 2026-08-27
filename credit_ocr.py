@@ -54,7 +54,10 @@ does NOT protect against: a single misread that comes out anomalously
 LOW would incorrectly become the new floor for as long as it stays in
 the window - the window was shrunk from 8 to 5 and then to 4 readings
 specifically to limit how long such a bad reading can linger before
-rolling off.
+rolling off. Finding #7 below replaces the minimum outright and closes
+that hole as a side effect; the reasoning here is kept because it is
+still the reason a plain "latest reading wins" is not enough on its
+own.
 
 Real-world finding #4: the number is prefixed on screen by Valorant's own
 credit glyph (a custom icon, closest standard codepoint U+00A4), and
@@ -73,11 +76,11 @@ game glyph the stock `eng` model was never trained on:
   the leading 1 produces a number that is still under the cap and still a
   multiple of 10 (a real 900 read as 1900). Nothing in the text alone can
   distinguish that from a genuine 1900. It survives in practice only
-  because the misread is intermittent and the consensus takes the MINIMUM
-  of the window, so any clean frame in the same burst wins - but if this
-  ever shows up as a systematic +10000 or +1000 offset rather than an
-  occasional one, the next lever is upscaling the crop before OCR, not
-  more validation.
+  because the misread is intermittent and the consensus (finding #7)
+  ignores any value the window holds only once, so the clean frames in
+  the same burst win - but if this ever shows up as a systematic +10000
+  or +1000 offset rather than an occasional one, the next lever is
+  upscaling the crop before OCR, not more validation.
 
 Real-world finding #5: this handler used to call Tesseract directly, and
 Tesseract is a blocking subprocess call, so every capture froze the whole
@@ -92,9 +95,13 @@ the handler awaits it, so the loop stays free.
 The pool is deliberately small. Tesseract is CPU-bound and this is a 2012
 Mac Mini; more workers than cores turns parallelism into contention. Two
 workers do mean two readings can finish out of the order they were sent
-in, which is harmless for a consensus that takes a minimum - the value
-does not depend on order - and only very slightly changes which readings
-happen to be in the window at the moment it is read.
+in, so the newest entry in the window is not always the newest capture.
+That mattered not at all to a consensus that took a minimum, and it does
+matter to one that prefers the latest - which is precisely why finding
+#7's rule requires a value to be corroborated rather than simply taking
+the last element. A single straggler arriving late cannot move the
+answer; a genuine new value, read ten times a second, moves it within a
+frame or two.
 
 Real-world finding #6: the reading history is cleared at the start of
 every buy phase, which is correct for the consensus and terrible for
@@ -105,6 +112,35 @@ therefore also kept on its own, outside the window and untouched by a
 reset, purely so the panel can say "nothing this phase, but ¤3900 four
 minutes ago". It is never consulted by the consensus or the roulette -
 a stale value must not decide what a viewer is allowed to vote for.
+
+Real-world finding #7, from watching how the buy menu is actually
+driven. The menu is opened with B and closed with Esc, and one buy phase
+routinely involves opening it more than once - buy a rifle, close, think,
+re-open to add armour. The gaming PC now keeps both looks' readings in
+one window rather than resetting between them (see burst_timer.py's fix
+#10 there), which is only useful if the newer look wins, and under a
+minimum it did not: the pre-purchase readings of the FIRST look are
+higher, so the minimum still tracked the right thing while credits only
+fell - but a refund inside the buy phase raises "min next round", and no
+minimum can ever follow a value upward.
+
+The consensus is therefore the first value to be seen
+_CORROBORATING_READINGS times while scanning BACK from the newest
+reading, falling back to the plain newest while the window is still too
+short for anything to repeat. Counting only what has been scanned so far,
+rather than the whole window, is what makes this survive the out-of-order
+completion described under finding #5: a stale straggler that lands last
+is a single sighting at the point it is reached, and the older readings
+that agree with it are behind it and never counted. It tracks the value
+in both directions and - unlike the minimum - rejects a one-off misread
+whichever side it lands on, which retires finding #3's one stated
+remaining weakness.
+
+Two looks at one buy phase is not the same as two rounds, and the
+difference is time. Readings older than _READING_MAX_AGE_SECONDS are
+dropped from the consensus here, mirroring the gap the agent uses to
+decide when to reset at all, so a reset POST that never arrives cannot
+leave a previous round's budget standing.
 
 Requires the native `tesseract` binary installed on the Mac Mini - not a
 pure-Python dependency. On this project's specific Mac Mini (2012,
@@ -130,7 +166,7 @@ import re
 import io
 import os
 import time
-from collections import deque
+from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor
 
 import pytesseract
@@ -197,18 +233,24 @@ _TESSERACT_CONFIG = "--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWX
 
 _EXPECTED_LABEL = "MINNEXTROUND"  # normalized (spaces removed, uppercased) - see _contains_expected_label()
 
-# Rolling window of the last few valid readings, for the minimum-value
-# consensus (finding #3). A plain deque, not persisted to config.json -
-# this is transient per-round state, not a setting.
+# Valorant hard-caps a player's credits at 9000, so "min next round" - a
+# projection of next round's balance - can never legitimately exceed it
+# either. Any larger value is a misread by definition, which makes this a
+# cheap, absolute check that does not depend on Tesseract behaving.
+_MAX_CREDITS = 9000
+
+# Rolling window of the last few valid readings, which the consensus
+# (finding #7) reads newest-first. A plain deque, not persisted to
+# config.json - this is transient per-buy-phase state, not a setting.
 #
 # Sized at 10. The number is meaningless on its own: what is actually
 # being chosen here is a DURATION, and the window is measured in readings,
 # so it only means what it means at a given capture rate. The target is
-# ~1 second of history - long enough to span the gap between your last
-# purchase and closing the menu, short enough that it cannot reach back
-# into spending you have already superseded, and short enough that a
-# stray anomalously-LOW misread rolls off quickly instead of holding the
-# minimum down (finding #3's one remaining weakness).
+# ~1 second of history - long enough that a value which is genuinely on
+# screen gets read many times over and so is corroborated immediately,
+# short enough that the window turns over within a fraction of the time
+# it takes to make a purchase, so the answer follows what the menu shows
+# rather than lagging it.
 #
 # It was 4 when the agent captured 4 images a second, and is 10 now that
 # it captures 10 (agent.py's fix #9). Same second of history, same
@@ -216,16 +258,38 @@ _EXPECTED_LABEL = "MINNEXTROUND"  # normalized (spaces removed, uppercased) - se
 # this silently changes how far back the consensus reaches.
 #
 # Note that 422s ("no number found") are never appended, so the window
-# always holds the last 4 VALID readings no matter how many blank frames
+# always holds the last 10 VALID readings no matter how many blank frames
 # follow them - closing the buy menu can't flush the real answer out.
-# Valorant hard-caps a player's credits at 9000, so "min next round" - a
-# projection of next round's balance - can never legitimately exceed it
-# either. Any larger value is a misread by definition, which makes this a
-# cheap, absolute check that does not depend on Tesseract behaving.
-_MAX_CREDITS = 9000
-
 _READING_HISTORY_SIZE = 10
 _recent_readings: deque = deque(maxlen=_READING_HISTORY_SIZE)
+
+# How many times a value has to be seen, scanning back from the newest
+# reading, before the consensus will report it. Two, not more: at ten
+# captures a second anything really on screen is read again within a tenth
+# of a second, so this costs essentially no lag, while a value seen once
+# is either a misread or a straggler that finished out of order (finding
+# #5) and must not be allowed to move the answer.
+_CORROBORATING_READINGS = 2
+
+# When the newest reading in the window is older than this, the window is
+# treated as empty rather than as an answer. The agent already resets the
+# history at the start of a new buy phase, so this never fires in normal
+# operation - it exists for when that reset does NOT arrive: a dropped
+# POST, an agent restarted mid-match, a gaming PC that went to sleep. The
+# failure it prevents is the expensive one, a previous round's budget
+# quietly deciding what viewers may vote for.
+#
+# The same number as burst_timer.NEW_ROUND_GAP_SECONDS on the gaming PC,
+# because it is the same fact stated from the other side: readings more
+# than twenty seconds apart belong to different rounds. Change one and
+# change the other.
+_READING_MAX_AGE_SECONDS = 20
+
+# When the newest entry in the window arrived. One timestamp for the whole
+# window rather than one per reading, because the window only ever spans
+# about a second of wall clock - if the newest reading is fresh then none
+# of them is stale, and if the newest is stale then all of them are.
+_window_last_append_at: "float | None" = None
 
 # The last reading that was ever accepted, and when. Deliberately NOT part
 # of the rolling window and deliberately NOT cleared by handle_reset() -
@@ -308,9 +372,9 @@ def extract_credits(image_bytes: bytes) -> "int | None":
     # leading 1 - turning a real 4200 into 14200. Every such reading is
     # above the game's own 9000 cap, so the cap catches the whole class
     # outright. Deliberately DISCARDED rather than repaired by stripping
-    # the leading digit: the consensus takes the minimum of the window, so
-    # a repaired-but-wrong value would become the floor and stay wrong for
-    # the rest of the burst, whereas discarding costs nothing while the
+    # the leading digit: a repaired value is indistinguishable from a real
+    # one, so several of them in a row would corroborate each other and
+    # become the consensus, whereas discarding costs nothing while the
     # misread is intermittent - the clean frames in the same window still
     # supply the answer.
     if value > _MAX_CREDITS:
@@ -323,7 +387,7 @@ def extract_credits(image_bytes: bytes) -> "int | None":
     # multiples of 10 - there is no valid "min next round" value that
     # isn't. Not a perfect filter on its own - a stray misread COULD
     # coincidentally be a multiple of 10 - which is exactly why this is
-    # paired with the label check above and the minimum-value consensus
+    # paired with the label check above and the corroborated consensus
     # below, rather than relied on alone.
     if value % 10 != 0:
         log.warning(f"Detected {value}, which isn't a multiple of 10 - Valorant credit values always are, "
@@ -333,17 +397,39 @@ def extract_credits(image_bytes: bytes) -> "int | None":
     return value
 
 
+def _window_is_stale() -> bool:
+    """
+    Whether the newest reading in the window is old enough to belong to a
+    different round - see _READING_MAX_AGE_SECONDS. A stale window is
+    reported as no window at all rather than as an old answer.
+    """
+    if _window_last_append_at is None:
+        return True
+    return (time.time() - _window_last_append_at) > _READING_MAX_AGE_SECONDS
+
+
 def get_predicted_credits() -> "int | None":
     """
-    Returns the minimum value across the recent reading history (the last
-    _READING_HISTORY_SIZE valid readings), not just the single latest one -
-    "min next round" only ever decreases as you spend during a single
-    buy-phase burst, so the smallest validated
-    reading is the closest approximation of the true final amount,
-    regardless of how many earlier (larger, now-stale) readings sit
-    alongside it in the window. See finding #3 above for the real
-    majority-vote failure this replaced. With no readings yet, returns
-    None.
+    Returns the first value seen _CORROBORATING_READINGS times while
+    scanning back from the newest reading. If the window is too short for
+    anything to have repeated yet, the newest reading is returned as the
+    best available guess. With no readings - or with a window too old to
+    belong to this round - returns None.
+
+    "Most recent, corroborated" rather than "smallest" (finding #7): one
+    buy phase now spans however many times the menu was opened, so the
+    later look is the one that reflects what has actually been bought,
+    and a refund can move the true value UP, which a minimum can never
+    follow. Requiring a second sighting is what keeps that from being
+    fragile.
+
+    The scan-so-far count is load-bearing and not the same as counting the
+    whole window. A reading that finished out of order (finding #5) lands
+    at the end of the window holding a value from BEFORE the purchase, and
+    the earlier readings that agree with it are older than it - counting
+    the whole window would let them vouch for it and undo the purchase.
+    Counting only what has been scanned reaches that straggler first, sees
+    it once, and moves on.
 
     Consumed by roulette.trigger_roulette(), which reads this ONCE per
     session to decide which weapons are votable. Returning None matters as
@@ -351,19 +437,53 @@ def get_predicted_credits() -> "int | None":
     opening the full roster rather than a short one, so OCR being down
     degrades the wheel's accuracy and never its availability.
     """
-    if not _recent_readings:
+    if not _recent_readings or _window_is_stale():
         return None
-    return min(_recent_readings)
+
+    seen = Counter()
+    for value in reversed(_recent_readings):
+        seen[value] += 1
+        if seen[value] >= _CORROBORATING_READINGS:
+            return value
+
+    # Nothing was seen twice, which in practice means one or two frames
+    # into a burst. The newest reading is still a better answer than none:
+    # the roulette's alternative to a number is the unfiltered roster.
+    return _recent_readings[-1]
 
 
 def recent_readings() -> list:
     """
     A copy of the current rolling window, oldest first - read-only view for
-    the admin dashboard's status panel, which shows how many valid readings
-    the prediction is actually standing on. Copied rather than handing out
-    the deque itself so a caller can't mutate the consensus history.
+    the admin dashboard's status panel, which shows what the prediction is
+    actually standing on. Copied rather than handing out the deque itself
+    so a caller can't mutate the consensus history.
+
+    Empty when the window is too old to count, so the panel and the
+    roulette never disagree about whether there is a reading.
     """
+    if _window_is_stale():
+        return []
     return list(_recent_readings)
+
+
+def _record_reading(value: int) -> None:
+    """
+    Appends to the rolling window and stamps when it happened. The only
+    way anything should enter the window - the timestamp is what makes
+    _window_is_stale() mean anything, and an append that skipped it would
+    leave a fresh reading looking like a stale one.
+    """
+    global _window_last_append_at
+    _recent_readings.append(value)
+    _window_last_append_at = time.time()
+
+
+def _clear_window() -> None:
+    """Empties the rolling window. Leaves _last_reading alone - see last_reading()."""
+    global _window_last_append_at
+    _recent_readings.clear()
+    _window_last_append_at = None
 
 
 def last_reading() -> dict:
@@ -448,30 +568,35 @@ async def handle_credit_report(request: web.Request) -> web.Response:
     if detected is None:
         return web.json_response({"error": "Could not validate a real reading in the captured region"}, status=422)
 
-    _recent_readings.append(detected)
+    _record_reading(detected)
     _remember_last_reading(detected)
     consensus = get_predicted_credits()
-    log.info(f"Detected {detected} (this reading) - current minimum-value consensus: {consensus}")
+    log.info(f"Detected {detected} (this reading) - current consensus: {consensus}")
     return web.json_response({"credits": detected, "consensus": consensus})
 
 
 async def handle_reset(request: web.Request) -> web.Response:
     """
     POST /api/ocr/reset - clears the reading history. Real bug fix: the
-    agent calls this when a buy phase OPENS - without it, the previous
-    round's readings were still sitting in the window, contaminating the
-    new round's consensus until enough fresh readings pushed them out.
+    agent calls this at the start of a new buy phase - without it, the
+    previous round's readings were still sitting in the window,
+    contaminating the new round's consensus until enough fresh readings
+    pushed them out.
 
-    Opening is the operative word. This used to fire on the press that
-    CLOSED the menu as well, since B is the same key for both and the
-    agent could not tell them apart, so finishing a buy phase wiped the
-    readings that phase had just produced. See burst_timer.py's fix #8 on
-    the gaming PC for the other end of that.
+    "A new buy phase" is a narrower thing than "a B press", and getting
+    that distinction wrong has broken this twice. It fired on the press
+    that CLOSED the menu, wiping the readings the phase had just produced;
+    then it fired on a re-open of the SAME buy phase, wiping the first
+    look at it. The agent now decides by the gap between presses rather
+    than by the press itself - see burst_timer.py's fix #10 on the gaming
+    PC - and this end enforces the same gap independently via
+    _READING_MAX_AGE_SECONDS, so a reset that never arrives cannot leave a
+    previous round standing.
     """
     if not _agent_secret_ok(request):
         return web.json_response({"error": "Invalid or missing agent secret"}, status=401)
 
-    _recent_readings.clear()
+    _clear_window()
     # _last_reading is deliberately left alone - it is the dashboard's only
     # way to distinguish this from a pipeline that has never worked. See
     # last_reading() and finding #6.

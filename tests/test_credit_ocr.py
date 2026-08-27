@@ -18,10 +18,10 @@ def reset_reading_history():
     """Every test gets a fresh reading history - this module uses shared,
     module-level state by design (a real rolling window across real
     requests), which means tests must reset it between runs."""
-    credit_ocr._recent_readings.clear()
+    credit_ocr._clear_window()
     credit_ocr.forget_last_reading()
     yield
-    credit_ocr._recent_readings.clear()
+    credit_ocr._clear_window()
     credit_ocr.forget_last_reading()
 
 
@@ -195,33 +195,123 @@ class TestContainsExpectedLabel:
         assert credit_ocr._contains_expected_label("") is False
 
 
-class TestMinimumValueConsensus:
+class TestCorroboratedLatestConsensus:
+    """
+    Finding #7. The consensus is the most recent reading the window
+    corroborates, not the smallest one in it - one buy phase now spans
+    however many times the menu was opened, so the later look is the one
+    that reflects what has actually been bought.
+    """
+
     def test_no_readings_yet_returns_none(self):
         assert credit_ocr.get_predicted_credits() is None
 
     def test_a_single_reading_becomes_the_consensus(self):
-        credit_ocr._recent_readings.append(4900)
+        """
+        Nothing can be corroborated one frame into a burst, and the
+        alternative to an uncorroborated answer is no answer at all - which
+        the roulette reads as "no filter". A single reading is a better
+        starting point than that.
+        """
+        credit_ocr._record_reading(4900)
         assert credit_ocr.get_predicted_credits() == 4900
 
-    def test_the_exact_scenario_described_10000_5300_4900_4900_picks_4900(self):
-        """The exact real example given: the smallest value in the recent
-        history wins, whether or not it's the most recent one - here it
-        happens to be both."""
-        for value in [10000, 5300, 4900, 4900]:
-            credit_ocr._recent_readings.append(value)
+    def test_a_settled_value_read_repeatedly_is_the_consensus(self):
+        for value in [4900, 4900, 4900, 4900]:
+            credit_ocr._record_reading(value)
         assert credit_ocr.get_predicted_credits() == 4900
+
+    def test_the_newest_corroborated_value_wins_over_older_ones(self):
+        """
+        The whole point of the change. The same real capture log as before:
+        4200 held while nothing had been bought, then 3400, then 2400 as
+        the last purchase landed. The answer is 2400 because it is the
+        newest thing the window agrees on - not because it is the smallest.
+        """
+        for value in [4200, 4200, 4200, 4200, 3400, 2400, 2400]:
+            credit_ocr._record_reading(value)
+        assert credit_ocr.get_predicted_credits() == 2400
+
+    def test_a_value_that_went_UP_is_followed_too(self):
+        """
+        The case a minimum could never express, and the reason the rule had
+        to change rather than just be re-tuned: weapons can be refunded
+        during the buy phase, which raises "min next round". A minimum
+        would have reported 2400 here forever.
+        """
+        for value in [4200, 4200, 2400, 2400, 5100, 5100]:
+            credit_ocr._record_reading(value)
+        assert credit_ocr.get_predicted_credits() == 5100
+
+    def test_a_one_off_HIGH_misread_at_the_end_is_ignored(self):
+        """A stray 9999 among consistent 4900s appears once, so it is never corroborated."""
+        for value in [4900, 4900, 4900, 9999]:
+            credit_ocr._record_reading(value)
+        assert credit_ocr.get_predicted_credits() == 4900
+
+    def test_a_one_off_LOW_misread_at_the_end_is_ignored_too(self):
+        """
+        Finding #3's one stated remaining weakness, retired. Under the
+        minimum, a single dropped digit (2400 read as 240) became the floor
+        and held it for the rest of the window - and 240 is a real enough
+        looking budget to strip the roulette down to pistols.
+        """
+        for value in [2400, 2400, 2400, 240]:
+            credit_ocr._record_reading(value)
+        assert credit_ocr.get_predicted_credits() == 2400
+
+    def test_a_late_straggler_from_before_the_purchase_cannot_undo_it(self):
+        """
+        Two OCR workers means readings can finish out of the order they
+        were captured in (finding #5), so the last entry in the window is
+        not always the newest capture. Here the pre-purchase 4200 lands
+        after the 2400s that superseded it.
+
+        This is exactly why the count is taken over the scan so far rather
+        than over the whole window: the OTHER 4200 in this window is older
+        than the straggler, and counting the whole window would let it
+        vouch for a value the purchase had already replaced.
+        """
+        for value in [4200, 2400, 2400, 4200]:
+            credit_ocr._record_reading(value)
+        assert credit_ocr.get_predicted_credits() == 2400
+
+    def test_a_value_is_only_corroborated_by_readings_at_least_as_new_as_itself(self):
+        """
+        The rule stated on its own, minimally. 3400 is in the window twice,
+        but the second sighting is older than the 2400s that follow it, so
+        it cannot outrank them.
+        """
+        for value in [3400, 4200, 3400, 2400, 2400]:
+            credit_ocr._record_reading(value)
+        assert credit_ocr.get_predicted_credits() == 2400
+
+    def test_the_newest_value_takes_over_as_soon_as_it_is_seen_twice(self):
+        """
+        The lag the corroboration rule costs, pinned so it stays small. At
+        ten captures a second the switch happens within about a tenth of a
+        second of the purchase.
+        """
+        for value in [4200, 4200, 4200]:
+            credit_ocr._record_reading(value)
+        credit_ocr._record_reading(2400)
+        assert credit_ocr.get_predicted_credits() == 4200  # not corroborated yet
+        credit_ocr._record_reading(2400)
+        assert credit_ocr.get_predicted_credits() == 2400  # one frame later
 
     def test_older_readings_roll_off_once_the_window_is_full(self):
         oldest = [1110, 2220, 3330]
-        newest = [4440, 10000, 5300, 4900, 4900, 4900, 4900, 4900, 4900, 4900]  # exactly a full window
+        newest = [4440, 4440, 5300, 4900, 4900, 4900, 4900, 4900, 4900, 4900]  # exactly a full window
         for value in oldest + newest:
-            credit_ocr._recent_readings.append(value)
+            credit_ocr._record_reading(value)
         # The window is bounded, not an ever-growing history: only the last
-        # _READING_HISTORY_SIZE survive, so 1110 - which would otherwise win
-        # the minimum outright - has rolled off entirely.
+        # _READING_HISTORY_SIZE survive.
         assert list(credit_ocr._recent_readings) == newest
         assert 1110 not in credit_ocr._recent_readings
-        assert credit_ocr.get_predicted_credits() == 4440
+        assert credit_ocr.get_predicted_credits() == 4900
+
+    def test_two_readings_deep_the_corroboration_requirement_is_exactly_two(self):
+        assert credit_ocr._CORROBORATING_READINGS == 2
 
     def test_the_window_is_about_one_second_at_the_agents_real_capture_rate(self):
         """
@@ -239,24 +329,76 @@ class TestMinimumValueConsensus:
         seconds_of_history = credit_ocr._READING_HISTORY_SIZE * agent_capture_interval_seconds
         assert round(seconds_of_history, 3) == 1.0
 
-    def test_one_upward_misread_does_not_override_three_consistent_ones(self):
-        """Credits only ever decrease within a single burst, so a reading
-        HIGHER than everything else (like a stray "9999" here) can never
-        be the true minimum - the minimum-based consensus rejects it for
-        the same reason majority vote used to, just via a different rule."""
-        for value in [4900, 4900, 4900, 9999]:
-            credit_ocr._recent_readings.append(value)
-        assert credit_ocr.get_predicted_credits() == 4900
 
-    def test_the_real_bug_this_replaced_a_late_lower_reading_beats_an_earlier_majority(self):
-        """The exact real capture log that motivated switching away from
-        majority vote: four readings held at 4200 (before any purchase),
-        then 3400, then 2400 right before the menu closed. Majority vote
-        picked the stale, already-spent 4200 (four votes to one); the
-        true final "min next round" was 2400."""
-        for value in [4200, 4200, 4200, 4200, 3400, 2400]:
-            credit_ocr._recent_readings.append(value)
+class TestTheWindowExpiresOnItsOwn:
+    """
+    Finding #7's second half. The agent resets the history at the start of
+    a new buy phase, but that POST can simply not arrive - a network blip,
+    an agent restarted mid-match, a gaming PC that slept. The window
+    therefore also ages out here, so the worst case is no prediction rather
+    than a previous round's budget deciding what viewers may vote for.
+    """
+
+    def test_a_fresh_window_is_used_normally(self):
+        credit_ocr._record_reading(4900)
+        credit_ocr._record_reading(4900)
+        assert credit_ocr.get_predicted_credits() == 4900
+        assert credit_ocr.recent_readings() == [4900, 4900]
+
+    def test_a_window_older_than_the_cutoff_is_treated_as_empty(self, monkeypatch):
+        credit_ocr._record_reading(4900)
+        credit_ocr._record_reading(4900)
+        # Age it past the cutoff without waiting out a real 20 seconds.
+        monkeypatch.setattr(
+            credit_ocr,
+            "_window_last_append_at",
+            credit_ocr._window_last_append_at - (credit_ocr._READING_MAX_AGE_SECONDS + 1),
+        )
+        assert credit_ocr.get_predicted_credits() is None
+        assert credit_ocr.recent_readings() == []
+
+    def test_the_panel_and_the_roulette_agree_about_a_stale_window(self, monkeypatch):
+        """
+        The two are read from the same place for exactly this reason. A
+        panel showing a window the roulette will not use is a wrong answer
+        about whether the stream is ready, not merely an untidy one.
+        """
+        credit_ocr._record_reading(3900)
+        credit_ocr._record_reading(3900)
+        monkeypatch.setattr(
+            credit_ocr,
+            "_window_last_append_at",
+            credit_ocr._window_last_append_at - (credit_ocr._READING_MAX_AGE_SECONDS + 1),
+        )
+        assert (credit_ocr.get_predicted_credits() is None) == (credit_ocr.recent_readings() == [])
+
+    def test_a_new_reading_revives_the_window(self, monkeypatch):
+        credit_ocr._record_reading(4900)
+        monkeypatch.setattr(
+            credit_ocr,
+            "_window_last_append_at",
+            credit_ocr._window_last_append_at - (credit_ocr._READING_MAX_AGE_SECONDS + 1),
+        )
+        assert credit_ocr.get_predicted_credits() is None
+        credit_ocr._record_reading(2400)
+        # The stale 4900 is still physically in the deque, but the window
+        # as a whole is live again and the newest reading is the answer.
         assert credit_ocr.get_predicted_credits() == 2400
+
+    def test_the_cutoff_matches_the_agents_new_round_gap(self):
+        """
+        The pairing that spans both repos, pinned from this side.
+        burst_timer.NEW_ROUND_GAP_SECONDS in the pc-ocr repo is 20, and it
+        is the same fact: readings more than twenty seconds apart belong to
+        different rounds. test_agent.py pins it from the other side.
+        """
+        agent_new_round_gap_seconds = 20  # burst_timer.NEW_ROUND_GAP_SECONDS
+        assert credit_ocr._READING_MAX_AGE_SECONDS == agent_new_round_gap_seconds
+
+    def test_an_untouched_window_is_stale_rather_than_fresh(self):
+        """A window nothing has ever been written to must not read as live - _window_last_append_at starts at None precisely so it cannot."""
+        assert credit_ocr._window_last_append_at is None
+        assert credit_ocr._window_is_stale() is True
 
 
 async def make_client():
@@ -406,7 +548,8 @@ class TestHandleReset:
     @pytest.mark.asyncio
     async def test_clears_the_reading_history_with_the_correct_secret(self, monkeypatch):
         monkeypatch.setattr(config, "_data", {"ocr_agent_secret": "test-secret-123"})
-        credit_ocr._recent_readings.extend([4900, 4900, 5300])
+        for value in [4900, 4900, 5300]:
+            credit_ocr._record_reading(value)
 
         app = web.Application()
         app.router.add_post("/api/ocr/reset", credit_ocr.handle_reset)
@@ -425,7 +568,8 @@ class TestHandleReset:
     @pytest.mark.asyncio
     async def test_rejects_a_wrong_secret_without_clearing_anything(self, monkeypatch):
         monkeypatch.setattr(config, "_data", {"ocr_agent_secret": "test-secret-123"})
-        credit_ocr._recent_readings.extend([4900, 4900])
+        for value in [4900, 4900]:
+            credit_ocr._record_reading(value)
 
         app = web.Application()
         app.router.add_post("/api/ocr/reset", credit_ocr.handle_reset)
@@ -505,7 +649,8 @@ class TestLastReadingSurvivesAReset:
     async def test_a_reset_empties_the_window_but_keeps_the_last_reading(self, monkeypatch):
         """The whole point: these two histories are cleared by different things."""
         monkeypatch.setattr(config, "_data", {"ocr_agent_secret": "test-secret-123"})
-        credit_ocr._recent_readings.extend([4200, 3400, 2400])
+        for value in [4200, 3400, 2400]:
+            credit_ocr._record_reading(value)
         credit_ocr._remember_last_reading(2400)
 
         app = web.Application()
