@@ -647,6 +647,18 @@ async def handle_credit_report(request: web.Request) -> web.Response:
     return web.json_response({"credits": detected, "consensus": consensus})
 
 
+_new_buy_phase_listeners: list = []
+
+
+def on_new_buy_phase(callback) -> None:
+    """
+    Register a coroutine to run whenever the agent reports a new buy
+    phase. "New" here carries the gap guard handle_reset() documents - it
+    is a genuinely new round, not merely another press of B.
+    """
+    _new_buy_phase_listeners.append(callback)
+
+
 async def handle_reset(request: web.Request) -> web.Response:
     """
     POST /api/ocr/reset - clears the reading history. Real bug fix: the
@@ -673,4 +685,20 @@ async def handle_reset(request: web.Request) -> web.Response:
     # way to distinguish this from a pipeline that has never worked. See
     # last_reading() and finding #6.
     log.info("Reading history cleared - a new buy phase has started")
+
+    # This request is the only real "a new round has begun" signal this
+    # backend receives, and the reading window is not the only thing that
+    # cares. Listeners are notified rather than called directly, for the
+    # same reason streamerbot_client fans out events: this module has no
+    # business importing the roulette, and the roulette already imports
+    # this one.
+    for callback in _new_buy_phase_listeners:
+        try:
+            await callback()
+        except Exception:
+            # A listener must never turn the agent's reset into a failure.
+            # From the gaming PC a 500 here is indistinguishable from the
+            # reset not landing, and the agent has no way to retry it.
+            log.exception("A new-buy-phase listener raised - the reset itself still succeeded")
+
     return web.json_response({"status": "ok"})

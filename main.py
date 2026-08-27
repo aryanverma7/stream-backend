@@ -14,8 +14,10 @@ them. The actual logic for each piece lives in its own module.
 import asyncio
 import signal
 
+import credit_ocr
 import health_checks
 import points
+import roulette
 from config import config
 from logger import get_logger
 from roulette import handle_chat_command as handle_roulette_command
@@ -44,6 +46,12 @@ async def main():
     # Outbound connection to Streamer.bot (Section 18's hybrid architecture)
     streamerbot.on_event(forward_chat_to_widgets)
     streamerbot.on_event(handle_roulette_command)
+
+    # The gaming PC's /api/ocr/reset is the only real "a new round has
+    # begun" signal here, and the forced-buy badge needs it as much as the
+    # OCR reading window does - without it the badge only knows how much
+    # time has passed, which is a guess about rounds, not a reading of one.
+    credit_ocr.on_new_buy_phase(roulette.on_new_buy_phase)
     await streamerbot.start()
 
     # Streamlabs tips -> points (Task #6) - genuinely optional at startup:

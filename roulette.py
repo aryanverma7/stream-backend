@@ -129,6 +129,15 @@ class RouletteState:
         self.forced_buy_weapon: str | None = None
         self.forced_buy_phase: str | None = None  # None | "queued" | "active"
         self._forced_buy_task: asyncio.Task | None = None
+        # How many new buy phases have been observed since this forced buy
+        # was queued. The badge's whole life is two of them - the phase the
+        # weapon gets bought in, and the one after, by which point the
+        # round it belonged to is over. Counted rather than inferred from
+        # forced_buy_phase, because the fallback timers can advance that
+        # on their own and then a signal would read the wrong meaning off
+        # it: an "active" badge could be one whose buy phase has arrived,
+        # or one the timer promoted while nothing was happening.
+        self.forced_buy_phases_seen: int = 0
 
 
 _state = RouletteState()
@@ -433,6 +442,7 @@ async def _start_forced_buy(weapon: str) -> None:
     """
     _state.forced_buy_weapon = weapon
     _state.forced_buy_phase = "queued"
+    _state.forced_buy_phases_seen = 0
 
     await widget_hub.broadcast(
         {"type": "forced_buy_queued", "weapon": weapon},
@@ -450,7 +460,10 @@ async def _activate_forced_buy_after_delay(weapon: str, delay: float) -> None:
     # a newer, unrelated result.
     if _state.forced_buy_weapon != weapon:
         return
+    await _activate_forced_buy(weapon)
 
+
+async def _activate_forced_buy(weapon: str) -> None:
     _state.forced_buy_phase = "active"
     await widget_hub.broadcast(
         {"type": "forced_buy_active", "weapon": weapon},
@@ -478,17 +491,57 @@ async def _clear_forced_buy_after_delay(weapon: str, delay: float) -> None:
     await clear_forced_buy()
 
 
+def _cancel_forced_buy_task() -> None:
+    """
+    Drops whichever fallback timer is pending. Called when the real
+    signal arrives, since those timers exist only to stand in for it.
+    """
+    task = _state._forced_buy_task
+    if task is not None and not task.done():
+        task.cancel()
+    _state._forced_buy_task = None
+
+
+async def on_new_buy_phase() -> None:
+    """
+    Registered against credit_ocr.on_new_buy_phase() from main.py - the
+    agent's /api/ocr/reset is the only real "a new round has begun"
+    signal this backend gets, and the forced-buy badge is the other thing
+    that depends on knowing.
+
+    The badge's life is exactly two buy phases: the first is the one the
+    forced weapon actually gets bought in, so the badge becomes "active";
+    by the second, the round it belonged to is over and it goes. The
+    timers in _start_forced_buy/_activate_forced_buy stay as the fallback
+    for a stream where the agent is not running - they are approximations
+    of this event, so this supersedes whichever one is pending rather
+    than racing it.
+    """
+    if _state.forced_buy_weapon is None:
+        return
+
+    _state.forced_buy_phases_seen += 1
+    _cancel_forced_buy_task()
+
+    if _state.forced_buy_phases_seen == 1:
+        await _activate_forced_buy(_state.forced_buy_weapon)
+    else:
+        await clear_forced_buy()
+
+
 async def clear_forced_buy() -> None:
     """
     Drops the forced-buy badge. Called when the round it describes is
-    over (on the timer above), and again when a new roulette starts, in
-    case that happens first.
+    over - on the real buy-phase signal where one arrives, on the fallback
+    timer where it doesn't - and again when a new roulette starts, in case
+    that happens first.
     """
     if _state.forced_buy_weapon is not None:
         await widget_hub.broadcast({"type": "forced_buy_cleared"}, tag="roulette")
         log.info(f"Forced buy cleared: {_state.forced_buy_weapon}")
     _state.forced_buy_weapon = None
     _state.forced_buy_phase = None
+    _state.forced_buy_phases_seen = 0
 
 
 async def _reply_in_chat(platform: str, text: str) -> None:

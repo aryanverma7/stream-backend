@@ -598,6 +598,82 @@ class TestForcedBuyBadge:
         assert roulette._state.forced_buy_weapon is None
 
     @pytest.mark.asyncio
+    async def test_the_first_new_buy_phase_makes_the_badge_active(self, monkeypatch):
+        """
+        The buy phase after a win is the one the weapon actually gets
+        bought in - a real signal for what the queued->active timer can
+        only approximate.
+        """
+        mock_broadcast = AsyncMock()
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", mock_broadcast)
+        roulette._state.forced_buy_weapon = "vandal"
+        roulette._state.forced_buy_phase = "queued"
+
+        await roulette.on_new_buy_phase()
+
+        assert roulette._state.forced_buy_phase == "active"
+        assert roulette._state.forced_buy_weapon == "vandal"
+
+    @pytest.mark.asyncio
+    async def test_the_second_new_buy_phase_clears_the_badge(self, monkeypatch):
+        mock_broadcast = AsyncMock()
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", mock_broadcast)
+        roulette._state.forced_buy_weapon = "vandal"
+        roulette._state.forced_buy_phase = "queued"
+
+        await roulette.on_new_buy_phase()
+        await roulette.on_new_buy_phase()
+
+        assert roulette._state.forced_buy_weapon is None
+        assert roulette._state.forced_buy_phase is None
+
+    @pytest.mark.asyncio
+    async def test_a_timer_that_already_promoted_the_badge_cannot_shift_the_count(self, monkeypatch):
+        """
+        The fallback timer can flip queued->active on its own while
+        nothing is happening. If the signal read its meaning off
+        forced_buy_phase, the very next buy phase - the one the weapon is
+        bought in - would clear the badge instead of activating it.
+        """
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        roulette._state.forced_buy_weapon = "vandal"
+        roulette._state.forced_buy_phase = "active"  # timer got there first
+        roulette._state.forced_buy_phases_seen = 0
+
+        await roulette.on_new_buy_phase()
+
+        assert roulette._state.forced_buy_weapon == "vandal"
+
+    @pytest.mark.asyncio
+    async def test_a_new_buy_phase_with_no_badge_showing_is_a_no_op(self, monkeypatch):
+        mock_broadcast = AsyncMock()
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", mock_broadcast)
+
+        await roulette.on_new_buy_phase()
+
+        mock_broadcast.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_signal_cancels_the_fallback_timer(self, monkeypatch):
+        """
+        Both are trying to do the same job. If the timer still fired
+        afterwards it would advance the badge a second time.
+        """
+        monkeypatch.setattr(
+            config,
+            "_data",
+            {"forced_buy_queued_duration_seconds": 0.02, "forced_buy_active_duration_seconds": 5},
+        )
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+
+        await roulette._start_forced_buy("vandal")
+        await roulette.on_new_buy_phase()   # beats the queued->active timer
+        await asyncio.sleep(0.05)           # ...which would have fired by now
+
+        assert roulette._state.forced_buy_phase == "active"
+        assert roulette._state.forced_buy_weapon == "vandal"
+
+    @pytest.mark.asyncio
     async def test_the_badge_clears_itself_once_the_round_is_over(self, monkeypatch):
         """
         "active" used to be terminal - clear_forced_buy() was only ever
