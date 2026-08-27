@@ -17,15 +17,28 @@ import signal
 import credit_ocr
 import health_checks
 import points
+import points_cloudbot
 import roulette
 from config import config
 from logger import get_logger
 from roulette import handle_chat_command as handle_roulette_command
 from server import run_server
-from streamerbot_client import forward_chat_to_widgets, streamerbot
+from streamerbot_client import forward_chat_to_widgets, parse_chat_message, streamerbot
 from streamlabs_socket import start_tips_listener, stop_tips_listener
 
 log = get_logger("Main")
+
+
+async def _forward_chat_to_cloudbot_points(event: dict):
+    """
+    Hands parsed chat to the Cloudbot points backend, which is waiting on
+    replies to the !points/!addpoints/!removepoints it sends. Reads the
+    event through parse_chat_message() for the same reason every other
+    listener does - so no two of them can disagree about the payload shape.
+    """
+    chat = parse_chat_message(event)
+    if chat is not None:
+        await points_cloudbot.handle_chat_event(chat)
 
 
 async def main():
@@ -46,6 +59,13 @@ async def main():
     # Outbound connection to Streamer.bot (Section 18's hybrid architecture)
     streamerbot.on_event(forward_chat_to_widgets)
     streamerbot.on_event(handle_roulette_command)
+
+    # Cloudbot answers in chat, so the points backend that talks to it has
+    # to read chat too. Registered unconditionally rather than only when
+    # points_backend is "cloudbot": the backend is switchable at runtime
+    # from the dashboard, and a listener that was never attached at
+    # startup would leave every lookup timing out until a restart.
+    streamerbot.on_event(_forward_chat_to_cloudbot_points)
 
     # The gaming PC's /api/ocr/reset is the only real "a new round has
     # begun" signal here, and the forced-buy badge needs it as much as the

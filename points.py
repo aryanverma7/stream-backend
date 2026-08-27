@@ -7,7 +7,14 @@ Points ledger, with two interchangeable backends behind one API.
                        thing: the same balance viewers see when they type
                        !points in chat, accruing on its own with watch
                        time.
+  "cloudbot"         - the SAME wallet as "api", reached by asking
+                       Streamlabs Cloudbot in chat instead of over REST
+                       (points_cloudbot.py). Needs no approval, because
+                       Cloudbot is already in the channel.
   "local"            - a flat JSON file on this machine (points_local.py).
+                       Offline testing only: it holds nothing a viewer
+                       earned by watching, so `!points` and the roulette
+                       disagree about what anyone has.
 
 The switch exists because Streamlabs gates the Loyalty Points API behind
 a manual approval step that is separate from OAuth scopes entirely. A
@@ -56,6 +63,7 @@ import asyncio
 
 import aiohttp
 
+import points_cloudbot
 import points_local
 from config import config
 from logger import get_logger
@@ -64,7 +72,7 @@ log = get_logger("Points")
 
 BASE_URL = "https://streamlabs.com/api/v2.0/points"
 
-BACKENDS = ("api", "local")
+BACKENDS = ("api", "cloudbot", "local")
 DEFAULT_BACKEND = "api"
 
 # Global lock (Section 7's confirmed fix for the read-modify-write race
@@ -148,9 +156,12 @@ async def _api_grant_points(username: str, amount: int) -> int:
 # ---------- Public API - identical whichever backend is live ----------
 
 async def get_user_points(username: str) -> int:
-    """Read a specific user's current balance. Raises on any HTTP error."""
-    if backend_name() == "local":
+    """Read a specific user's current balance. Raises if it can't be read."""
+    backend = backend_name()
+    if backend == "local":
         return await points_local.get_user_points(username)
+    if backend == "cloudbot":
+        return await points_cloudbot.get_user_points(username)
     return await _api_get_user_points(username)
 
 
@@ -159,8 +170,11 @@ async def subtract_points(username: str, amount: int) -> None:
     Decrement, without the grant lock: neither backend implements this as
     a read-modify-write that could interleave (see _grant_lock's comment).
     """
-    if backend_name() == "local":
+    backend = backend_name()
+    if backend == "local":
         return await points_local.subtract_points(username, amount)
+    if backend == "cloudbot":
+        return await points_cloudbot.subtract_points(username, amount)
     return await _api_subtract_points(username, amount)
 
 
@@ -175,6 +189,9 @@ async def grant_points(username: str, amount: int) -> int:
     Returns the new balance.
     """
     async with _grant_lock:
-        if backend_name() == "local":
+        backend = backend_name()
+        if backend == "local":
             return await points_local.grant_points(username, amount)
+        if backend == "cloudbot":
+            return await points_cloudbot.grant_points(username, amount)
         return await _api_grant_points(username, amount)

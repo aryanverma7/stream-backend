@@ -42,7 +42,7 @@ class TestBackendName:
         handler. A typo in config.json should cost a log line, not the
         roulette.
         """
-        monkeypatch.setattr(config, "_data", {"points_backend": "cloudbot"})
+        monkeypatch.setattr(config, "_data", {"points_backend": "streamlabs"})
         assert points.backend_name() == "api"
 
 
@@ -152,6 +152,19 @@ class TestBackendDispatch:
         await points.grant_points("viewer", 500)
         await points.get_user_points("viewer")
         await points.subtract_points("viewer", 100)
+
+    @pytest.mark.asyncio
+    async def test_the_cloudbot_backend_is_reachable_through_the_dispatcher(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"points_backend": "cloudbot"})
+        called = {}
+
+        async def fake_read(username):
+            called["username"] = username
+            return 19
+
+        monkeypatch.setattr(points.points_cloudbot, "get_user_points", fake_read)
+        assert await points.get_user_points("someviewer") == 19
+        assert called["username"] == "someviewer"
 
     @pytest.mark.asyncio
     async def test_the_api_backend_is_still_the_one_used_by_default(self, monkeypatch):
