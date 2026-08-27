@@ -152,6 +152,11 @@ async def get_status(request: web.Request) -> web.Response:
         # Streamer.bot requires authentication for, so chat replies die.
         "streamerbot_authenticated": streamerbot.is_authenticated,
         "credit_prediction": _credit_prediction(),
+        # Which points ledger is live. "local" means the flat-file
+        # stand-in, not the balance viewers see with !points in chat -
+        # a distinction that is invisible from the numbers alone, so the
+        # panel has to say it out loud. See points.py's docstring.
+        "points_backend": points.backend_name(),
         "widget_connections": {
             "total": widget_hub.connected_count(),
             "roulette": widget_hub.connected_count("roulette"),

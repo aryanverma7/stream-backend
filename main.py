@@ -15,6 +15,7 @@ import asyncio
 import signal
 
 import health_checks
+import points
 from config import config
 from logger import get_logger
 from roulette import handle_chat_command as handle_roulette_command
@@ -27,6 +28,7 @@ log = get_logger("Main")
 
 async def main():
     log.info("Mac Mini backend starting up")
+    log.info(f"Points ledger: {points.backend_name()}")
 
     # Widget-facing HTTP + WebSocket server
     runner = await run_server(

@@ -16,6 +16,11 @@ __pycache__/
 # Test cache
 .pytest_cache/
 
+# Local points ledger - real viewer usernames and their balances. Written
+# by points_local.py when points_backend is "local"; not a secret, but not
+# ours to publish either.
+points_local.json
+
 # Runtime logs
 logs/
 *.log

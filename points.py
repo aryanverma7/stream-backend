@@ -1,8 +1,34 @@
 """
-Streamlabs Loyalty Points REST API wrapper.
+Points ledger, with two interchangeable backends behind one API.
 
-Confirmed directly against dev.streamlabs.com's own reference docs (project
-notes, Section 7):
+`points_backend` in config.json selects between them:
+
+  "api"    (default) - Streamlabs' Loyalty Points REST API. The real
+                       thing: the same balance viewers see when they type
+                       !points in chat, accruing on its own with watch
+                       time.
+  "local"            - a flat JSON file on this machine (points_local.py).
+
+The switch exists because Streamlabs gates the Loyalty Points API behind
+a manual approval step that is separate from OAuth scopes entirely. A
+token issued with points.read and points.write, for the app owner's own
+channel, still answers every call with:
+
+    401 "Access to Loyalty points API, requires special approval. Please
+    request for loyalty access from third party app (OAuth Clients)
+    dashboard. We will review and get back to you."
+
+That approval is requested from the Streamlabs developer dashboard and
+granted on their schedule, not ours. Rather than leave the roulette
+untestable until it lands, the local backend stands in - see
+points_local.py's own docstring for what it does and does not give you.
+Flipping back is a config edit and takes effect immediately; no code
+here changes.
+
+---
+
+The Streamlabs implementation below was confirmed directly against
+dev.streamlabs.com's own reference docs (project notes, Section 7):
   - GET  /points/user_points        -> read a user's current balance
   - POST /points/subtract           -> atomic/relative decrement (confirmed
                                         via docs: "the points you want to
@@ -12,22 +38,25 @@ notes, Section 7):
                                         to the user") - there is no dedicated
                                         single-user "add" endpoint, so
                                         granting points is read -> add ->
-                                        set, wrapped in a lock below.
+                                        set, wrapped in the lock below.
 
 NOTE on a couple of details not yet empirically confirmed (flagged rather
 than silently assumed, matching the project's "verify, don't assume"
-principle - these are checklist items #10/#11 in the project notes):
+principle - these are checklist items #10/#11 in the project notes).
+Neither can be settled until the approval above comes through, since
+every call 401s before reaching the logic in question:
   - Whether `user_point_edit` needs a `channel` field like `subtract` does
     (docs didn't show one). Left out here; add it if a real test call
     returns an error asking for it.
   - Exact placement of the access token (header vs query param) - using an
     Authorization header below, per Streamlabs' OAuth docs saying either a
-    header or a parameter works. Confirm during Task #5's actual test pass.
+    header or a parameter works.
 """
 import asyncio
 
 import aiohttp
 
+import points_local
 from config import config
 from logger import get_logger
 
@@ -35,12 +64,42 @@ log = get_logger("Points")
 
 BASE_URL = "https://streamlabs.com/api/v2.0/points"
 
+BACKENDS = ("api", "local")
+DEFAULT_BACKEND = "api"
+
 # Global lock (Section 7's confirmed fix for the read-modify-write race
 # condition) - functionally equivalent to a serialized queue, since
-# asyncio.Lock queues waiters in arrival order. Only needed around the
-# grant() function below, NOT around subtract() which is already atomic.
+# asyncio.Lock queues waiters in arrival order. Held in the dispatcher
+# below rather than in either backend, because both of them grant points
+# by reading a balance and writing back a total derived from it, and both
+# are therefore racy in the same way. Only needed around grant, NOT around
+# subtract: Streamlabs applies that one server-side as a relative
+# decrement, and the local ledger's subtract never yields mid-update.
 _grant_lock = asyncio.Lock()
 
+
+def backend_name() -> str:
+    """
+    Which ledger is live. Surfaced on /api/status so the dashboard can say
+    so out loud - a local ledger reading 0 for a viewer who genuinely has
+    thousands of Streamlabs points is not a bug, but it looks exactly like
+    one if nothing on screen mentions which ledger is being read.
+
+    An unrecognized value falls back to the default rather than raising:
+    this is read on every points call, and a typo in config.json should
+    not take chat down with it. It is logged loudly instead.
+    """
+    name = config.get("points_backend", DEFAULT_BACKEND)
+    if name not in BACKENDS:
+        log.error(
+            f"points_backend is {name!r}, which is not one of {BACKENDS} - "
+            f"falling back to {DEFAULT_BACKEND!r}."
+        )
+        return DEFAULT_BACKEND
+    return name
+
+
+# ---------- Streamlabs REST API backend ----------
 
 def _headers() -> dict:
     token = config.get("streamlabs_access_token", "")
@@ -49,8 +108,7 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-async def get_user_points(username: str) -> int:
-    """Read a specific user's current balance. Raises on any HTTP error."""
+async def _api_get_user_points(username: str) -> int:
     channel = config.get("streamlabs_channel", "")
     params = {"username": username, "channel": channel}
     async with aiohttp.ClientSession() as session:
@@ -61,12 +119,7 @@ async def get_user_points(username: str) -> int:
             return data.get("points", 0)
 
 
-async def subtract_points(username: str, amount: int) -> None:
-    """
-    Atomic decrement - confirmed safe to call directly without the lock,
-    since Streamlabs applies this as a relative subtraction server-side,
-    not a read-modify-write on our end.
-    """
+async def _api_subtract_points(username: str, amount: int) -> None:
     channel = config.get("streamlabs_channel", "")
     body = {"username": username, "channel": channel, "points": amount}
     async with aiohttp.ClientSession() as session:
@@ -75,12 +128,40 @@ async def subtract_points(username: str, amount: int) -> None:
             log.info(f"Subtracted {amount} points from {username}")
 
 
-async def _set_points_absolute(username: str, new_total: int) -> None:
+async def _api_set_points_absolute(username: str, new_total: int) -> None:
     body = {"username": username, "points": new_total}
     async with aiohttp.ClientSession() as session:
         async with session.post(f"{BASE_URL}/user_point_edit", json=body, headers=_headers()) as resp:
             resp.raise_for_status()
             log.info(f"Set {username}'s balance to {new_total}")
+
+
+async def _api_grant_points(username: str, amount: int) -> int:
+    """Read -> add -> set. Called with _grant_lock already held."""
+    current = await _api_get_user_points(username)
+    new_total = current + amount
+    await _api_set_points_absolute(username, new_total)
+    log.info(f"Granted {amount} points to {username}: {current} -> {new_total}")
+    return new_total
+
+
+# ---------- Public API - identical whichever backend is live ----------
+
+async def get_user_points(username: str) -> int:
+    """Read a specific user's current balance. Raises on any HTTP error."""
+    if backend_name() == "local":
+        return await points_local.get_user_points(username)
+    return await _api_get_user_points(username)
+
+
+async def subtract_points(username: str, amount: int) -> None:
+    """
+    Decrement, without the grant lock: neither backend implements this as
+    a read-modify-write that could interleave (see _grant_lock's comment).
+    """
+    if backend_name() == "local":
+        return await points_local.subtract_points(username, amount)
+    return await _api_subtract_points(username, amount)
 
 
 async def grant_points(username: str, amount: int) -> int:
@@ -91,13 +172,9 @@ async def grant_points(username: str, amount: int) -> int:
     Section 7/14's design: testing through the dashboard exercises the
     SAME code path as the real thing, not a separate simulation of it.
 
-    Wrapped in the global lock since this is read -> compute -> write,
-    which is NOT atomic on Streamlabs' side (see module docstring).
     Returns the new balance.
     """
     async with _grant_lock:
-        current = await get_user_points(username)
-        new_total = current + amount
-        await _set_points_absolute(username, new_total)
-        log.info(f"Granted {amount} points to {username}: {current} -> {new_total}")
-        return new_total
+        if backend_name() == "local":
+            return await points_local.grant_points(username, amount)
+        return await _api_grant_points(username, amount)

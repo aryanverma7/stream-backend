@@ -16,6 +16,7 @@
   "streamlabs_access_token": "",
   "streamlabs_refresh_token": "",
   "streamlabs_channel": "",
+  "points_backend": "api",
   "points_exchange_rate_per_inr": 10,
 
   "roulette_trigger_cost": 500,
