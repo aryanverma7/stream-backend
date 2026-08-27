@@ -54,10 +54,11 @@ does NOT protect against: a single misread that comes out anomalously
 LOW would incorrectly become the new floor for as long as it stays in
 the window - the window was shrunk from 8 to 5 and then to 4 readings
 specifically to limit how long such a bad reading can linger before
-rolling off. Finding #7 below replaces the minimum outright and closes
-that hole as a side effect; the reasoning here is kept because it is
-still the reason a plain "latest reading wins" is not enough on its
-own.
+rolling off. Finding #7 below replaces the minimum outright, and finding
+#8 settles what happens to that anomalously low reading: it is trusted,
+because it cannot be told apart from a real purchase and the cost of
+disbelieving a real purchase is higher. The reasoning here is kept
+because it is still the reason a rise is not taken on one sighting.
 
 Real-world finding #4: the number is prefixed on screen by Valorant's own
 credit glyph (a custom icon, closest standard codepoint U+00A4), and
@@ -76,11 +77,12 @@ game glyph the stock `eng` model was never trained on:
   the leading 1 produces a number that is still under the cap and still a
   multiple of 10 (a real 900 read as 1900). Nothing in the text alone can
   distinguish that from a genuine 1900. It survives in practice only
-  because the misread is intermittent and the consensus (finding #7)
-  ignores any value the window holds only once, so the clean frames in
-  the same burst win - but if this ever shows up as a systematic +10000
-  or +1000 offset rather than an occasional one, the next lever is
-  upscaling the crop before OCR, not more validation.
+  because the misread is intermittent and inflating, and an inflating
+  value is the one direction the consensus still refuses on a single
+  sighting (findings #7 and #8), so the clean frames in the same burst
+  win - but if this ever shows up as a systematic +10000 or +1000 offset
+  rather than an occasional one, the next lever is upscaling the crop
+  before OCR, not more validation.
 
 Real-world finding #5: this handler used to call Tesseract directly, and
 Tesseract is a blocking subprocess call, so every capture froze the whole
@@ -97,11 +99,11 @@ Mac Mini; more workers than cores turns parallelism into contention. Two
 workers do mean two readings can finish out of the order they were sent
 in, so the newest entry in the window is not always the newest capture.
 That mattered not at all to a consensus that took a minimum, and it does
-matter to one that prefers the latest - which is precisely why finding
-#7's rule requires a value to be corroborated rather than simply taking
-the last element. A single straggler arriving late cannot move the
-answer; a genuine new value, read ten times a second, moves it within a
-frame or two.
+matter to one that prefers the latest - which is why finding #7 anchors
+on a corroborated value rather than simply taking the last element. The
+straggler this actually protects against is the pre-purchase one, which
+arrives HIGHER than the value that replaced it, and an unconfirmed rise
+is precisely what finding #8 still refuses.
 
 Real-world finding #6: the reading history is cleared at the start of
 every buy phase, which is correct for the consensus and terrible for
@@ -124,17 +126,63 @@ higher, so the minimum still tracked the right thing while credits only
 fell - but a refund inside the buy phase raises "min next round", and no
 minimum can ever follow a value upward.
 
-The consensus is therefore the first value to be seen
+The consensus is therefore anchored on the first value to be seen
 _CORROBORATING_READINGS times while scanning BACK from the newest
-reading, falling back to the plain newest while the window is still too
-short for anything to repeat. Counting only what has been scanned so far,
-rather than the whole window, is what makes this survive the out-of-order
-completion described under finding #5: a stale straggler that lands last
-is a single sighting at the point it is reached, and the older readings
-that agree with it are behind it and never counted. It tracks the value
-in both directions and - unlike the minimum - rejects a one-off misread
-whichever side it lands on, which retires finding #3's one stated
-remaining weakness.
+reading, rather than on the plain smallest. Counting only what has been
+scanned so far, rather than the whole window, is what makes this survive
+the out-of-order completion described under finding #5: a stale straggler
+that lands last is a single sighting at the point it is reached, and the
+older readings that agree with it are behind it and never counted.
+Finding #8 below narrows where that corroboration requirement applies.
+
+Real-world finding #8, from a real log of a fast buy:
+
+    OK - this reading: 6200 | current consensus: 6200   (x5)
+    OK - this reading: 3300 | current consensus: 6200
+    422 - no number found in the captured region.       (x15)
+
+The purchase landed, the menu was closed immediately after it, and the
+reported consensus stayed on the pre-purchase 6200 - the single worst
+answer the window could have given, since it tells the roulette the
+streamer can afford a gun they have just spent the credits for.
+
+Requiring corroboration in BOTH directions was the mistake. The value
+that matters most is the last one before the menu closes, and that is
+exactly the value with the fewest chances to be read twice: at ten
+captures a second, a purchase confirmed a fifth of a second before Esc
+gets one or two frames and no more. So a rule that ignores anything seen
+once systematically discards the final purchase of every quick buy - not
+occasionally, but every time - to guard against a misread that is rare.
+
+The two directions are not symmetrical, and that is what the rule now
+uses:
+
+  A reading LOWER than the corroborated value is what spending looks
+  like, which is the normal, expected motion of "min next round" within
+  a buy phase. It is taken immediately, uncorroborated.
+
+  A reading HIGHER than the corroborated value is either a refund - much
+  rarer, and one you keep shopping after, so the next frame corroborates
+  it within a tenth of a second - or a misread of the classic inflating
+  kind (finding #4's leading 1, a high digit substitution). It still
+  needs a second sighting.
+
+The error each choice makes when it is wrong also points the same way. An
+under-estimate shrinks the votable roster: viewers get fewer options for
+one session. An over-estimate offers weapons the streamer cannot buy,
+which is the exact failure this whole feature exists to prevent. Erring
+low is the cheap side.
+
+What this deliberately does NOT protect against, stated plainly because
+finding #3 tried to and could not: a dropped-digit misread (a real 2400
+read as 240) arriving as the very last valid frame before the menu
+closes is trusted. There is nothing in the data to separate it from a
+genuine purchase - both are a single low reading with nothing after it.
+The guards that would catch it (reject a value that is exactly a tenth of
+the corroborated one, reject a value that is the corroborated one with a
+digit deleted) each reject real buys too - 4000 credits spent down to 400
+is an Odin and light shields - and rejecting a real buy reproduces the
+bug above, so no guard is worth its false positives here.
 
 Two looks at one buy phase is not the same as two rounds, and the
 difference is time. Readings older than _READING_MAX_AGE_SECONDS are
@@ -264,11 +312,15 @@ _READING_HISTORY_SIZE = 10
 _recent_readings: deque = deque(maxlen=_READING_HISTORY_SIZE)
 
 # How many times a value has to be seen, scanning back from the newest
-# reading, before the consensus will report it. Two, not more: at ten
-# captures a second anything really on screen is read again within a tenth
-# of a second, so this costs essentially no lag, while a value seen once
-# is either a misread or a straggler that finished out of order (finding
-# #5) and must not be allowed to move the answer.
+# reading, for it to become the anchor the newest reading is judged
+# against. Two, not more: at ten captures a second anything really on
+# screen is read again within a tenth of a second, so this costs
+# essentially no lag.
+#
+# Since finding #8 this gates only an UPWARD move away from that anchor.
+# A downward one is taken on a single sighting, because the last reading
+# before the menu closes is both the one that matters most and the one
+# least likely to ever be read twice.
 _CORROBORATING_READINGS = 2
 
 # When the newest reading in the window is older than this, the window is
@@ -408,20 +460,12 @@ def _window_is_stale() -> bool:
     return (time.time() - _window_last_append_at) > _READING_MAX_AGE_SECONDS
 
 
-def get_predicted_credits() -> "int | None":
+def _corroborated_value() -> "int | None":
     """
-    Returns the first value seen _CORROBORATING_READINGS times while
-    scanning back from the newest reading. If the window is too short for
-    anything to have repeated yet, the newest reading is returned as the
-    best available guess. With no readings - or with a window too old to
-    belong to this round - returns None.
-
-    "Most recent, corroborated" rather than "smallest" (finding #7): one
-    buy phase now spans however many times the menu was opened, so the
-    later look is the one that reflects what has actually been bought,
-    and a refund can move the true value UP, which a minimum can never
-    follow. Requiring a second sighting is what keeps that from being
-    fragile.
+    The newest value the window has actually confirmed: the first one seen
+    _CORROBORATING_READINGS times while scanning BACK from the newest
+    reading. None while the window is still too short for anything to have
+    repeated.
 
     The scan-so-far count is load-bearing and not the same as counting the
     whole window. A reading that finished out of order (finding #5) lands
@@ -430,6 +474,34 @@ def get_predicted_credits() -> "int | None":
     the whole window would let them vouch for it and undo the purchase.
     Counting only what has been scanned reaches that straggler first, sees
     it once, and moves on.
+    """
+    seen = Counter()
+    for value in reversed(_recent_readings):
+        seen[value] += 1
+        if seen[value] >= _CORROBORATING_READINGS:
+            return value
+    return None
+
+
+def get_predicted_credits() -> "int | None":
+    """
+    Returns the newest reading, unless it is an unconfirmed rise above the
+    value the window has corroborated - in which case the corroborated
+    value stands until the rise is seen a second time. With no readings -
+    or with a window too old to belong to this round - returns None.
+
+    "Most recent" rather than "smallest" (finding #7): one buy phase now
+    spans however many times the menu was opened, so the later look is the
+    one that reflects what has actually been bought, and a refund can move
+    the true value UP, which a minimum can never follow.
+
+    Asymmetric rather than "most recent, corroborated" (finding #8): a
+    drop is what spending looks like and is taken on a single sighting,
+    because the reading that matters most - the one taken right before the
+    menu closes - is also the one with the fewest chances to be read
+    twice. A rise is either a refund, which you keep shopping after and so
+    is corroborated a frame later anyway, or an inflating misread of
+    finding #4's kind, so it waits.
 
     Consumed by roulette.trigger_roulette(), which reads this ONCE per
     session to decide which weapons are votable. Returning None matters as
@@ -440,16 +512,16 @@ def get_predicted_credits() -> "int | None":
     if not _recent_readings or _window_is_stale():
         return None
 
-    seen = Counter()
-    for value in reversed(_recent_readings):
-        seen[value] += 1
-        if seen[value] >= _CORROBORATING_READINGS:
-            return value
+    newest = _recent_readings[-1]
+    corroborated = _corroborated_value()
 
-    # Nothing was seen twice, which in practice means one or two frames
-    # into a burst. The newest reading is still a better answer than none:
-    # the roulette's alternative to a number is the unfiltered roster.
-    return _recent_readings[-1]
+    # Nothing corroborated yet means one or two frames into a burst. The
+    # newest reading is still a better answer than none: the roulette's
+    # alternative to a number is the unfiltered roster.
+    if corroborated is None or newest <= corroborated:
+        return newest
+
+    return corroborated
 
 
 def recent_readings() -> list:

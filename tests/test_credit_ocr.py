@@ -197,10 +197,12 @@ class TestContainsExpectedLabel:
 
 class TestCorroboratedLatestConsensus:
     """
-    Finding #7. The consensus is the most recent reading the window
-    corroborates, not the smallest one in it - one buy phase now spans
-    however many times the menu was opened, so the later look is the one
-    that reflects what has actually been bought.
+    Findings #7 and #8. The consensus is the most recent reading, not the
+    smallest one in the window - one buy phase now spans however many
+    times the menu was opened, so the later look is the one that reflects
+    what has actually been bought. A reading that RISES above what the
+    window has corroborated waits for a second sighting; one that falls
+    does not.
     """
 
     def test_no_readings_yet_returns_none(self):
@@ -249,16 +251,49 @@ class TestCorroboratedLatestConsensus:
             credit_ocr._record_reading(value)
         assert credit_ocr.get_predicted_credits() == 4900
 
-    def test_a_one_off_LOW_misread_at_the_end_is_ignored_too(self):
+    def test_a_ONE_OFF_LOW_reading_at_the_end_is_taken_anyway(self):
         """
-        Finding #3's one stated remaining weakness, retired. Under the
-        minimum, a single dropped digit (2400 read as 240) became the floor
-        and held it for the rest of the window - and 240 is a real enough
-        looking budget to strip the roulette down to pistols.
+        Finding #8, and a deliberate reversal: this window used to report
+        2400 on the theory that a single low reading is a dropped digit.
+        The same shape is what a purchase made a fraction of a second
+        before Esc looks like, and that is much the commoner cause, so the
+        low reading is now taken.
+
+        The trade is stated in the docstring on the other side: if this
+        one really was a misread the roster comes out too small for one
+        session, where disbelieving it offers weapons that have already
+        been paid for.
         """
         for value in [2400, 2400, 2400, 240]:
             credit_ocr._record_reading(value)
+        assert credit_ocr.get_predicted_credits() == 240
+
+    def test_the_exact_reported_log_a_purchase_on_the_last_frame_before_Esc(self):
+        """
+        The real capture log that prompted finding #8, verbatim: five
+        readings of 6200, then one 3300 as the purchase landed, then
+        nothing but blank frames because the menu was already closed.
+
+        Reporting 6200 here is the single worst answer available - it
+        tells the roulette the streamer can still afford the gun they have
+        just bought.
+        """
+        for value in [6200, 6200, 6200, 6200, 6200, 3300]:
+            credit_ocr._record_reading(value)
+        assert credit_ocr.get_predicted_credits() == 3300
+
+    def test_a_rise_still_waits_for_a_second_sighting(self):
+        """
+        The asymmetry stated on its own. Spending is the expected motion
+        of "min next round" within a buy phase; a rise is either a refund
+        - which you keep shopping after, so the next frame confirms it -
+        or finding #4's inflating misread.
+        """
+        for value in [2400, 2400, 2400, 3300]:
+            credit_ocr._record_reading(value)
         assert credit_ocr.get_predicted_credits() == 2400
+        credit_ocr._record_reading(3300)
+        assert credit_ocr.get_predicted_credits() == 3300
 
     def test_a_late_straggler_from_before_the_purchase_cannot_undo_it(self):
         """
@@ -286,18 +321,16 @@ class TestCorroboratedLatestConsensus:
             credit_ocr._record_reading(value)
         assert credit_ocr.get_predicted_credits() == 2400
 
-    def test_the_newest_value_takes_over_as_soon_as_it_is_seen_twice(self):
+    def test_a_purchase_takes_effect_on_the_very_frame_it_is_first_read(self):
         """
-        The lag the corroboration rule costs, pinned so it stays small. At
-        ten captures a second the switch happens within about a tenth of a
-        second of the purchase.
+        There is no lag at all on the way down since finding #8 - which is
+        the whole point, because the frame a purchase is first read on is
+        sometimes the only one there will ever be.
         """
         for value in [4200, 4200, 4200]:
             credit_ocr._record_reading(value)
         credit_ocr._record_reading(2400)
-        assert credit_ocr.get_predicted_credits() == 4200  # not corroborated yet
-        credit_ocr._record_reading(2400)
-        assert credit_ocr.get_predicted_credits() == 2400  # one frame later
+        assert credit_ocr.get_predicted_credits() == 2400
 
     def test_older_readings_roll_off_once_the_window_is_full(self):
         oldest = [1110, 2220, 3330]
@@ -312,6 +345,18 @@ class TestCorroboratedLatestConsensus:
 
     def test_two_readings_deep_the_corroboration_requirement_is_exactly_two(self):
         assert credit_ocr._CORROBORATING_READINGS == 2
+
+    def test_a_rise_that_is_corroborated_by_a_straggler_behind_it_is_still_refused(self):
+        """
+        The two rules together on the case that needs both. The pre-purchase
+        4200 finished out of order (finding #5) and landed last; the other
+        4200 in the window is OLDER than the 2400s, so the scan-so-far count
+        never reaches it, and the rise is left uncorroborated and refused.
+        """
+        for value in [4200, 2400, 2400, 4200]:
+            credit_ocr._record_reading(value)
+        assert credit_ocr._corroborated_value() == 2400
+        assert credit_ocr.get_predicted_credits() == 2400
 
     def test_the_window_is_about_one_second_at_the_agents_real_capture_rate(self):
         """
