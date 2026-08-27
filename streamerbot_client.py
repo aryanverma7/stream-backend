@@ -367,6 +367,14 @@ class StreamerBotClient:
 
         if status != "ok":
             log.warning(f"Streamer.bot rejected request {request_id or '<no id>'}: {payload}")
+        else:
+            # Accepted responses are logged too, which for SendMessage is
+            # the difference between three outcomes that were previously
+            # one: Streamer.bot took the message and something downstream
+            # dropped it; Streamer.bot refused it; or Streamer.bot never
+            # answered at all, which is what an unrecognized request shape
+            # looks like. Without this line all three read as silence.
+            log.info(f"Streamer.bot accepted request {request_id or '<no id>'}: {payload}")
 
     async def _connect_and_listen(self):
         url = config.get("streamerbot_ws_url", "ws://localhost:8080/")
