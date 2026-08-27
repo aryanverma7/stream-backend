@@ -51,9 +51,37 @@ Open **Servers/Clients -> WebSocket Server** and set:
 | Port | `8080` | Matches the default in `config.example.json`. Any port works as long as both sides agree. |
 | Endpoint | `/` | The backend's URL ends in `/`. |
 | Auto Start | on | Otherwise the server is down after every reboot and the backend just retries forever. |
-| Authentication | **off** | The backend's client does not implement Streamer.bot's authentication handshake. See the note at the end. |
+| Authentication | **on** | Required for chat replies — see below. |
+| Password | a long random string | This goes into `config.json` as `streamerbot_ws_password`. |
+| Enforce | **on** | Requires authentication before *any* request, not just the privileged ones. |
 
 Then click **Start**. The status indicator should read that the server is listening.
+
+### Why authentication is on rather than off
+
+Streamer.bot marks `SendMessage` as **Authentication Required**, and it is the only request
+that carries that label. Chat replies — the roulette's announcements, and the `@user <reason>`
+lines when a vote is refused — are all `SendMessage`, so authentication is not merely a
+hardening step here; without it the replies are the feature most likely to stop working.
+
+**Enforce** extends the requirement to every request, including `Subscribe`. That is what
+makes the password actually protect the port: with Enforce off, an unauthenticated client can
+still subscribe and read every message in your chat. Turn it on.
+
+The backend implements the handshake (`streamerbot_client._authentication_hash`), which is the
+same challenge-response scheme obs-websocket uses: Streamer.bot's `Hello` carries a per-connection
+`salt` and `challenge`, and the answer is
+`base64(sha256(base64(sha256(password + salt)) + challenge))`. The challenge changes every
+connection, so an answer captured off the wire cannot be replayed onto a later one.
+
+Put the same password in `config.json` on the Mac Mini:
+
+```json
+"streamerbot_ws_password": "the-long-random-string-you-set"
+```
+
+`config.json` is gitignored and must stay that way — this password grants the ability to read
+your chat and post as your bot account.
 
 ## 3. Let the Mac Mini through the Windows firewall
 
@@ -65,9 +93,9 @@ setup allows:
 - Under the rule's **Scope** tab, set the remote address to the Mac Mini's IP specifically,
   rather than leaving it open to any address.
 
-This matters because the WebSocket server has authentication disabled: anything that can
-reach port 8080 can send chat as the bot account and read every chat message. Keeping it
-reachable only from the Mac Mini, on the home network only, is what makes that acceptable.
+The password is the real control now, so this is defence in depth rather than the only line —
+but it is worth the two minutes. An exposed port is still something to probe and still
+something that can be knocked over, whether or not a password guards what is behind it.
 
 ## 4. Point the backend at the gaming PC
 
@@ -77,6 +105,8 @@ active adapter — typically `192.168.x.x`), then edit `config.json` on the Mac 
 ```json
 "streamerbot_ws_url": "ws://192.168.1.42:8080/"
 ```
+
+(Along with `streamerbot_ws_password` from step 2.)
 
 Restart the backend afterwards:
 
@@ -95,30 +125,49 @@ Two things have to be true, and only one of them is obvious. Watch
 
 ```
 Connected to Streamer.bot
+Answering Streamer.bot's authentication challenge
+Authenticated with Streamer.bot
 Subscribing to Streamer.bot events: {'Twitch': ['ChatMessage'], 'YouTube': ['Message']}
 Streamer.bot accepted the event subscription: ...
 ```
+
+That order is not cosmetic. With Enforce on, a `Subscribe` sent before `Authenticate` is
+rejected, so the backend waits for the `Hello`, answers the challenge, and only subscribes once
+the answer is accepted.
 
 A socket that opens but whose subscription is never accepted delivers **zero** events while
 looking completely healthy — an open connection and a quiet chat are indistinguishable from
 the outside. That is why the subscription is tracked separately and reported: the admin
 dashboard's status panel shows Streamer.bot as connected *and* warns
 "Connected, but no event subscription - no chat command can fire" when only the first half
-is true. `/api/status` exposes both as `streamerbot_connected` and `streamerbot_subscribed`.
+is true. `/api/status` exposes all three as `streamerbot_connected`, `streamerbot_authenticated`
+and `streamerbot_subscribed`. `streamerbot_authenticated` is `null` when the server never issued
+a challenge, so an unauthenticated setup is not flagged as a failure — only a refused answer is.
 
 Then type `!roulette` in chat. The roulette overlay should open in OBS, and the bot account
 should announce the session in chat.
 
-## A note on authentication and chat replies
+## When something is wrong
 
-Streamer.bot documents `SendMessage` as requiring authentication on its WebSocket server. In
-practice, with the server's authentication toggle off, requests are accepted as sent. If
-replies do come back rejected, the backend logs each one:
+Each failure has its own log line and its own dashboard warning, because they fail in
+different places and the symptom — a quiet chat — is identical for all of them.
 
-```
-Streamer.bot rejected request send-N: {...}
-```
+| Log line | What it means |
+| --- | --- |
+| `Connecting to Streamer.bot at ...` repeating | Nothing is listening at that address. Wrong `streamerbot_ws_url`, server not started, or the firewall rule is missing. |
+| `Streamer.bot REJECTED authentication` | `streamerbot_ws_password` does not match the server's password. |
+| `Streamer.bot asked us to authenticate but streamerbot_ws_password is empty` | The password was never put in `config.json`. |
+| `Streamer.bot REJECTED the event subscription` | With Enforce on, this normally follows a failed authentication — fix that first. |
+| `Streamer.bot rejected request send-N` | A `SendMessage` was refused after everything else succeeded. |
 
-Set `"roulette_chat_replies_enabled": false` in `config.json` to silence replies wholesale
-rather than log a rejection per command. Reading chat and running the roulette continue to
-work with replies off; only the viewer-facing announcements and refusal messages stop.
+The dashboard shows the same three states without reading logs: connected, subscribed, and
+authenticated. A failed authentication reads "Authentication refused - check
+streamerbot_ws_password."
+
+The backend subscribes even when authentication fails, deliberately: with Enforce **off** a
+wrong password still leaves chat readable, and reading chat is most of what the roulette needs.
+That is a degraded mode, not a working one — the replies will be refused.
+
+To turn replies off on purpose, set `"roulette_chat_replies_enabled": false` in `config.json`.
+The roulette still runs and the overlay still updates; only the viewer-facing announcements and
+refusal messages stop.

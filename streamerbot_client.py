@@ -24,12 +24,25 @@ actually carry traffic are now here too:
     subscription instead of logging it.
 
   * `send_chat_message()` gives feature modules a way to answer a viewer
-    in chat, via the SendMessage request. Note Streamer.bot marks
-    SendMessage as requiring authentication on its WebSocket server; if
-    that is enabled and this backend has no credentials, the request comes
-    back non-ok and gets logged rather than failing silently.
+    in chat, via the SendMessage request.
+
+  * Streamer.bot's own challenge-response authentication is implemented,
+    and is the expected way to run this. SendMessage is the one request
+    Streamer.bot marks "Authentication Required", so chat replies need it;
+    turning the server's Enforce option on additionally requires it before
+    Subscribe, which is what keeps anything else on the network from
+    reading chat through this port. The handshake is the same shape
+    obs-websocket uses: the server's Hello carries a `salt` and a
+    `challenge`, and the answer is
+    base64(sha256(base64(sha256(password + salt)) + challenge)).
+
+    Because of Enforce, the ordering here is load-bearing: Hello, then
+    Authenticate, then Subscribe. Subscribing straight after connect - what
+    this did before - is rejected outright on an enforcing server.
 """
 import asyncio
+import base64
+import hashlib
 import itertools
 import json
 
@@ -62,6 +75,25 @@ DEFAULT_SUBSCRIPTIONS = {
 CHAT_EVENT_TYPES = {"ChatMessage", "Message"}
 
 _request_ids = itertools.count(1)
+
+
+def _authentication_hash(password: str, salt: str, challenge: str) -> str:
+    """
+    Streamer.bot's challenge-response answer, computed exactly as its
+    documentation specifies: the password is salted and hashed first, and
+    that intermediate result - as its base64 text, not as raw bytes - is
+    then hashed again against the per-connection challenge.
+
+    The two-step shape is the point: the salted half is stable per password
+    and could in principle be stored, while the challenge changes every
+    connection, so a captured answer cannot be replayed onto a later one.
+    """
+    salted = base64.b64encode(
+        hashlib.sha256((password + salt).encode("utf-8")).digest()
+    ).decode("utf-8")
+    return base64.b64encode(
+        hashlib.sha256((salted + challenge).encode("utf-8")).digest()
+    ).decode("utf-8")
 
 
 def _next_request_id(prefix: str) -> str:
@@ -142,6 +174,11 @@ class StreamerBotClient:
         self._listeners: list = []  # callables invoked with each parsed event dict
         self._running = False
         self._subscribed = False
+        # Tri-state on purpose. None means the server never asked us to
+        # authenticate (its Authentication toggle is off), which is a
+        # different situation from an attempt that failed - and only the
+        # failure is worth warning about.
+        self._authenticated: "bool | None" = None
 
     def on_event(self, callback):
         """
@@ -166,6 +203,17 @@ class StreamerBotClient:
         visible rather than guessed at.
         """
         return self._subscribed
+
+    @property
+    def is_authenticated(self) -> "bool | None":
+        """
+        None when the server's Authentication toggle is off and it never
+        issued a challenge; True/False once one was answered. False is the
+        interesting case: chat replies will be rejected, because
+        SendMessage is the request Streamer.bot marks as requiring
+        authentication.
+        """
+        return self._authenticated
 
     async def start(self):
         self._running = True
@@ -222,20 +270,73 @@ class StreamerBotClient:
         })
         return True
 
+    async def _handle_hello(self, ws, payload: dict) -> None:
+        """
+        Streamer.bot opens every connection with a Hello. When its
+        Authentication toggle is on, that Hello carries the salt and
+        challenge for this connection, and Subscribe must wait until the
+        Authenticate request has been answered - with the Enforce option
+        on, an unauthenticated Subscribe is rejected outright.
+        """
+        auth = payload.get("authentication")
+        if not isinstance(auth, dict):
+            self._authenticated = None
+            await self._subscribe(ws)
+            return
+
+        password = config.get("streamerbot_ws_password", "")
+        if not password:
+            self._authenticated = False
+            log.error(
+                "Streamer.bot asked us to authenticate but streamerbot_ws_password is empty in "
+                "config.json. Chat replies will be rejected, and if the server's Enforce option "
+                "is on, no events will arrive either."
+            )
+            # Subscribing anyway: with Enforce off this still gets us chat,
+            # which is most of the value. If it's on, the rejection is
+            # logged by _handle_response and both problems are visible.
+            await self._subscribe(ws)
+            return
+
+        answer = _authentication_hash(password, auth.get("salt", ""), auth.get("challenge", ""))
+        log.info("Answering Streamer.bot's authentication challenge")
+        await ws.send_json({
+            "request": "Authenticate",
+            "id": _next_request_id("authenticate"),
+            "authentication": answer,
+        })
+
     async def _subscribe(self, ws) -> None:
         events = config.get("streamerbot_subscribe_events", DEFAULT_SUBSCRIPTIONS)
         request_id = _next_request_id("subscribe")
         log.info(f"Subscribing to Streamer.bot events: {events}")
         await ws.send_json({"request": "Subscribe", "id": request_id, "events": events})
 
-    def _handle_response(self, payload: dict) -> None:
+    async def _handle_response(self, ws, payload: dict) -> None:
         """
-        Handles a request response (as opposed to an event). The only one
-        whose outcome changes behaviour is Subscribe - everything else is
-        logged so a rejected SendMessage is visible instead of silent.
+        Handles a request response (as opposed to an event). Two of them
+        change behaviour - Authenticate gates Subscribe, and Subscribe
+        gates every event - and everything else is logged so a rejected
+        SendMessage is visible instead of silent.
         """
         status = payload.get("status")
         request_id = str(payload.get("id", ""))
+
+        if request_id.startswith("authenticate"):
+            if status == "ok":
+                self._authenticated = True
+                log.info("Authenticated with Streamer.bot")
+            else:
+                self._authenticated = False
+                log.error(
+                    f"Streamer.bot REJECTED authentication ({payload}). Check that "
+                    f"streamerbot_ws_password matches the WebSocket server's password."
+                )
+            # Subscribe either way: a wrong password with the server's
+            # Enforce option off still leaves chat readable, and the
+            # subscription's own response says whether that held.
+            await self._subscribe(ws)
+            return
 
         if request_id.startswith("subscribe"):
             if status == "ok":
@@ -259,11 +360,13 @@ class StreamerBotClient:
             self._ws = ws
             log.info("Connected to Streamer.bot")
 
-            # Streamer.bot sends nothing until asked. Subscribing here, on
-            # every connect rather than once at startup, is deliberate: a
-            # subscription belongs to the socket, so a reconnect after the
-            # gaming PC sleeps or Streamer.bot restarts has to ask again.
-            await self._subscribe(ws)
+            # No Subscribe here. Streamer.bot sends nothing until asked, but
+            # the asking has to wait for its Hello: an enforcing server
+            # rejects a Subscribe that arrives before Authenticate. The
+            # whole handshake runs per connection rather than once at
+            # startup, because both the session and the subscription belong
+            # to the socket - a reconnect after the gaming PC sleeps has to
+            # do it all again.
 
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
@@ -273,8 +376,12 @@ class StreamerBotClient:
                         log.warning(f"Non-JSON message from Streamer.bot: {msg.data}")
                         continue
 
+                    if payload.get("request") == "Hello":
+                        await self._handle_hello(ws, payload)
+                        continue
+
                     if "event" not in payload and "status" in payload:
-                        self._handle_response(payload)
+                        await self._handle_response(ws, payload)
                         continue
 
                     for callback in self._listeners:
@@ -285,6 +392,7 @@ class StreamerBotClient:
 
         self._ws = None
         self._subscribed = False
+        self._authenticated = None
 
 
 # Single shared instance - feature tasks import this and call .on_event(...)

@@ -131,6 +131,11 @@ async def get_status(request: web.Request) -> web.Response:
         # socket with no accepted event subscription delivers nothing, and
         # looks exactly like a quiet chat. See streamerbot_client's docstring.
         "streamerbot_subscribed": streamerbot.is_subscribed,
+        # null when Streamer.bot's Authentication toggle is off and it never
+        # issued a challenge; false only when one was answered and refused,
+        # which is the case worth flagging - SendMessage is the request
+        # Streamer.bot requires authentication for, so chat replies die.
+        "streamerbot_authenticated": streamerbot.is_authenticated,
         "credit_prediction": _credit_prediction(),
         "widget_connections": {
             "total": widget_hub.connected_count(),

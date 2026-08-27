@@ -135,20 +135,24 @@ async def test_subscribe_honours_a_configured_event_set(monkeypatch):
     assert ws.send_json.await_args.args[0]["events"] == {"Twitch": ["Cheer"]}
 
 
-def test_an_accepted_subscription_flips_is_subscribed():
+@pytest.mark.asyncio
+async def test_an_accepted_subscription_flips_is_subscribed():
     client = streamerbot_client.StreamerBotClient()
     assert client.is_subscribed is False
 
-    client._handle_response({"status": "ok", "id": "subscribe-1", "events": {"Twitch": ["ChatMessage"]}})
+    await client._handle_response(
+        AsyncMock(), {"status": "ok", "id": "subscribe-1", "events": {"Twitch": ["ChatMessage"]}}
+    )
 
     assert client.is_subscribed is True
 
 
-def test_a_rejected_subscription_leaves_is_subscribed_false():
+@pytest.mark.asyncio
+async def test_a_rejected_subscription_leaves_is_subscribed_false():
     client = streamerbot_client.StreamerBotClient()
     client._subscribed = True
 
-    client._handle_response({"status": "error", "id": "subscribe-2"})
+    await client._handle_response(AsyncMock(), {"status": "error", "id": "subscribe-2"})
 
     assert client.is_subscribed is False
 
@@ -176,3 +180,120 @@ async def test_send_chat_message_reports_failure_when_disconnected():
     client._ws = None
 
     assert await client.send_chat_message("hello") is False
+
+
+# ---------- Authentication ----------
+#
+# Streamer.bot marks SendMessage as requiring authentication, and its
+# Enforce option extends that to every request including Subscribe. So the
+# handshake order - Hello, Authenticate, Subscribe - is load-bearing, and
+# these tests pin the order as much as the hash.
+
+def _sent(ws):
+    """The requests handed to a mocked socket, in order."""
+    return [call.args[0]["request"] for call in ws.send_json.await_args_list]
+
+
+def test_the_authentication_hash_matches_the_documented_two_step_algorithm():
+    import base64
+    import hashlib
+
+    password, salt, challenge = "hunter2", "c2FsdA==", "Y2hhbGxlbmdl"
+
+    salted = base64.b64encode(
+        hashlib.sha256((password + salt).encode("utf-8")).digest()
+    ).decode("utf-8")
+    expected = base64.b64encode(
+        hashlib.sha256((salted + challenge).encode("utf-8")).digest()
+    ).decode("utf-8")
+
+    assert streamerbot_client._authentication_hash(password, salt, challenge) == expected
+
+
+def test_the_per_connection_challenge_is_actually_mixed_in():
+    # An answer that ignored the challenge would be replayable onto any
+    # later connection, which is the entire reason for the second step.
+    one = streamerbot_client._authentication_hash("pw", "salt", "challenge-one")
+    two = streamerbot_client._authentication_hash("pw", "salt", "challenge-two")
+    assert one != two
+
+
+def test_a_different_password_gives_a_different_answer():
+    right = streamerbot_client._authentication_hash("right", "salt", "challenge")
+    wrong = streamerbot_client._authentication_hash("wrong", "salt", "challenge")
+    assert right != wrong
+
+
+@pytest.mark.asyncio
+async def test_a_hello_without_a_challenge_subscribes_immediately():
+    client = streamerbot_client.StreamerBotClient()
+    ws = AsyncMock()
+
+    await client._handle_hello(ws, {"request": "Hello", "info": {}})
+
+    # None, not False: the server never asked, which is not a failure.
+    assert client.is_authenticated is None
+    assert _sent(ws) == ["Subscribe"]
+
+
+@pytest.mark.asyncio
+async def test_a_challenge_is_answered_before_anything_is_subscribed(monkeypatch):
+    from config import config
+
+    monkeypatch.setitem(config._data, "streamerbot_ws_password", "hunter2")
+    client = streamerbot_client.StreamerBotClient()
+    ws = AsyncMock()
+
+    await client._handle_hello(ws, {
+        "request": "Hello",
+        "authentication": {"salt": "c2FsdA==", "challenge": "Y2hhbGxlbmdl"},
+    })
+
+    assert _sent(ws) == ["Authenticate"]
+    payload = ws.send_json.await_args.args[0]
+    assert payload["id"].startswith("authenticate")
+    assert payload["authentication"] == streamerbot_client._authentication_hash(
+        "hunter2", "c2FsdA==", "Y2hhbGxlbmdl"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_challenge_with_no_configured_password_still_asks_for_chat(monkeypatch):
+    from config import config
+
+    monkeypatch.setitem(config._data, "streamerbot_ws_password", "")
+    client = streamerbot_client.StreamerBotClient()
+    ws = AsyncMock()
+
+    await client._handle_hello(ws, {
+        "request": "Hello",
+        "authentication": {"salt": "c2FsdA==", "challenge": "Y2hhbGxlbmdl"},
+    })
+
+    assert client.is_authenticated is False
+    assert _sent(ws) == ["Subscribe"]
+
+
+@pytest.mark.asyncio
+async def test_an_accepted_authentication_then_subscribes():
+    client = streamerbot_client.StreamerBotClient()
+    ws = AsyncMock()
+
+    await client._handle_response(ws, {"status": "ok", "id": "authenticate-1"})
+
+    assert client.is_authenticated is True
+    assert _sent(ws) == ["Subscribe"]
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_authentication_subscribes_anyway_but_records_the_failure():
+    client = streamerbot_client.StreamerBotClient()
+    ws = AsyncMock()
+
+    await client._handle_response(ws, {"status": "error", "id": "authenticate-1"})
+
+    # A wrong password with the server's Enforce option off still leaves
+    # chat readable, which is most of the value - so ask regardless. The
+    # false is what the dashboard warns on.
+    assert client.is_authenticated is False
+    assert _sent(ws) == ["Subscribe"]
