@@ -3,6 +3,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import time
+
 import pytest
 from unittest.mock import AsyncMock, patch
 
@@ -202,6 +204,61 @@ async def test_send_chat_message_reports_failure_when_disconnected():
     client._ws = None
 
     assert await client.send_chat_message("hello") is False
+
+
+# ---------- Not obeying our own replies ----------
+#
+# Chat replies come straight back down the subscription as ordinary chat
+# events. The !help reply used to open with "!roulette", so answering
+# !help parsed as a !roulette trigger and charged the asker for a session
+# they never asked for.
+
+
+@pytest.mark.asyncio
+async def test_a_message_we_just_sent_is_recognized_as_our_own():
+    client = streamerbot_client.StreamerBotClient()
+    client._ws = AsyncMock()
+
+    await client.send_chat_message("Commands: !roulette (500 points) opens a vote")
+
+    assert client._is_our_own_message("Commands: !roulette (500 points) opens a vote") is True
+
+
+@pytest.mark.asyncio
+async def test_a_message_we_never_sent_is_not_ours():
+    client = streamerbot_client.StreamerBotClient()
+    client._ws = AsyncMock()
+
+    await client.send_chat_message("Roulette is open for 18s")
+
+    assert client._is_our_own_message("!roulette") is False
+
+
+@pytest.mark.asyncio
+async def test_our_own_message_stops_being_ours_once_it_ages_out():
+    """
+    The window only has to outlast the round trip out to Streamer.bot and
+    back. Holding sent text forever would eventually swallow a viewer who
+    happened to type the same thing.
+    """
+    client = streamerbot_client.StreamerBotClient()
+    client._ws = AsyncMock()
+    await client.send_chat_message("hello")
+
+    stale = time.monotonic() - streamerbot_client.SENT_MESSAGE_TTL_SECONDS - 1
+    client._recently_sent[0] = (stale, "hello")
+
+    assert client._is_our_own_message("hello") is False
+
+
+@pytest.mark.asyncio
+async def test_a_failed_send_is_not_remembered_as_ours():
+    """Nothing reached chat, so nothing can come back."""
+    client = streamerbot_client.StreamerBotClient()
+    client._ws = None
+
+    assert await client.send_chat_message("hello") is False
+    assert client._is_our_own_message("hello") is False
 
 
 # ---------- Authentication ----------

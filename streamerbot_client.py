@@ -45,6 +45,8 @@ import base64
 import hashlib
 import itertools
 import json
+import time
+from collections import deque
 
 import aiohttp
 
@@ -75,6 +77,11 @@ DEFAULT_SUBSCRIPTIONS = {
 CHAT_EVENT_TYPES = {"ChatMessage", "Message"}
 
 _request_ids = itertools.count(1)
+
+# How long a message this backend sent stays recognizable when it comes
+# back as a chat event. Only needs to outlast the round trip out to
+# Streamer.bot, into Twitch, and back down the subscription.
+SENT_MESSAGE_TTL_SECONDS = 30
 
 
 def _authentication_hash(password: str, salt: str, challenge: str) -> str:
@@ -174,6 +181,10 @@ class StreamerBotClient:
         self._listeners: list = []  # callables invoked with each parsed event dict
         self._running = False
         self._subscribed = False
+        # Text of every message this backend has sent recently, so its own
+        # replies can be recognized when Streamer.bot relays them straight
+        # back as chat events. See _is_our_own_message().
+        self._recently_sent: deque = deque()
         # Tri-state on purpose. None means the server never asked us to
         # authenticate (its Authentication toggle is off), which is a
         # different situation from an attempt that failed - and only the
@@ -283,7 +294,30 @@ class StreamerBotClient:
         # looked identical in the log - which is exactly the question
         # being asked whenever a chat reply goes missing.
         log.info(f"Sent chat message to {platform} (bot={as_bot}): {message!r}")
+        self._recently_sent.append((time.monotonic(), message))
         return True
+
+    def _is_our_own_message(self, text: str) -> bool:
+        """
+        Whether this exact text is something this backend just said.
+
+        Chat replies come straight back down the subscription as ordinary
+        chat events, and a reply that happens to be command-shaped is then
+        obeyed. The !help reply opens with "!roulette", so answering !help
+        parsed as a !roulette trigger and charged the asker for a session
+        they never asked for - a feedback loop that only stayed harmless
+        because the account it fired on was too poor to afford it.
+
+        Matched on the exact text rather than on the sender, because with
+        streamerbot_send_as_bot off the sender IS the broadcaster, and the
+        streamer typing a real command in their own chat has to keep
+        working. No reply this backend sends is a plausible thing for a
+        viewer to type verbatim inside the TTL.
+        """
+        now = time.monotonic()
+        while self._recently_sent and now - self._recently_sent[0][0] > SENT_MESSAGE_TTL_SECONDS:
+            self._recently_sent.popleft()
+        return any(sent == text for _, sent in self._recently_sent)
 
     async def _handle_hello(self, ws, payload: dict) -> None:
         """
@@ -405,6 +439,14 @@ class StreamerBotClient:
 
                     if "event" not in payload and "status" in payload:
                         await self._handle_response(ws, payload)
+                        continue
+
+                    # Dropped here rather than in each listener, so the
+                    # guard cannot be present in one consumer and missing
+                    # from the next one somebody adds.
+                    chat = parse_chat_message(payload)
+                    if chat is not None and self._is_our_own_message(chat["text"]):
+                        log.info(f"Ignoring our own chat message echoed back: {chat['text']!r}")
                         continue
 
                     for callback in self._listeners:

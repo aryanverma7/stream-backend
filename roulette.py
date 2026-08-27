@@ -633,8 +633,14 @@ def _help_message() -> str:
     """
     cost = config.get("roulette_trigger_cost", DEFAULT_TRIGGER_COST)
     weapons = ", ".join(WEAPONS)
+    # Deliberately does NOT start with "!". Chat replies come back down
+    # the subscription as ordinary chat events, and this one used to open
+    # with "!roulette", so the bot answered its own !help by parsing it as
+    # a !roulette trigger. streamerbot_client drops echoes of our own
+    # messages now, which is the real fix; this is the second lock on the
+    # same door, and it costs one word.
     return (
-        f"!roulette ({cost} points) opens a vote for next round's forced buy - "
+        f"Commands: !roulette ({cost} points) opens a vote for next round's forced buy - "
         f"vote with !<weapon> while it's open. Weapons: {weapons}."
     )
 

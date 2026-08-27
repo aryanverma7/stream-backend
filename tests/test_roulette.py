@@ -992,6 +992,22 @@ class TestHandleChatCommand:
             assert weapon in reply
 
     @pytest.mark.asyncio
+    async def test_the_help_reply_is_not_itself_command_shaped(self, monkeypatch):
+        """
+        Replies come back down the subscription as ordinary chat events.
+        This one opened with "!roulette", so answering !help parsed as a
+        !roulette trigger and charged the asker for a session they never
+        asked for. streamerbot_client drops echoes of our own messages
+        now; this is the second lock on the same door.
+        """
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+
+        await roulette.handle_chat_command(self.make_chat_event("someviewer", "!help"))
+
+        assert not mock_send.await_args[0][0].startswith("!")
+
+    @pytest.mark.asyncio
     async def test_commands_is_an_alias_for_help(self, monkeypatch):
         mock_send = AsyncMock(return_value=True)
         monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
