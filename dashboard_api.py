@@ -118,6 +118,13 @@ def _credit_prediction() -> dict:
     return {
         "predicted_credits": predicted,
         "readings": credit_ocr.recent_readings(),
+        # Not part of the prediction and never used as one - the last value
+        # OCR ever managed to read, which survives the per-buy-phase reset
+        # the window doesn't. Without it an empty window looks exactly like
+        # an OCR pipeline that has never once worked, and those two are the
+        # difference between "wait for the next round" and "go fix the
+        # gaming PC". See credit_ocr.last_reading().
+        "last_reading": credit_ocr.last_reading(),
         "filter_enabled": config.get("roulette_affordability_filter_enabled", True),
         "votable_count": len(votable),
         "total_weapons": len(roulette.WEAPONS),
@@ -127,6 +134,12 @@ def _credit_prediction() -> dict:
 
 
 async def get_status(request: web.Request) -> web.Response:
+    # no-store, because the admin panel now polls this on a timer rather
+    # than only when someone clicks Refresh. Nothing on this response
+    # carries a validator, so without an explicit directive a browser or an
+    # intermediary is free to apply its own heuristic freshness and hand
+    # back a cached body - which on a status panel is not a stale page, it
+    # is a wrong answer about whether the stream is ready.
     return web.json_response({
         "streamerbot_connected": streamerbot.is_connected,
         # Reported separately from the connection above on purpose: an open
@@ -160,7 +173,7 @@ async def get_status(request: web.Request) -> web.Response:
         # Still a placeholder - OBS runs on the gaming PC and nothing here
         # connects to it yet (Task #13's territory).
         "obs_websocket_connected": None,
-    })
+    }, headers={"Cache-Control": "no-store"})
 
 
 def register_routes(app: web.Application):

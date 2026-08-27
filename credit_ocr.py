@@ -79,6 +79,33 @@ game glyph the stock `eng` model was never trained on:
   occasional one, the next lever is upscaling the crop before OCR, not
   more validation.
 
+Real-world finding #5: this handler used to call Tesseract directly, and
+Tesseract is a blocking subprocess call, so every capture froze the whole
+backend for its duration - one asyncio process serves the dashboard, the
+widget websockets and the chat handlers too. At four captures a second
+during a buy phase the event loop spent most of the round blocked, which
+is why the admin dashboard felt dead exactly when something was happening
+and why raising the agent's capture rate did nothing: the real ceiling
+was here, not on the gaming PC. OCR now runs in a small thread pool and
+the handler awaits it, so the loop stays free.
+
+The pool is deliberately small. Tesseract is CPU-bound and this is a 2012
+Mac Mini; more workers than cores turns parallelism into contention. Two
+workers do mean two readings can finish out of the order they were sent
+in, which is harmless for a consensus that takes a minimum - the value
+does not depend on order - and only very slightly changes which readings
+happen to be in the window at the moment it is read.
+
+Real-world finding #6: the reading history is cleared at the start of
+every buy phase, which is correct for the consensus and terrible for
+telling whether any of this works at all. A cleared window is
+indistinguishable from a pipeline that has never once succeeded, and both
+render as "No reading yet" on the dashboard. The last accepted reading is
+therefore also kept on its own, outside the window and untouched by a
+reset, purely so the panel can say "nothing this phase, but ¤3900 four
+minutes ago". It is never consulted by the consensus or the roulette -
+a stale value must not decide what a viewer is allowed to vote for.
+
 Requires the native `tesseract` binary installed on the Mac Mini - not a
 pure-Python dependency. On this project's specific Mac Mini (2012,
 Catalina), Homebrew's tesseract formula hit a real, unresolvable
@@ -98,10 +125,13 @@ own shared-secret check to ever be reached at all. Confirmed this the
 hard way: with it NOT in open_paths, even a request with the correct
 secret got rejected with a 401 before the handler ever ran.
 """
+import asyncio
 import re
 import io
 import os
+import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 import pytesseract
 from PIL import Image
@@ -171,17 +201,19 @@ _EXPECTED_LABEL = "MINNEXTROUND"  # normalized (spaces removed, uppercased) - se
 # consensus (finding #3). A plain deque, not persisted to config.json -
 # this is transient per-round state, not a setting.
 #
-# Sized at 4, down from 5 (and 8 before that). Two reasons, both of them
-# about the same thing - how long a stray anomalously-LOW misread can sit
-# in the window and hold the minimum down (finding #3's one remaining
-# weakness). First, a smaller window rolls a bad reading off sooner.
-# Second, the window is measured in READINGS, not seconds, so raising the
-# agent's real capture rate to a true 4 images/second (see agent.py's
-# "Real-world fix #5") silently doubled how much wall-clock history any
-# given size represents. At that real rate 4 readings is ~1 second of
-# history: enough to span the gap between your last purchase and closing
-# the menu, and short enough that it can't reach back into spending
-# you've already superseded.
+# Sized at 10. The number is meaningless on its own: what is actually
+# being chosen here is a DURATION, and the window is measured in readings,
+# so it only means what it means at a given capture rate. The target is
+# ~1 second of history - long enough to span the gap between your last
+# purchase and closing the menu, short enough that it cannot reach back
+# into spending you have already superseded, and short enough that a
+# stray anomalously-LOW misread rolls off quickly instead of holding the
+# minimum down (finding #3's one remaining weakness).
+#
+# It was 4 when the agent captured 4 images a second, and is 10 now that
+# it captures 10 (agent.py's fix #9). Same second of history, same
+# behaviour; changing agent.CAPTURE_INTERVAL_WITHIN_BURST without changing
+# this silently changes how far back the consensus reaches.
 #
 # Note that 422s ("no number found") are never appended, so the window
 # always holds the last 4 VALID readings no matter how many blank frames
@@ -192,8 +224,25 @@ _EXPECTED_LABEL = "MINNEXTROUND"  # normalized (spaces removed, uppercased) - se
 # cheap, absolute check that does not depend on Tesseract behaving.
 _MAX_CREDITS = 9000
 
-_READING_HISTORY_SIZE = 4
+_READING_HISTORY_SIZE = 10
 _recent_readings: deque = deque(maxlen=_READING_HISTORY_SIZE)
+
+# The last reading that was ever accepted, and when. Deliberately NOT part
+# of the rolling window and deliberately NOT cleared by handle_reset() -
+# see finding #6. This exists so the dashboard can tell "the OCR pipeline
+# has never worked" apart from "this buy phase produced nothing yet",
+# which the window alone renders identically. Nothing that makes a
+# decision reads it.
+_last_reading: "int | None" = None
+_last_reading_at: "float | None" = None
+
+# Tesseract is a blocking subprocess call and this backend is a single
+# asyncio process (finding #5), so OCR runs here rather than on the event
+# loop. Two workers, not more: the work is CPU-bound and the machine is a
+# 2012 Mac Mini, where extra workers buy contention rather than
+# throughput.
+_OCR_WORKERS = 2
+_ocr_executor = ThreadPoolExecutor(max_workers=_OCR_WORKERS, thread_name_prefix="ocr")
 
 
 def _contains_expected_label(raw_text: str) -> bool:
@@ -317,6 +366,35 @@ def recent_readings() -> list:
     return list(_recent_readings)
 
 
+def last_reading() -> dict:
+    """
+    The last reading ever accepted and how long ago it arrived, for the
+    dashboard only (finding #6). Survives handle_reset(), which is the
+    entire point: an empty rolling window means "nothing yet this buy
+    phase" and an empty history here means "this has never worked", and
+    those two need completely different things done about them.
+
+    Never consulted by get_predicted_credits() or by the roulette. A
+    reading from two rounds ago is not a budget.
+    """
+    if _last_reading is None or _last_reading_at is None:
+        return {"credits": None, "age_seconds": None}
+    return {"credits": _last_reading, "age_seconds": round(time.time() - _last_reading_at, 1)}
+
+
+def forget_last_reading() -> None:
+    """Clears the dashboard-only history above. Exists for the tests."""
+    global _last_reading, _last_reading_at
+    _last_reading = None
+    _last_reading_at = None
+
+
+def _remember_last_reading(value: int) -> None:
+    global _last_reading, _last_reading_at
+    _last_reading = value
+    _last_reading_at = time.time()
+
+
 def _agent_secret_ok(request: web.Request) -> bool:
     """
     The shared-secret check every agent-facing route runs. Shared between
@@ -355,8 +433,13 @@ async def handle_credit_report(request: web.Request) -> web.Response:
     if not image_bytes:
         return web.json_response({"error": "No image data in request body"}, status=400)
 
+    # Off the event loop, not on it (finding #5). Tesseract blocks for as
+    # long as it takes, and everything else this process does - the
+    # dashboard, the widget sockets, the chat handlers - shares that loop.
     try:
-        detected = extract_credits(image_bytes)
+        detected = await asyncio.get_running_loop().run_in_executor(
+            _ocr_executor, extract_credits, image_bytes
+        )
     except TesseractUnavailableError as e:
         return web.json_response({"error": str(e)}, status=503)
 
@@ -366,6 +449,7 @@ async def handle_credit_report(request: web.Request) -> web.Response:
         return web.json_response({"error": "Could not validate a real reading in the captured region"}, status=422)
 
     _recent_readings.append(detected)
+    _remember_last_reading(detected)
     consensus = get_predicted_credits()
     log.info(f"Detected {detected} (this reading) - current minimum-value consensus: {consensus}")
     return web.json_response({"credits": detected, "consensus": consensus})
@@ -374,14 +458,22 @@ async def handle_credit_report(request: web.Request) -> web.Response:
 async def handle_reset(request: web.Request) -> web.Response:
     """
     POST /api/ocr/reset - clears the reading history. Real bug fix: the
-    agent calls this once at the start of each genuinely NEW buy phase
-    (not when re-opening the same one) - without it, the previous round's
-    readings were still sitting in the window, contaminating the new
-    round's consensus until enough fresh readings pushed them out.
+    agent calls this when a buy phase OPENS - without it, the previous
+    round's readings were still sitting in the window, contaminating the
+    new round's consensus until enough fresh readings pushed them out.
+
+    Opening is the operative word. This used to fire on the press that
+    CLOSED the menu as well, since B is the same key for both and the
+    agent could not tell them apart, so finishing a buy phase wiped the
+    readings that phase had just produced. See burst_timer.py's fix #8 on
+    the gaming PC for the other end of that.
     """
     if not _agent_secret_ok(request):
         return web.json_response({"error": "Invalid or missing agent secret"}, status=401)
 
     _recent_readings.clear()
+    # _last_reading is deliberately left alone - it is the dashboard's only
+    # way to distinguish this from a pipeline that has never worked. See
+    # last_reading() and finding #6.
     log.info("Reading history cleared - a new buy phase has started")
     return web.json_response({"status": "ok"})

@@ -19,8 +19,10 @@ def reset_reading_history():
     module-level state by design (a real rolling window across real
     requests), which means tests must reset it between runs."""
     credit_ocr._recent_readings.clear()
+    credit_ocr.forget_last_reading()
     yield
     credit_ocr._recent_readings.clear()
+    credit_ocr.forget_last_reading()
 
 
 class TestExtractCredits:
@@ -209,26 +211,33 @@ class TestMinimumValueConsensus:
             credit_ocr._recent_readings.append(value)
         assert credit_ocr.get_predicted_credits() == 4900
 
-    def test_only_keeps_the_last_4_readings_older_ones_roll_off(self):
-        readings = [1110, 2220, 3330, 4440, 10000, 5300, 4900, 4900, 4900]  # 9 readings, window size 4
-        for value in readings:
+    def test_older_readings_roll_off_once_the_window_is_full(self):
+        oldest = [1110, 2220, 3330]
+        newest = [4440, 10000, 5300, 4900, 4900, 4900, 4900, 4900, 4900, 4900]  # exactly a full window
+        for value in oldest + newest:
             credit_ocr._recent_readings.append(value)
         # The window is bounded, not an ever-growing history: only the last
-        # four survive, so 1110 - which would otherwise win the minimum
-        # outright - has rolled off entirely.
-        assert list(credit_ocr._recent_readings) == [5300, 4900, 4900, 4900]
+        # _READING_HISTORY_SIZE survive, so 1110 - which would otherwise win
+        # the minimum outright - has rolled off entirely.
+        assert list(credit_ocr._recent_readings) == newest
         assert 1110 not in credit_ocr._recent_readings
-        assert credit_ocr.get_predicted_credits() == 4900
+        assert credit_ocr.get_predicted_credits() == 4440
 
-    def test_the_window_is_four_readings_about_one_second_at_the_real_capture_rate(self):
+    def test_the_window_is_about_one_second_at_the_agents_real_capture_rate(self):
         """
         Pinned deliberately rather than left implicit. The size is in
-        READINGS, so it only means "the last ~1 second" while the agent
-        genuinely captures 4 images/second - if that rate changes, this
-        number has to be revisited alongside it.
+        READINGS, so the count on its own means nothing - what was chosen
+        is ~1 second of history, and the count is only how that gets
+        expressed at a particular capture rate. The agent captures 10
+        images a second (agent.CAPTURE_INTERVAL_WITHIN_BURST, 0.1s, in the
+        pc-ocr repo), so 10 readings is that second. Change the rate there
+        and this has to move with it - test_agent.py pins the same pairing
+        from the other side.
         """
-        assert credit_ocr._READING_HISTORY_SIZE == 4
-        assert credit_ocr._recent_readings.maxlen == 4
+        agent_capture_interval_seconds = 0.1
+        assert credit_ocr._recent_readings.maxlen == credit_ocr._READING_HISTORY_SIZE
+        seconds_of_history = credit_ocr._READING_HISTORY_SIZE * agent_capture_interval_seconds
+        assert round(seconds_of_history, 3) == 1.0
 
     def test_one_upward_misread_does_not_override_three_consistent_ones(self):
         """Credits only ever decrease within a single burst, so a reading
@@ -465,3 +474,68 @@ class TestHandleReset:
         assert credit_ocr.get_predicted_credits() is None  # confirms truly empty, not just outvoted
 
         await client.close()
+
+
+class TestLastReadingSurvivesAReset:
+    """
+    Finding #6. The rolling window is cleared at the start of every buy
+    phase, which is right for the consensus and useless for answering "does
+    any of this work". Between rounds - most of a match - an empty window
+    and a pipeline that has never once succeeded look identical, and the
+    dashboard rendered both as "No reading yet" while the agent was
+    printing real numbers on the other machine.
+    """
+
+    def test_nothing_read_yet_reports_no_credits_and_no_age(self):
+        assert credit_ocr.last_reading() == {"credits": None, "age_seconds": None}
+
+    def test_an_accepted_reading_is_remembered_with_an_age(self):
+        credit_ocr._remember_last_reading(3900)
+        remembered = credit_ocr.last_reading()
+        assert remembered["credits"] == 3900
+        assert remembered["age_seconds"] is not None
+        assert remembered["age_seconds"] >= 0
+
+    def test_the_newest_accepted_reading_replaces_the_previous_one(self):
+        credit_ocr._remember_last_reading(4200)
+        credit_ocr._remember_last_reading(2400)
+        assert credit_ocr.last_reading()["credits"] == 2400
+
+    @pytest.mark.asyncio
+    async def test_a_reset_empties_the_window_but_keeps_the_last_reading(self, monkeypatch):
+        """The whole point: these two histories are cleared by different things."""
+        monkeypatch.setattr(config, "_data", {"ocr_agent_secret": "test-secret-123"})
+        credit_ocr._recent_readings.extend([4200, 3400, 2400])
+        credit_ocr._remember_last_reading(2400)
+
+        app = web.Application()
+        app.router.add_post("/api/ocr/reset", credit_ocr.handle_reset)
+        server = TestServer(app)
+        client = TestClient(server)
+        await client.start_server()
+        await client.post("/api/ocr/reset", headers={"X-Agent-Secret": "test-secret-123"})
+        await client.close()
+
+        assert credit_ocr.get_predicted_credits() is None
+        assert credit_ocr.last_reading()["credits"] == 2400
+
+    def test_the_prediction_never_falls_back_to_it(self):
+        """
+        A reading from a previous round is not a budget. get_predicted_credits()
+        must stay None so the roulette fails open to the full roster rather
+        than filtering on a number that is no longer true.
+        """
+        credit_ocr._remember_last_reading(2400)
+        assert credit_ocr.get_predicted_credits() is None
+
+    @pytest.mark.asyncio
+    async def test_a_real_accepted_capture_populates_it_end_to_end(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"ocr_agent_secret": "test-secret-123"})
+        client = await make_client()
+        await client.post(
+            "/api/ocr/credit-report",
+            data=(FIXTURES / "credits_4900.png").read_bytes(),
+            headers={"X-Agent-Secret": "test-secret-123"},
+        )
+        await client.close()
+        assert credit_ocr.last_reading()["credits"] == 4900
