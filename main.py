@@ -14,6 +14,7 @@ them. The actual logic for each piece lives in its own module.
 import asyncio
 import signal
 
+import health_checks
 from config import config
 from logger import get_logger
 from roulette import handle_chat_command as handle_roulette_command
@@ -32,6 +33,11 @@ async def main():
         host=config.get("http_host", "0.0.0.0"),
         port=config.get("http_port", 8765),
     )
+
+    # Periodic check that the public hostname still reaches this process.
+    # Started after the server is listening, since the very first probe
+    # goes out to Cloudflare and comes straight back into the route above.
+    await health_checks.start()
 
     # Outbound connection to Streamer.bot (Section 18's hybrid architecture)
     streamerbot.on_event(forward_chat_to_widgets)
@@ -70,6 +76,7 @@ async def main():
 
     log.info("Shutting down")
     await stop_tips_listener()
+    await health_checks.stop()
     await streamerbot.stop()
     await runner.cleanup()
 

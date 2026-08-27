@@ -199,6 +199,7 @@ async def auth_middleware(request: web.Request, handler):
                                     # middleware for its own auth to ever
                                     # be reached at all.
         "/api/ocr/reset",  # same reasoning as above - also called by the agent, no GitHub session
+        "/api/ocr/heartbeat",  # and again - the agent's liveness ping, same X-Agent-Secret check
         "/",
     )
     if request.path in open_paths or any(

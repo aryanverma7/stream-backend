@@ -22,6 +22,7 @@ from aiohttp import web
 import auth
 import credit_ocr
 import dashboard_api
+import health_checks
 import public_api
 import site_server
 import streamlabs_oauth
@@ -32,7 +33,13 @@ log = get_logger("HTTP")
 
 
 async def handle_health(request: web.Request) -> web.Response:
-    return web.json_response({"status": "ok"})
+    """
+    Liveness check. The instance token is what lets health_checks.py tell
+    "the public URL reaches THIS backend" apart from "something answers on
+    that hostname" - a stale tunnel or a misdirected DNS record answers
+    the first half of this response just as happily as the real thing.
+    """
+    return web.json_response({"status": "ok", "instance": health_checks.INSTANCE_ID})
 
 
 async def handle_widget_ws(request: web.Request) -> web.WebSocketResponse:
@@ -57,6 +64,7 @@ def build_app() -> web.Application:
     # this has no GitHub session to provide.
     app.router.add_post("/api/ocr/credit-report", credit_ocr.handle_credit_report)
     app.router.add_post("/api/ocr/reset", credit_ocr.handle_reset)
+    app.router.add_post("/api/ocr/heartbeat", credit_ocr.handle_heartbeat)
     public_api.register_public_routes(app)
     dashboard_api.register_routes(app)
 

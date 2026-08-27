@@ -107,6 +107,7 @@ import pytesseract
 from PIL import Image
 from aiohttp import web
 
+import ocr_agent
 from config import config
 from logger import get_logger
 
@@ -134,6 +135,19 @@ for candidate in ("/opt/local/bin/tesseract", "/usr/local/bin/tesseract"):
     if os.path.exists(candidate):
         pytesseract.pytesseract.tesseract_cmd = candidate
         break
+
+
+def tesseract_available() -> bool:
+    """
+    Whether the binary the loop above settled on actually exists.
+
+    Surfaced on the status panel rather than left to be discovered at the
+    worst moment: with tesseract missing, the agent runs, the network path
+    works, and every single capture comes back 503 - so from the gaming PC
+    the symptom is indistinguishable from a badly calibrated region, and
+    from the dashboard it would otherwise be invisible entirely.
+    """
+    return os.path.exists(pytesseract.pytesseract.tesseract_cmd)
 
 # Wider than a digit-only whitelist, deliberately - needs to recognize the
 # "MIN NEXT ROUND" label text alongside the number itself, per finding #2
@@ -303,11 +317,38 @@ def recent_readings() -> list:
     return list(_recent_readings)
 
 
-async def handle_credit_report(request: web.Request) -> web.Response:
-    """POST /api/ocr/credit-report - receives a cropped screenshot from the gaming-PC agent."""
+def _agent_secret_ok(request: web.Request) -> bool:
+    """
+    The shared-secret check every agent-facing route runs. Shared between
+    all three of them deliberately: these routes are in auth.py's
+    open_paths, so this IS their authentication, and three copies of it
+    would be three chances for one to drift.
+    """
     expected_secret = config.get("ocr_agent_secret", "")
     provided_secret = request.headers.get("X-Agent-Secret", "")
-    if not expected_secret or provided_secret != expected_secret:
+    return bool(expected_secret) and provided_secret == expected_secret
+
+
+async def handle_heartbeat(request: web.Request) -> web.Response:
+    """
+    POST /api/ocr/heartbeat - the agent saying it is still running.
+
+    Deliberately separate from the capture route. The agent only sends
+    captures while a burst is in progress, so their absence says nothing
+    at all about whether it is alive, and the dashboard needs an answer to
+    that question before a stream starts rather than after the first
+    !roulette fails to find a budget.
+    """
+    if not _agent_secret_ok(request):
+        return web.json_response({"error": "Invalid or missing agent secret"}, status=401)
+
+    ocr_agent.record_heartbeat()
+    return web.json_response({"status": "ok", "tesseract_available": tesseract_available()})
+
+
+async def handle_credit_report(request: web.Request) -> web.Response:
+    """POST /api/ocr/credit-report - receives a cropped screenshot from the gaming-PC agent."""
+    if not _agent_secret_ok(request):
         return web.json_response({"error": "Invalid or missing agent secret"}, status=401)
 
     image_bytes = await request.read()
@@ -318,6 +359,8 @@ async def handle_credit_report(request: web.Request) -> web.Response:
         detected = extract_credits(image_bytes)
     except TesseractUnavailableError as e:
         return web.json_response({"error": str(e)}, status=503)
+
+    ocr_agent.record_capture(accepted=detected is not None)
 
     if detected is None:
         return web.json_response({"error": "Could not validate a real reading in the captured region"}, status=422)
@@ -336,9 +379,7 @@ async def handle_reset(request: web.Request) -> web.Response:
     readings were still sitting in the window, contaminating the new
     round's consensus until enough fresh readings pushed them out.
     """
-    expected_secret = config.get("ocr_agent_secret", "")
-    provided_secret = request.headers.get("X-Agent-Secret", "")
-    if not expected_secret or provided_secret != expected_secret:
+    if not _agent_secret_ok(request):
         return web.json_response({"error": "Invalid or missing agent secret"}, status=401)
 
     _recent_readings.clear()

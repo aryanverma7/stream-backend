@@ -11,6 +11,8 @@ All protected by auth.auth_middleware except where explicitly left open
 from aiohttp import web
 
 import credit_ocr
+import health_checks
+import ocr_agent
 import points
 import roulette
 from config import config
@@ -143,10 +145,21 @@ async def get_status(request: web.Request) -> web.Response:
             "badge": widget_hub.connected_count("badge"),
             "spotify": widget_hub.connected_count("spotify"),
         },
-        # Placeholders - become real once their own tasks are built:
-        "obs_websocket_connected": None,   # Task #8 (OCR) / Task #13 (Medal sync) territory
-        "ocr_loop_running": None,          # Task #8
-        "cloudflare_tunnel_up": None,      # not something this backend can check on itself
+        # Whether the gaming PC's agent is switched on, from its own
+        # heartbeat rather than from whether captures happen to be
+        # arriving - see ocr_agent's module docstring for why those are
+        # not the same question. Tesseract's availability rides along
+        # because a missing binary turns every capture into a 503, which
+        # from the gaming PC looks exactly like a badly aimed region.
+        "ocr_agent": {**ocr_agent.status(), "tesseract_available": credit_ocr.tesseract_available()},
+        # Whether the public hostname still reaches THIS process. Not
+        # introspection like everything above it: the answer is a real
+        # round trip out through Cloudflare and back, run on its own timer
+        # so opening this panel never waits on the network.
+        "public_url": health_checks.status(),
+        # Still a placeholder - OBS runs on the gaming PC and nothing here
+        # connects to it yet (Task #13's territory).
+        "obs_websocket_connected": None,
     })
 
 

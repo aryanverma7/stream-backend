@@ -116,7 +116,7 @@ class TestMiddleware:
             assert response.text == "handler ran", path
 
     async def test_the_agent_endpoints_are_open_so_their_own_secret_check_can_run(self):
-        for path in ("/api/ocr/credit-report", "/api/ocr/reset"):
+        for path in ("/api/ocr/credit-report", "/api/ocr/reset", "/api/ocr/heartbeat"):
             response = await auth.auth_middleware(request_for(path), passthrough)
             assert response.text == "handler ran", path
 
