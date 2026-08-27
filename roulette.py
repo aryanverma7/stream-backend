@@ -33,6 +33,7 @@ Chat commands, via the existing streamerbot.on_event() listener pattern:
                         !roulette or the weapon names except being told
 """
 import asyncio
+import random
 import time
 
 import credit_ocr
@@ -356,18 +357,54 @@ async def end_roulette() -> "str | None":
         return None
 
     _state.is_active = False
-    if _state.weights and max(_state.weights.values()) > 0:
+    anyone_voted = bool(_state.weights) and max(_state.weights.values()) > 0
+    randomly_picked = False
+
+    if anyone_voted:
         winner = max(_state.weights, key=_state.weights.get)
+    elif _state.weights and config.get("roulette_random_pick_when_no_votes", True):
+        # Nobody voted, so every weapon on the roster is carrying the same
+        # weight - and a field of equal weights still has an outcome. This
+        # used to return None and end the session with nothing, which made
+        # the trigger cost buy silence: whoever paid it got no forced buy,
+        # no result on the overlay, and no reason to ever pay it again on a
+        # quiet chat. A uniform draw is what an unvoted roulette actually
+        # is, so it is drawn.
+        #
+        # sorted() rather than the dict's own order so a seeded random is
+        # reproducible - the roster's order depends on the affordability
+        # snapshot, which depends on OCR.
+        winner = random.choice(sorted(_state.weights))
+        randomly_picked = True
     else:
-        winner = None  # nobody voted - no forced result
+        winner = None
 
     await widget_hub.broadcast(
-        {"type": "roulette_ended", "winner": winner, "final_weights": dict(_state.weights)},
+        {
+            "type": "roulette_ended",
+            "winner": winner,
+            "final_weights": dict(_state.weights),
+            # Additive, so an older overlay ignores it and still renders
+            # the winner. It exists so the overlay can say "no votes" out
+            # loud rather than presenting a uniform draw as a vote result -
+            # those are different things and a viewer who voted for nothing
+            # should not be shown a winner that looks earned.
+            "randomly_picked": randomly_picked,
+        },
         tag="roulette",
     )
-    log.info(f"Roulette ended - winner: {winner or 'none (no votes)'}")
+    log.info(
+        f"Roulette ended - winner: {winner or 'none'}"
+        f"{' (no votes - picked at random)' if randomly_picked else ''}"
+    )
 
-    if winner:
+    if winner and randomly_picked:
+        await _reply_in_chat(
+            _state.platform,
+            f"No votes - the wheel landed on {winner}. Forced buy next round.",
+        )
+        await _start_forced_buy(winner)
+    elif winner:
         await _reply_in_chat(_state.platform, f"Roulette locked in: {winner}. Forced buy next round.")
         await _start_forced_buy(winner)
     else:

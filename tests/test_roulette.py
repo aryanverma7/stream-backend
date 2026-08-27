@@ -423,14 +423,87 @@ class TestEndRoulette:
         assert roulette._state.is_active is False
 
     @pytest.mark.asyncio
-    async def test_no_winner_declared_when_nobody_voted(self, monkeypatch):
+    async def test_an_unvoted_session_still_draws_a_winner(self, monkeypatch):
+        """
+        Nobody voting means every weapon carries the same weight, and a
+        field of equal weights still has an outcome. Returning None here
+        made the trigger cost buy silence - no forced buy, no result on
+        the overlay, and no reason to pay it again on a quiet chat.
+        """
         roulette._state.is_active = True
         roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        monkeypatch.setattr(roulette, "_start_forced_buy", AsyncMock())
 
         winner = await roulette.end_roulette()
 
-        assert winner is None
+        assert winner in roulette.WEAPONS
+
+    @pytest.mark.asyncio
+    async def test_the_random_pick_only_draws_from_this_session_roster(self, monkeypatch):
+        """
+        The draw has to respect the affordability snapshot the same way a
+        vote does - offering a weapon nobody could have voted for is the
+        exact failure the filter exists to prevent.
+        """
+        roulette._state.is_active = True
+        roulette._state.weights = {"classic": 0, "ghost": 0, "sheriff": 0}
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        monkeypatch.setattr(roulette, "_start_forced_buy", AsyncMock())
+
+        for _ in range(30):
+            roulette._state.is_active = True
+            assert await roulette.end_roulette() in ("classic", "ghost", "sheriff")
+
+    @pytest.mark.asyncio
+    async def test_an_unvoted_session_still_queues_the_forced_buy(self, monkeypatch):
+        roulette._state.is_active = True
+        roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        mock_forced_buy = AsyncMock()
+        monkeypatch.setattr(roulette, "_start_forced_buy", mock_forced_buy)
+
+        winner = await roulette.end_roulette()
+
+        mock_forced_buy.assert_awaited_once_with(winner)
+
+    @pytest.mark.asyncio
+    async def test_the_overlay_is_told_the_winner_was_not_voted_for(self, monkeypatch):
+        """
+        A uniform draw and a vote result are different things, and a
+        viewer should not be shown a winner that looks earned when nobody
+        picked it.
+        """
+        roulette._state.is_active = True
+        roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
+        mock_broadcast = AsyncMock()
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", mock_broadcast)
+        monkeypatch.setattr(roulette, "_start_forced_buy", AsyncMock())
+
+        await roulette.end_roulette()
+
+        assert mock_broadcast.await_args[0][0]["randomly_picked"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_real_vote_result_is_never_marked_as_a_random_pick(self, monkeypatch):
+        roulette._state.is_active = True
+        roulette._state.weights = {"vandal": 3, "phantom": 1}
+        mock_broadcast = AsyncMock()
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", mock_broadcast)
+        monkeypatch.setattr(roulette, "_start_forced_buy", AsyncMock())
+
+        assert await roulette.end_roulette() == "vandal"
+        assert mock_broadcast.await_args[0][0]["randomly_picked"] is False
+
+    @pytest.mark.asyncio
+    async def test_the_random_pick_can_be_switched_off(self, monkeypatch):
+        """The old behaviour, kept reachable rather than deleted."""
+        roulette._state.is_active = True
+        roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
+        monkeypatch.setattr(config, "_data", {"roulette_random_pick_when_no_votes": False})
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+
+        assert await roulette.end_roulette() is None
 
     @pytest.mark.asyncio
     async def test_ending_an_already_inactive_session_is_a_safe_no_op(self):
@@ -452,9 +525,25 @@ class TestEndRoulette:
         assert "vandal" in mock_send.await_args[0][0]
 
     @pytest.mark.asyncio
-    async def test_says_so_in_chat_when_nobody_voted(self, monkeypatch):
+    async def test_chat_says_the_winner_was_not_voted_for(self, monkeypatch):
         roulette._state.is_active = True
         roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        monkeypatch.setattr(roulette, "_start_forced_buy", AsyncMock())
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+
+        winner = await roulette.end_roulette()
+
+        reply = mock_send.await_args[0][0]
+        assert "No votes" in reply
+        assert winner in reply
+
+    @pytest.mark.asyncio
+    async def test_chat_still_reports_nothing_happening_when_the_draw_is_off(self, monkeypatch):
+        roulette._state.is_active = True
+        roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
+        monkeypatch.setattr(config, "_data", {"roulette_random_pick_when_no_votes": False})
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
         mock_send = AsyncMock(return_value=True)
         monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
@@ -496,8 +585,12 @@ class TestForcedBuyBadge:
 
     @pytest.mark.asyncio
     async def test_no_winner_means_no_forced_buy_started(self, monkeypatch):
+        # An unvoted session normally draws a winner and DOES queue a
+        # forced buy (see TestEndRoulette) - so the only way to reach the
+        # no-winner path now is with that draw switched off.
         roulette._state.is_active = True
         roulette._state.weights = {w: 0 for w in roulette.WEAPONS}  # nobody voted
+        monkeypatch.setattr(config, "_data", {"roulette_random_pick_when_no_votes": False})
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
 
         await roulette.end_roulette()
