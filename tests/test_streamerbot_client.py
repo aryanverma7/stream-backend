@@ -175,6 +175,28 @@ async def test_send_chat_message_sends_a_sendmessage_request():
 
 
 @pytest.mark.asyncio
+async def test_send_chat_message_can_speak_as_the_broadcaster_instead_of_a_bot():
+    """
+    `bot: true` needs a second account connected in Streamer.bot. If none
+    is, the request is accepted and nothing is ever posted - which from
+    this side is indistinguishable from a reply that worked. Being able
+    to fall back to the broadcaster account has to be a config edit.
+    """
+    from config import config
+
+    client = streamerbot_client.StreamerBotClient()
+    ws = AsyncMock()
+    client._ws = ws
+    config._data = {"streamerbot_send_as_bot": False}
+    try:
+        assert await client.send_chat_message("hello") is True
+    finally:
+        config._data = {}
+
+    assert ws.send_json.await_args.args[0]["bot"] is False
+
+
+@pytest.mark.asyncio
 async def test_send_chat_message_reports_failure_when_disconnected():
     client = streamerbot_client.StreamerBotClient()
     client._ws = None

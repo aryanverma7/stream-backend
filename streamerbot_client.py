@@ -260,14 +260,29 @@ class StreamerBotClient:
             log.warning(f"Not connected to Streamer.bot - dropping chat message: {message!r}")
             return False
 
+        # Whether to speak as Streamer.bot's configured BOT account or as
+        # the broadcaster's own. This is a per-setup fact, not a constant:
+        # `bot: true` requires a second account to be connected in
+        # Streamer.bot, and if none is, the request is accepted and
+        # nothing is ever posted - which from here is indistinguishable
+        # from a working reply nobody happened to read. Overridable so
+        # that is a config edit rather than a deploy.
+        as_bot = config.get("streamerbot_send_as_bot", True)
+
         await ws.send_json({
             "request": "SendMessage",
             "id": _next_request_id("send"),
             "platform": platform,
-            "bot": True,
+            "bot": as_bot,
             "internal": False,
             "message": message,
         })
+        # Logged on the way out, not just on failure. Before this, a
+        # successful send produced no log line anywhere, so "the bot
+        # replied and chat didn't show it" and "the bot never tried"
+        # looked identical in the log - which is exactly the question
+        # being asked whenever a chat reply goes missing.
+        log.info(f"Sent chat message to {platform} (bot={as_bot}): {message!r}")
         return True
 
     async def _handle_hello(self, ws, payload: dict) -> None:
