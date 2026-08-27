@@ -99,6 +99,11 @@ DEFAULT_VOTE_COST_INCREMENT = 25
 DEFAULT_VOTING_DURATION_SECONDS = 18
 DEFAULT_COOLDOWN_SECONDS = 90
 DEFAULT_FORCED_BUY_QUEUED_SECONDS = 30  # rough stand-in for "the buy phase has probably ended"
+# ...and this one for "the round is over, so the gun isn't in play any more".
+# Same class of approximation as the two above it, for the same reason: there
+# is no real round detection yet. A Valorant round runs 100s after the buy
+# phase, so the badge lives roughly as long as the round it describes.
+DEFAULT_FORCED_BUY_ACTIVE_SECONDS = 100
 
 
 class RouletteState:
@@ -453,11 +458,35 @@ async def _activate_forced_buy_after_delay(weapon: str, delay: float) -> None:
     )
     log.info(f"Forced buy now active: {weapon}")
 
+    # And then it has to end. "active" used to be terminal, with
+    # clear_forced_buy() called from exactly one place - the start of the
+    # NEXT roulette - so the badge sat on stream indefinitely announcing a
+    # gun that had long since stopped being in play. It was true for one
+    # round and a lie for every round after, and on a night with a single
+    # roulette in it, for the rest of the stream.
+    linger = config.get("forced_buy_active_duration_seconds", DEFAULT_FORCED_BUY_ACTIVE_SECONDS)
+    _state._forced_buy_task = asyncio.create_task(_clear_forced_buy_after_delay(weapon, linger))
+
+
+async def _clear_forced_buy_after_delay(weapon: str, delay: float) -> None:
+    await asyncio.sleep(delay)
+    # Same staleness guard as the activation task above: a newer roulette
+    # may already have produced its own forced buy, and this task must not
+    # clear a badge it has nothing to do with.
+    if _state.forced_buy_weapon != weapon:
+        return
+    await clear_forced_buy()
+
 
 async def clear_forced_buy() -> None:
-    """Called when a new roulette starts, clearing any previous forced-buy badge state."""
+    """
+    Drops the forced-buy badge. Called when the round it describes is
+    over (on the timer above), and again when a new roulette starts, in
+    case that happens first.
+    """
     if _state.forced_buy_weapon is not None:
         await widget_hub.broadcast({"type": "forced_buy_cleared"}, tag="roulette")
+        log.info(f"Forced buy cleared: {_state.forced_buy_weapon}")
     _state.forced_buy_weapon = None
     _state.forced_buy_phase = None
 
@@ -478,6 +507,10 @@ async def _reply_in_chat(platform: str, text: str) -> None:
     command.
     """
     if not config.get("roulette_chat_replies_enabled", True):
+        # The last silent path. With this off, every reply was computed
+        # and dropped with no trace, which looks exactly like a bot that
+        # never tried to answer.
+        log.info(f"Chat replies are disabled - not sending: {text!r}")
         return
     await streamerbot.send_chat_message(text, platform=platform or "twitch")
 
@@ -501,6 +534,12 @@ async def handle_chat_command(event: dict):
         return
 
     command = text[1:].lower().split()[0] if len(text) > 1 else ""
+    # Logged because nothing else on the receive side was. A command that
+    # produced no visible effect gave no way to tell "chat never reached
+    # this backend" apart from "it arrived and the handler did nothing" -
+    # and those need completely different fixes. Only "!"-prefixed lines
+    # get here, so this is not the whole chat.
+    log.info(f"Chat command from {username} on {platform}: {text!r} -> {command!r}")
 
     if command == "roulette":
         result = await trigger_roulette(username, platform=platform)

@@ -598,6 +598,46 @@ class TestForcedBuyBadge:
         assert roulette._state.forced_buy_weapon is None
 
     @pytest.mark.asyncio
+    async def test_the_badge_clears_itself_once_the_round_is_over(self, monkeypatch):
+        """
+        "active" used to be terminal - clear_forced_buy() was only ever
+        called by the NEXT roulette starting, so the badge sat on stream
+        announcing a gun that had stopped being in play rounds ago.
+        """
+        monkeypatch.setattr(
+            config,
+            "_data",
+            {
+                "forced_buy_queued_duration_seconds": 0.01,
+                "forced_buy_active_duration_seconds": 0.01,
+            },
+        )
+        mock_broadcast = AsyncMock()
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", mock_broadcast)
+
+        await roulette._start_forced_buy("vandal")
+        await asyncio.sleep(0.05)
+
+        assert roulette._state.forced_buy_weapon is None
+        assert roulette._state.forced_buy_phase is None
+        types = [call.args[0]["type"] for call in mock_broadcast.await_args_list]
+        assert types == ["forced_buy_queued", "forced_buy_active", "forced_buy_cleared"]
+
+    @pytest.mark.asyncio
+    async def test_a_stale_clear_cannot_drop_a_newer_badge(self, monkeypatch):
+        """
+        The clear is a delayed task. If a new roulette produced its own
+        forced buy in the meantime, that one must survive.
+        """
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        roulette._state.forced_buy_weapon = "phantom"
+        roulette._state.forced_buy_phase = "queued"
+
+        await roulette._clear_forced_buy_after_delay("vandal", 0)
+
+        assert roulette._state.forced_buy_weapon == "phantom"
+
+    @pytest.mark.asyncio
     async def test_transitions_from_queued_to_active_after_the_configured_delay(self, monkeypatch):
         monkeypatch.setattr(config, "_data", {"forced_buy_queued_duration_seconds": 0.01})
         mock_broadcast = AsyncMock()
