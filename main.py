@@ -80,7 +80,16 @@ async def main():
     # and the rest of the backend - the site, the admin dashboard, chat -
     # must keep working regardless of whether this specific integration is
     # connected yet.
-    if config.get("streamlabs_access_token", ""):
+    # Off by default when Cloudbot owns the wallet: Cloudbot pays out on
+    # donations itself, natively and silently, so running this as well
+    # grants the donor twice - once here and once there - and with the
+    # cloudbot points backend this listener's grant is also a visible
+    # !addpoints line in chat for every tip. Set
+    # streamlabs_tips_listener_enabled to override either way.
+    tips_default = points.backend_name() != "cloudbot"
+    if not config.get("streamlabs_tips_listener_enabled", tips_default):
+        log.info("Streamlabs tips listener is disabled - donations are expected to pay out elsewhere")
+    elif config.get("streamlabs_access_token", ""):
         try:
             await start_tips_listener()
         except Exception:
