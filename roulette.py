@@ -39,7 +39,7 @@ import time
 import credit_ocr
 from config import config
 from logger import get_logger
-from points import get_user_points, subtract_points
+from points import try_spend
 from streamerbot_client import parse_chat_message, streamerbot
 from widget_hub import widget_hub
 
@@ -155,6 +155,19 @@ def _now() -> float:
     return time.time()
 
 
+def _too_poor(cost: int, balance: "int | None") -> str:
+    """
+    The refusal a viewer sees when they can't afford something.
+
+    `balance` is None only when the live points backend cannot tell us
+    what they had - saying "you have 0" then would be a guess, and a
+    discouraging one, so the number is simply left out.
+    """
+    if balance is None:
+        return f"Need {cost} points"
+    return f"Need {cost} points, you have {balance}"
+
+
 def is_on_cooldown() -> bool:
     cooldown = config.get("roulette_cooldown_seconds", DEFAULT_COOLDOWN_SECONDS)
     return (_now() - _state.last_triggered_at) < cooldown
@@ -226,25 +239,18 @@ async def trigger_roulette(username: str, platform: str = "twitch") -> dict:
 
     cost = config.get("roulette_trigger_cost", DEFAULT_TRIGGER_COST)
     async with _spend_lock:
-        # Explicit balance check, rather than assuming Streamlabs' /subtract
-        # endpoint itself rejects a subtraction that would go negative -
-        # this isn't confirmed either way in points.py's own docs, so
-        # checking ourselves first is the safer, predictable behavior
-        # regardless of what Streamlabs does server-side.
+        # One call, not a balance check followed by a deduction. Whether
+        # the viewer can afford it is the backend's question to answer -
+        # the cloudbot backend cannot read a balance at all and decides by
+        # spending, so a check here would have nothing to check.
         try:
-            balance = await get_user_points(username)
+            paid, balance = await try_spend(username, cost)
         except Exception as e:
-            log.warning(f"Could not check {username}'s balance for a roulette trigger: {e}")
-            return {"ok": False, "reason": "Couldn't verify your points balance right now"}
+            log.warning(f"{username} tried to trigger roulette but the points spend failed: {e}")
+            return {"ok": False, "reason": "Couldn't take your points right now"}
 
-        if balance < cost:
-            return {"ok": False, "reason": f"Need {cost} points, you have {balance}"}
-
-        try:
-            await subtract_points(username, cost)
-        except Exception as e:
-            log.warning(f"{username} tried to trigger roulette but points deduction failed: {e}")
-            return {"ok": False, "reason": "Points deduction failed"}
+        if not paid:
+            return {"ok": False, "reason": _too_poor(cost, balance)}
 
     # Read the prediction once, here, and hold it for the session. The OCR
     # window is still filling in the background while voting runs, so
@@ -335,19 +341,13 @@ async def vote(username: str, weapon: str) -> dict:
     async with _spend_lock:
         cost = vote_cost_for(weapon)
         try:
-            balance = await get_user_points(username)
+            paid, balance = await try_spend(username, cost)
         except Exception as e:
-            log.warning(f"Could not check {username}'s balance for a roulette vote: {e}")
-            return {"ok": False, "reason": "Couldn't verify your points balance right now"}
+            log.warning(f"{username} tried to vote for {weapon} but the points spend failed: {e}")
+            return {"ok": False, "reason": "Couldn't take your points right now"}
 
-        if balance < cost:
-            return {"ok": False, "reason": f"Need {cost} points, you have {balance}"}
-
-        try:
-            await subtract_points(username, cost)
-        except Exception as e:
-            log.warning(f"{username} tried to vote for {weapon} but points deduction failed: {e}")
-            return {"ok": False, "reason": "Points deduction failed"}
+        if not paid:
+            return {"ok": False, "reason": _too_poor(cost, balance)}
 
         _state.weights[weapon] += 1
         new_weight = _state.weights[weapon]

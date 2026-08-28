@@ -74,6 +74,9 @@ async def grant_points_route(request: web.Request) -> web.Response:
 
     try:
         new_total = await points.grant_points(username, amount)
+        # new_balance is null when the grant is confirmed but the total
+        # isn't knowable - the cloudbot backend's normal case. The panel
+        # renders that as "granted", never as a balance of zero.
         return web.json_response({"username": username, "granted": amount, "new_balance": new_total})
     except Exception as e:
         log.warning(f"Points grant failed for {username}: {e}")

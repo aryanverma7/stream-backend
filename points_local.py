@@ -122,3 +122,22 @@ async def grant_points(username: str, amount: int) -> int:
     _save()
     log.info(f"Granted {amount} points to {username}: {current} -> {balances[key]}")
     return balances[key]
+
+
+async def try_spend(username: str, amount: int) -> "tuple[bool, int | None]":
+    """
+    Spends `amount` only if the balance covers it.
+
+    Returns (True, None) when it was spent, or (False, balance) when it
+    wasn't. Called under points.py's _spend_lock, so the check and the
+    write below cannot interleave with another spend on the same user.
+    """
+    balances = _load()
+    key = username.lower()
+    current = balances.get(key, 0)
+    if amount > current:
+        return False, current
+    balances[key] = current - amount
+    _save()
+    log.info(f"Spent {amount} points from {username}: {current} -> {balances[key]}")
+    return True, None

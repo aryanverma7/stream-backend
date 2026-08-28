@@ -182,3 +182,90 @@ class TestBackendDispatch:
         monkeypatch.setattr(points, "_api_get_user_points", fake_api_get)
         assert await points.get_user_points("viewer") == 1234
         assert called["username"] == "viewer"
+
+
+class TestTrySpend:
+    """
+    The primitive roulette.py charges with. It replaced a
+    get_user_points-then-subtract_points pair because that pair is only
+    implementable on backends that can read a balance, and the cloudbot
+    backend cannot read one at all.
+    """
+
+    @pytest.mark.asyncio
+    async def test_spends_when_the_balance_covers_it(self, local_ledger):
+        await points.grant_points("viewer", 500)
+        assert await points.try_spend("viewer", 200) == (True, None)
+        assert await points.get_user_points("viewer") == 300
+
+    @pytest.mark.asyncio
+    async def test_reports_the_real_balance_when_short(self, local_ledger):
+        """roulette turns this into "Need 500 points, you have 100"."""
+        await points.grant_points("viewer", 100)
+        assert await points.try_spend("viewer", 500) == (False, 100)
+
+    @pytest.mark.asyncio
+    async def test_a_refused_spend_takes_nothing(self, local_ledger):
+        await points.grant_points("viewer", 100)
+        await points.try_spend("viewer", 500)
+        assert await points.get_user_points("viewer") == 100
+
+    @pytest.mark.asyncio
+    async def test_spending_the_whole_balance_is_allowed(self, local_ledger):
+        await points.grant_points("viewer", 500)
+        assert await points.try_spend("viewer", 500) == (True, None)
+        assert await points.get_user_points("viewer") == 0
+
+    @pytest.mark.asyncio
+    async def test_a_user_with_no_ledger_entry_is_short_not_an_error(self, local_ledger):
+        assert await points.try_spend("neverseen", 50) == (False, 0)
+
+    @pytest.mark.asyncio
+    async def test_usernames_are_case_insensitive(self, local_ledger):
+        await points.grant_points("DualBladeX", 500)
+        assert await points.try_spend("DUALBLADEX", 500) == (True, None)
+        assert await points.get_user_points("dualbladex") == 0
+
+    @pytest.mark.asyncio
+    async def test_dispatches_to_the_cloudbot_backend(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"points_backend": "cloudbot"})
+
+        async def fake_try_spend(username, amount):
+            return False, 120
+
+        monkeypatch.setattr(points.points_cloudbot, "try_spend", fake_try_spend)
+        assert await points.try_spend("someviewer", 500) == (False, 120)
+
+    @pytest.mark.asyncio
+    async def test_dispatches_to_the_streamlabs_api_backend(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"points_backend": "api"})
+        calls = []
+
+        async def fake_read(username):
+            return 700
+
+        async def fake_subtract(username, amount):
+            calls.append((username, amount))
+
+        monkeypatch.setattr(points, "_api_get_user_points", fake_read)
+        monkeypatch.setattr(points, "_api_subtract_points", fake_subtract)
+
+        assert await points.try_spend("viewer", 500) == (True, None)
+        assert calls == [("viewer", 500)]
+
+    @pytest.mark.asyncio
+    async def test_the_api_backend_does_not_subtract_when_short(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"points_backend": "api"})
+        calls = []
+
+        async def fake_read(username):
+            return 100
+
+        async def fake_subtract(username, amount):
+            calls.append((username, amount))
+
+        monkeypatch.setattr(points, "_api_get_user_points", fake_read)
+        monkeypatch.setattr(points, "_api_subtract_points", fake_subtract)
+
+        assert await points.try_spend("viewer", 500) == (False, 100)
+        assert calls == []

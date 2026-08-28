@@ -92,7 +92,11 @@ async def handle_socket_event(event: dict) -> None:
         points = donation_to_points(amount)
         try:
             new_balance = await grant_points(name, points)
-            log.info(f"Granted {points} points to {name} for a {amount} donation - new balance {new_balance}")
+            # None means the grant landed but the backend can't report a
+            # total (Cloudbot's confirmation carries the amount added, not
+            # the balance). Not a failure, so don't log it as one.
+            total = "unknown" if new_balance is None else new_balance
+            log.info(f"Granted {points} points to {name} for a {amount} donation - new balance {total}")
         except Exception:
             log.exception(f"Failed to grant points to {name} for a {amount} donation")
 

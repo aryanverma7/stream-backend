@@ -65,74 +65,226 @@ class TestParseWriteReply:
         assert points_cloudbot.parse_write_reply("@viewer, you have 19 Bunds.") is None
 
 
+def _cache_now(username, balance):
+    """Seeds the cache the way real chat does - a viewer typing !points."""
+    points_cloudbot._cache[username] = (points_cloudbot.time.monotonic(), balance)
+
+
 class TestReadingABalance:
+    """
+    get_user_points serves the cache or raises. It never asks, because
+    `!points <name>` ignores its argument: dualbladex typing
+    `!points pinkuthagoat` got "@dualbladex, you have 961 Bunds." back
+    while pinkuthagoat held 1760.
+    """
+
     @pytest.mark.asyncio
-    async def test_asks_cloudbot_and_returns_what_it_answers(self, monkeypatch):
+    async def test_never_sends_a_command(self, monkeypatch):
+        """The command it would send returns the bot's own balance."""
         mock_send = AsyncMock(return_value=True)
         monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", mock_send)
 
-        async def answer():
-            await asyncio.sleep(0)
-            await points_cloudbot.handle_chat_event({"text": "@someviewer, you have 750 Bunds."})
+        with pytest.raises(points_cloudbot.CloudbotReadUnavailable):
+            await points_cloudbot.get_user_points("someviewer")
 
-        reader = asyncio.ensure_future(points_cloudbot.get_user_points("someviewer"))
-        await answer()
-
-        assert await reader == 750
-        assert mock_send.await_args[0][0] == "!points someviewer"
+        assert mock_send.await_count == 0
 
     @pytest.mark.asyncio
-    async def test_a_second_read_is_served_from_cache_without_spamming_chat(self, monkeypatch):
+    async def test_serves_a_balance_the_viewer_revealed_themselves(self):
         """
-        A live read per vote would put two bot lines in chat per vote,
-        which over an 18-second window is a wall of spam.
+        A viewer typing !points about themselves goes past
+        handle_chat_event, which is how the cache fills up without this
+        module ever asking.
         """
-        mock_send = AsyncMock(return_value=True)
-        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", mock_send)
-
-        reader = asyncio.ensure_future(points_cloudbot.get_user_points("someviewer"))
-        await asyncio.sleep(0)
         await points_cloudbot.handle_chat_event({"text": "@someviewer, you have 750 Bunds."})
-        await reader
-
         assert await points_cloudbot.get_user_points("someviewer") == 750
+
+    @pytest.mark.asyncio
+    async def test_a_stale_entry_is_not_served(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"cloudbot_cache_ttl_seconds": 0})
+        _cache_now("someviewer", 750)
+
+        with pytest.raises(points_cloudbot.CloudbotReadUnavailable):
+            await points_cloudbot.get_user_points("someviewer")
+
+    @pytest.mark.asyncio
+    async def test_a_reply_about_somebody_else_does_not_fill_this_entry(self):
+        await points_cloudbot.handle_chat_event({"text": "@anotherviewer, you have 999 Bunds."})
+
+        with pytest.raises(points_cloudbot.CloudbotReadUnavailable):
+            await points_cloudbot.get_user_points("someviewer")
+
+    @pytest.mark.asyncio
+    async def test_the_fallback_reply_is_filed_under_the_caller_not_the_target(self):
+        """
+        The dangerous shape. Cloudbot answered `!points pinkuthagoat` with
+        "@dualbladex, you have 961 Bunds." - matching on the name Cloudbot
+        prints is what stops 961 being recorded as pinkuthagoat's balance.
+        """
+        await points_cloudbot.handle_chat_event({"text": "@dualbladex, you have 961 Bunds."})
+
+        assert await points_cloudbot.get_user_points("dualbladex") == 961
+        with pytest.raises(points_cloudbot.CloudbotReadUnavailable):
+            await points_cloudbot.get_user_points("pinkuthagoat")
+
+
+class TestTrySpend:
+    """
+    Affordability without a read, which is the only way this backend can
+    do it. Cloudbot clamps: `!removepoints pinkuthagoat 99999` against a
+    balance of 1760 answered "successfully removed 1760 Bunds from
+    pinkuthagoat." So the confirmation's number is what was really taken.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_full_spend_reports_paid(self, monkeypatch):
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", mock_send)
+
+        spender = asyncio.ensure_future(points_cloudbot.try_spend("someviewer", 500))
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event(
+            {"text": "mod has successfully removed 500 Bunds from someviewer."}
+        )
+
+        assert await spender == (True, None)
+        assert mock_send.await_args[0][0] == "!removepoints someviewer 500"
+
+    @pytest.mark.asyncio
+    async def test_a_clamped_spend_reports_not_paid_and_the_real_balance(self, monkeypatch):
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+
+        spender = asyncio.ensure_future(points_cloudbot.try_spend("someviewer", 500))
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event(
+            {"text": "mod has successfully removed 120 Bunds from someviewer."}
+        )
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event(
+            {"text": "mod has successfully added 120 Bunds to someviewer"}
+        )
+
+        assert await spender == (False, 120)
+
+    @pytest.mark.asyncio
+    async def test_a_clamped_spend_gives_back_exactly_what_it_took(self, monkeypatch):
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", mock_send)
+
+        spender = asyncio.ensure_future(points_cloudbot.try_spend("someviewer", 500))
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event(
+            {"text": "mod has successfully removed 120 Bunds from someviewer."}
+        )
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event(
+            {"text": "mod has successfully added 120 Bunds to someviewer"}
+        )
+        await spender
+
+        sent = [call[0][0] for call in mock_send.await_args_list]
+        assert sent == ["!removepoints someviewer 500", "!addpoints someviewer 120"]
+
+    @pytest.mark.asyncio
+    async def test_a_broke_viewer_is_not_refunded_zero(self, monkeypatch):
+        """Nothing was taken, so there is nothing to give back - and an
+        `!addpoints someviewer 0` would be a pointless line in chat."""
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", mock_send)
+
+        spender = asyncio.ensure_future(points_cloudbot.try_spend("someviewer", 500))
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event(
+            {"text": "mod has successfully removed 0 Bunds from someviewer."}
+        )
+
+        assert await spender == (False, 0)
         assert mock_send.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_a_reply_about_somebody_else_does_not_answer_this_lookup(self, monkeypatch):
-        """Replies are matched by username, since they carry no request id."""
-        monkeypatch.setattr(config, "_data", {"cloudbot_reply_timeout_seconds": 0.05})
+    async def test_a_clamped_spend_records_the_balance_it_learned(self, monkeypatch):
+        """The one moment this backend ever learns a viewer's exact balance."""
         monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
 
-        reader = asyncio.ensure_future(points_cloudbot.get_user_points("someviewer"))
+        spender = asyncio.ensure_future(points_cloudbot.try_spend("someviewer", 500))
         await asyncio.sleep(0)
-        await points_cloudbot.handle_chat_event({"text": "@anotherviewer, you have 999 Bunds."})
+        await points_cloudbot.handle_chat_event(
+            {"text": "mod has successfully removed 120 Bunds from someviewer."}
+        )
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event(
+            {"text": "mod has successfully added 120 Bunds to someviewer"}
+        )
+        await spender
 
-        with pytest.raises(TimeoutError):
-            await reader
+        assert await points_cloudbot.get_user_points("someviewer") == 120
 
     @pytest.mark.asyncio
-    async def test_silence_raises_rather_than_guessing_a_balance(self, monkeypatch):
-        """
-        roulette.py turns this into "Couldn't verify your points balance
-        right now" and charges nobody. Returning 0 would refuse everyone;
-        returning a guess would hand out free roulettes.
-        """
+    async def test_a_paid_spend_updates_the_held_balance(self, monkeypatch):
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+        _cache_now("someviewer", 750)
+
+        spender = asyncio.ensure_future(points_cloudbot.try_spend("someviewer", 500))
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event(
+            {"text": "mod has successfully removed 500 Bunds from someviewer."}
+        )
+        await spender
+
+        assert await points_cloudbot.get_user_points("someviewer") == 250
+
+    @pytest.mark.asyncio
+    async def test_an_unconfirmed_spend_raises_rather_than_reporting_paid(self, monkeypatch):
+        """Silence must never become (True, None) - that is a free roulette."""
         monkeypatch.setattr(config, "_data", {"cloudbot_reply_timeout_seconds": 0.05})
         monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
 
         with pytest.raises(TimeoutError):
-            await points_cloudbot.get_user_points("someviewer")
+            await points_cloudbot.try_spend("someviewer", 500)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_refund_raises_rather_than_reporting_not_paid(self, monkeypatch):
+        """
+        The viewer is genuinely down the points at that moment. Reporting
+        a plain "you can't afford this" would hide it; raising surfaces it
+        as an error, and the log line carries the command to fix it.
+        """
+        monkeypatch.setattr(config, "_data", {"cloudbot_reply_timeout_seconds": 0.05})
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+
+        spender = asyncio.ensure_future(points_cloudbot.try_spend("someviewer", 500))
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event(
+            {"text": "mod has successfully removed 120 Bunds from someviewer."}
+        )
+
+        with pytest.raises(TimeoutError):
+            await spender
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_user_raises(self, monkeypatch):
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+
+        spender = asyncio.ensure_future(points_cloudbot.try_spend("someviewer", 500))
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event({"text": "Unable to find someviewer."})
+
+        with pytest.raises(points_cloudbot.CloudbotUserNotFound):
+            await spender
 
     @pytest.mark.asyncio
     async def test_a_disconnected_streamerbot_fails_immediately(self, monkeypatch):
         monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=False))
 
         with pytest.raises(RuntimeError):
-            await points_cloudbot.get_user_points("someviewer")
+            await points_cloudbot.try_spend("someviewer", 500)
 
 
 class TestSpending:
+    """subtract_points - unconditional, and used where affordability is
+    not the question. Cloudbot clamps here too, so it quietly takes what
+    is there; callers that care use try_spend."""
+
     @pytest.mark.asyncio
     async def test_waits_for_cloudbot_to_confirm_the_spend(self, monkeypatch):
         mock_send = AsyncMock(return_value=True)
@@ -149,11 +301,6 @@ class TestSpending:
 
     @pytest.mark.asyncio
     async def test_an_unconfirmed_spend_fails_rather_than_being_assumed(self, monkeypatch):
-        """
-        Cloudbot owns the wallet, so this backend cannot know whether the
-        viewer could afford it. Assuming success would hand out a free
-        roulette; refusing costs one command.
-        """
         monkeypatch.setattr(config, "_data", {"cloudbot_reply_timeout_seconds": 0.05})
         monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
 
@@ -163,11 +310,7 @@ class TestSpending:
     @pytest.mark.asyncio
     async def test_a_confirmed_spend_updates_the_held_balance(self, monkeypatch):
         monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
-
-        reader = asyncio.ensure_future(points_cloudbot.get_user_points("someviewer"))
-        await asyncio.sleep(0)
-        await points_cloudbot.handle_chat_event({"text": "@someviewer, you have 750 Bunds."})
-        await reader
+        _cache_now("someviewer", 750)
 
         spender = asyncio.ensure_future(points_cloudbot.subtract_points("someviewer", 500))
         await asyncio.sleep(0)
@@ -181,7 +324,7 @@ class TestSpending:
     @pytest.mark.asyncio
     async def test_the_held_balance_never_goes_negative(self, monkeypatch):
         monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
-        points_cloudbot._cache["someviewer"] = (points_cloudbot.time.monotonic(), 100)
+        _cache_now("someviewer", 100)
 
         spender = asyncio.ensure_future(points_cloudbot.subtract_points("someviewer", 500))
         await asyncio.sleep(0)
@@ -195,11 +338,23 @@ class TestSpending:
 
 class TestGranting:
     @pytest.mark.asyncio
-    async def test_adds_then_reads_the_new_total_back(self, monkeypatch):
-        """
-        Cloudbot's confirmation reports the amount added, not the total,
-        and grant_points has to return a balance.
-        """
+    async def test_adds_to_a_held_balance_and_returns_the_new_total(self, monkeypatch):
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", mock_send)
+        _cache_now("someviewer", 750)
+
+        granter = asyncio.ensure_future(points_cloudbot.grant_points("someviewer", 100))
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event(
+            {"text": "mod has successfully added 100 Bunds to someviewer"}
+        )
+
+        assert await granter == 850
+        assert mock_send.await_args_list[0][0][0] == "!addpoints someviewer 100"
+
+    @pytest.mark.asyncio
+    async def test_sends_exactly_one_command(self, monkeypatch):
+        """There is no total to read back, so nothing tries to."""
         mock_send = AsyncMock(return_value=True)
         monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", mock_send)
 
@@ -208,25 +363,75 @@ class TestGranting:
         await points_cloudbot.handle_chat_event(
             {"text": "mod has successfully added 100 Bunds to someviewer"}
         )
-        await asyncio.sleep(0)
-        await points_cloudbot.handle_chat_event({"text": "@someviewer, you have 850 Bunds."})
+        await granter
 
-        assert await granter == 850
-        sent = [call[0][0] for call in mock_send.await_args_list]
-        assert sent == ["!addpoints someviewer 100", "!points someviewer"]
+        assert mock_send.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_the_read_back_ignores_the_cache(self, monkeypatch):
-        """The whole point is that the number just changed."""
+    async def test_returns_none_when_no_balance_was_held(self, monkeypatch):
+        """
+        Cloudbot's confirmation reports the amount added, not a total, and
+        no total can be read back. None is the honest answer; a zero would
+        be read as "this viewer has nothing".
+        """
         monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
-        points_cloudbot._cache["someviewer"] = (points_cloudbot.time.monotonic(), 750)
 
         granter = asyncio.ensure_future(points_cloudbot.grant_points("someviewer", 100))
         await asyncio.sleep(0)
         await points_cloudbot.handle_chat_event(
             {"text": "mod has successfully added 100 Bunds to someviewer"}
         )
-        await asyncio.sleep(0)
-        await points_cloudbot.handle_chat_event({"text": "@someviewer, you have 850 Bunds."})
 
-        assert await granter == 850
+        assert await granter is None
+
+    @pytest.mark.asyncio
+    async def test_an_unconfirmed_grant_raises(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"cloudbot_reply_timeout_seconds": 0.05})
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+
+        with pytest.raises(TimeoutError):
+            await points_cloudbot.grant_points("someviewer", 100)
+
+
+class TestUnknownUser:
+    """
+    Cloudbot answers a write about a user it has never seen with
+    "Unable to find <name>." - captured verbatim from this channel. It is
+    an answer, not a silence, so nothing here should sit out the timeout.
+    """
+
+    def test_parses_the_not_found_reply(self):
+        assert points_cloudbot.parse_not_found_reply("Unable to find pinkudagoat.") == "pinkudagoat"
+
+    def test_parses_it_with_an_at_sign(self):
+        assert points_cloudbot.parse_not_found_reply("Unable to find @SomeViewer.") == "someviewer"
+
+    def test_ignores_an_empty_name(self):
+        """`!addpoints 10` (no user) came back "Unable to find ." - nothing to resolve."""
+        assert points_cloudbot.parse_not_found_reply("Unable to find .") is None
+
+    def test_is_not_confused_with_a_balance_reply(self):
+        assert points_cloudbot.parse_not_found_reply("@someviewer, you have 19 Bunds.") is None
+
+    @pytest.mark.asyncio
+    async def test_a_spend_on_an_unknown_user_raises_rather_than_timing_out(self, monkeypatch):
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+
+        spender = asyncio.ensure_future(points_cloudbot.subtract_points("someviewer", 50))
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event({"text": "Unable to find someviewer."})
+
+        with pytest.raises(points_cloudbot.CloudbotUserNotFound):
+            await spender
+
+    @pytest.mark.asyncio
+    async def test_a_grant_on_an_unknown_user_raises(self, monkeypatch):
+        """Cloudbot cannot create a wallet, so this must not report success."""
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+
+        granter = asyncio.ensure_future(points_cloudbot.grant_points("someviewer", 50))
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event({"text": "Unable to find someviewer."})
+
+        with pytest.raises(points_cloudbot.CloudbotUserNotFound):
+            await granter

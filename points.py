@@ -85,6 +85,13 @@ DEFAULT_BACKEND = "api"
 # decrement, and the local ledger's subtract never yields mid-update.
 _grant_lock = asyncio.Lock()
 
+# The same protection for spends. The "api" and "local" backends implement
+# try_spend as read-check-write, which is exactly the interleaving hazard
+# _grant_lock exists for; the "cloudbot" backend doesn't need it (it never
+# reads) but takes it anyway, since one lock that always applies is easier
+# to reason about than a rule about which backend is live.
+_spend_lock = asyncio.Lock()
+
 
 def backend_name() -> str:
     """
@@ -144,6 +151,15 @@ async def _api_set_points_absolute(username: str, new_total: int) -> None:
             log.info(f"Set {username}'s balance to {new_total}")
 
 
+async def _api_try_spend(username: str, amount: int) -> "tuple[bool, int | None]":
+    """Read -> check -> subtract. Called with _spend_lock already held."""
+    current = await _api_get_user_points(username)
+    if amount > current:
+        return False, current
+    await _api_subtract_points(username, amount)
+    return True, None
+
+
 async def _api_grant_points(username: str, amount: int) -> int:
     """Read -> add -> set. Called with _grant_lock already held."""
     current = await _api_get_user_points(username)
@@ -156,7 +172,14 @@ async def _api_grant_points(username: str, amount: int) -> int:
 # ---------- Public API - identical whichever backend is live ----------
 
 async def get_user_points(username: str) -> int:
-    """Read a specific user's current balance. Raises if it can't be read."""
+    """
+    Read a specific user's current balance. Raises if it can't be read -
+    and under the cloudbot backend that is the normal case for anyone
+    whose balance isn't already cached, because Cloudbot's `!points`
+    ignores its argument and only ever answers about the account that
+    typed it. Nothing that charges points should depend on this; use
+    try_spend(), which does not need a read.
+    """
     backend = backend_name()
     if backend == "local":
         return await points_local.get_user_points(username)
@@ -178,7 +201,34 @@ async def subtract_points(username: str, amount: int) -> None:
     return await _api_subtract_points(username, amount)
 
 
-async def grant_points(username: str, amount: int) -> int:
+async def try_spend(username: str, amount: int) -> "tuple[bool, int | None]":
+    """
+    Spend `amount` if the viewer can afford it. The primitive every
+    points-charging feature should use.
+
+    Returns (True, None) on success, or (False, balance) when the viewer
+    was short, where `balance` is what they actually had - None only if a
+    backend genuinely cannot tell. Raises only when the ledger could not
+    be reached at all, which callers must treat as "not paid".
+
+    This exists instead of get_user_points-then-subtract_points because
+    that pair is a check followed by a separate write, and only some
+    backends can support it: the cloudbot backend cannot read a viewer's
+    balance at all, so it decides affordability by spending and seeing how
+    much Cloudbot took (points_cloudbot.try_spend). Folding both steps
+    into one call is what lets each backend answer the question the way
+    it actually can.
+    """
+    async with _spend_lock:
+        backend = backend_name()
+        if backend == "local":
+            return await points_local.try_spend(username, amount)
+        if backend == "cloudbot":
+            return await points_cloudbot.try_spend(username, amount)
+        return await _api_try_spend(username, amount)
+
+
+async def grant_points(username: str, amount: int) -> "int | None":
     """
     The shared "add points to this user" function - used by BOTH the
     Streamlabs Tips Socket API listener (Task #6, real donations) and the
@@ -186,7 +236,11 @@ async def grant_points(username: str, amount: int) -> int:
     Section 7/14's design: testing through the dashboard exercises the
     SAME code path as the real thing, not a separate simulation of it.
 
-    Returns the new balance.
+    Returns the new balance, or None when the live backend confirmed the
+    grant but cannot report a total - which the cloudbot backend often
+    cannot, since Cloudbot's confirmation reports the amount added and
+    there is no way to read a total back. Callers must render that as
+    "granted", not as a balance of zero.
     """
     async with _grant_lock:
         backend = backend_name()

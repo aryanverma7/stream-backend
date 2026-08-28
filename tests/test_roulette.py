@@ -26,8 +26,7 @@ class TestTriggerRoulette:
     @pytest.mark.asyncio
     async def test_succeeds_with_enough_points_and_starts_a_session(self, monkeypatch):
         monkeypatch.setattr(config, "_data", {"roulette_trigger_cost": 500})
-        monkeypatch.setattr(roulette, "get_user_points", AsyncMock(return_value=1000))
-        monkeypatch.setattr(roulette, "subtract_points", AsyncMock())
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
 
         result = await roulette.trigger_roulette("someviewer")
@@ -40,21 +39,18 @@ class TestTriggerRoulette:
     @pytest.mark.asyncio
     async def test_rejects_with_insufficient_points_without_deducting_anything(self, monkeypatch):
         monkeypatch.setattr(config, "_data", {"roulette_trigger_cost": 500})
-        monkeypatch.setattr(roulette, "get_user_points", AsyncMock(return_value=100))
-        mock_subtract = AsyncMock()
-        monkeypatch.setattr(roulette, "subtract_points", mock_subtract)
+        mock_spend = AsyncMock(return_value=(False, 100))
+        monkeypatch.setattr(roulette, "try_spend", mock_spend)
 
         result = await roulette.trigger_roulette("brokeviewer")
 
         assert result["ok"] is False
         assert "100" in result["reason"]
-        mock_subtract.assert_not_called()
         assert roulette._state.is_active is False
 
     @pytest.mark.asyncio
     async def test_rejects_a_second_trigger_while_one_is_already_active(self, monkeypatch):
-        monkeypatch.setattr(roulette, "get_user_points", AsyncMock(return_value=1000))
-        monkeypatch.setattr(roulette, "subtract_points", AsyncMock())
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
 
         await roulette.trigger_roulette("first")
@@ -76,8 +72,7 @@ class TestTriggerRoulette:
     @pytest.mark.asyncio
     async def test_broadcasts_roulette_started_with_the_full_weapon_list(self, monkeypatch):
         mock_broadcast = AsyncMock()
-        monkeypatch.setattr(roulette, "get_user_points", AsyncMock(return_value=1000))
-        monkeypatch.setattr(roulette, "subtract_points", AsyncMock())
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
         monkeypatch.setattr(roulette.widget_hub, "broadcast", mock_broadcast)
         # Pinned explicitly rather than relying on the OCR module's
         # deque happening to be empty - that is another module's shared
@@ -181,8 +176,7 @@ class TestAffordabilityDuringASession:
     @pytest.mark.asyncio
     async def test_trigger_snapshots_the_votable_set_and_only_weights_those(self, monkeypatch):
         monkeypatch.setattr(config, "_data", {})
-        monkeypatch.setattr(roulette, "get_user_points", AsyncMock(return_value=100000))
-        monkeypatch.setattr(roulette, "subtract_points", AsyncMock())
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
         monkeypatch.setattr(roulette.credit_ocr, "get_predicted_credits", lambda: 1000)
 
@@ -199,8 +193,7 @@ class TestAffordabilityDuringASession:
     async def test_the_started_broadcast_carries_the_prediction_and_the_prices(self, monkeypatch):
         mock_broadcast = AsyncMock()
         monkeypatch.setattr(config, "_data", {})
-        monkeypatch.setattr(roulette, "get_user_points", AsyncMock(return_value=100000))
-        monkeypatch.setattr(roulette, "subtract_points", AsyncMock())
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
         monkeypatch.setattr(roulette.widget_hub, "broadcast", mock_broadcast)
         monkeypatch.setattr(roulette.credit_ocr, "get_predicted_credits", lambda: 1000)
 
@@ -216,10 +209,9 @@ class TestAffordabilityDuringASession:
 
     @pytest.mark.asyncio
     async def test_rejects_a_vote_for_an_unaffordable_weapon_without_charging_points(self, monkeypatch):
-        mock_subtract = AsyncMock()
+        mock_spend = AsyncMock(return_value=(True, None))
         monkeypatch.setattr(config, "_data", {})
-        monkeypatch.setattr(roulette, "get_user_points", AsyncMock(return_value=100000))
-        monkeypatch.setattr(roulette, "subtract_points", mock_subtract)
+        monkeypatch.setattr(roulette, "try_spend", mock_spend)
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
         roulette._state.is_active = True
         roulette._state.predicted_credits = 1000
@@ -230,7 +222,7 @@ class TestAffordabilityDuringASession:
 
         assert result["ok"] is False
         assert "4700" in result["reason"]
-        mock_subtract.assert_not_called()
+        mock_spend.assert_not_called()
         assert "operator" not in roulette._state.weights
 
     @pytest.mark.asyncio
@@ -259,8 +251,7 @@ class TestAffordabilityDuringASession:
     @pytest.mark.asyncio
     async def test_an_affordable_weapon_still_votes_normally(self, monkeypatch):
         monkeypatch.setattr(config, "_data", {"roulette_weapon_base_costs": {}, "roulette_vote_cost_increment": 25})
-        monkeypatch.setattr(roulette, "get_user_points", AsyncMock(return_value=100000))
-        monkeypatch.setattr(roulette, "subtract_points", AsyncMock())
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
         roulette._state.is_active = True
         roulette._state.predicted_credits = 1000
@@ -282,8 +273,7 @@ class TestAffordabilityDuringASession:
         them had already paid points for it.
         """
         monkeypatch.setattr(config, "_data", {})
-        monkeypatch.setattr(roulette, "get_user_points", AsyncMock(return_value=100000))
-        monkeypatch.setattr(roulette, "subtract_points", AsyncMock())
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
         monkeypatch.setattr(roulette.credit_ocr, "get_predicted_credits", lambda: 3000)
 
@@ -334,32 +324,30 @@ class TestVote:
         roulette._state.is_active = True
         roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
         monkeypatch.setattr(config, "_data", {"roulette_vote_cost_increment": 25})
-        monkeypatch.setattr(roulette, "get_user_points", AsyncMock(return_value=1000))
-        mock_subtract = AsyncMock()
-        monkeypatch.setattr(roulette, "subtract_points", mock_subtract)
+        mock_spend = AsyncMock(return_value=(True, None))
+        monkeypatch.setattr(roulette, "try_spend", mock_spend)
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
 
         result = await roulette.vote("someviewer", "VANDAL")  # case-insensitivity check too
 
         assert result["ok"] is True
         assert roulette._state.weights["vandal"] == 1
-        mock_subtract.assert_called_once_with("someviewer", roulette.DEFAULT_VOTE_BASE_COST)
+        mock_spend.assert_called_once_with("someviewer", roulette.DEFAULT_VOTE_BASE_COST)
 
     @pytest.mark.asyncio
     async def test_cost_escalates_with_each_subsequent_vote_on_the_same_weapon(self, monkeypatch):
         roulette._state.is_active = True
         roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
         monkeypatch.setattr(config, "_data", {"roulette_vote_cost_increment": 25})
-        monkeypatch.setattr(roulette, "get_user_points", AsyncMock(return_value=10000))
-        mock_subtract = AsyncMock()
-        monkeypatch.setattr(roulette, "subtract_points", mock_subtract)
+        mock_spend = AsyncMock(return_value=(True, None))
+        monkeypatch.setattr(roulette, "try_spend", mock_spend)
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
 
         await roulette.vote("a", "vandal")
         await roulette.vote("b", "vandal")
         await roulette.vote("c", "vandal")
 
-        costs_charged = [call.args[1] for call in mock_subtract.call_args_list]
+        costs_charged = [call.args[1] for call in mock_spend.call_args_list]
         assert costs_charged == [50, 75, 100]  # base 50, then +25 each time
 
     @pytest.mark.asyncio
@@ -374,13 +362,13 @@ class TestVote:
         roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
         monkeypatch.setattr(config, "_data", {"roulette_vote_cost_increment": 25})
 
-        async def fake_get_points(username):
-            await asyncio.sleep(0)  # yield control, encouraging real interleaving
-            return 10000
+        mock_spend = AsyncMock(return_value=(True, None))
 
-        mock_subtract = AsyncMock()
-        monkeypatch.setattr(roulette, "get_user_points", fake_get_points)
-        monkeypatch.setattr(roulette, "subtract_points", mock_subtract)
+        async def slow_spend(username, amount):
+            await asyncio.sleep(0)  # yield control, encouraging real interleaving
+            return await mock_spend(username, amount)
+
+        monkeypatch.setattr(roulette, "try_spend", slow_spend)
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
 
         await asyncio.gather(
@@ -389,7 +377,7 @@ class TestVote:
             roulette.vote("c", "vandal"),
         )
 
-        costs_charged = sorted(call.args[1] for call in mock_subtract.call_args_list)
+        costs_charged = sorted(call.args[1] for call in mock_spend.call_args_list)
         assert costs_charged == [50, 75, 100]  # still correctly escalated, no duplicates
         assert roulette._state.weights["vandal"] == 3
 
@@ -397,14 +385,12 @@ class TestVote:
     async def test_rejects_insufficient_balance_without_incrementing_weight(self, monkeypatch):
         roulette._state.is_active = True
         roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
-        monkeypatch.setattr(roulette, "get_user_points", AsyncMock(return_value=10))
-        mock_subtract = AsyncMock()
-        monkeypatch.setattr(roulette, "subtract_points", mock_subtract)
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(False, 10)))
 
         result = await roulette.vote("brokeviewer", "operator")
 
         assert result["ok"] is False
-        mock_subtract.assert_not_called()
+        assert "10" in result["reason"]
         assert roulette._state.weights["operator"] == 0
 
 
@@ -732,8 +718,7 @@ class TestForcedBuyBadge:
     async def test_a_new_roulette_clears_a_stale_previous_forced_buy(self, monkeypatch):
         roulette._state.forced_buy_weapon = "phantom"
         roulette._state.forced_buy_phase = "active"
-        monkeypatch.setattr(roulette, "get_user_points", AsyncMock(return_value=1000))
-        monkeypatch.setattr(roulette, "subtract_points", AsyncMock())
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
         mock_broadcast = AsyncMock()
         monkeypatch.setattr(roulette.widget_hub, "broadcast", mock_broadcast)
 
@@ -1041,3 +1026,32 @@ class TestHandleChatCommand:
         await roulette.handle_chat_command(self.make_chat_event("someviewer", "!help"))
 
         assert "750" in mock_send.await_args[0][0]
+
+
+class TestTooPoorMessage:
+    """
+    What a viewer is told when they can't afford something. The balance is
+    optional because not every backend can report one - the cloudbot
+    backend only learns a balance when a spend comes back clamped.
+    """
+
+    def test_names_the_balance_when_the_backend_knows_it(self):
+        assert roulette._too_poor(500, 120) == "Need 500 points, you have 120"
+
+    def test_leaves_the_number_out_when_it_is_unknown(self):
+        """"you have 0" would be a guess, and a discouraging one."""
+        assert roulette._too_poor(500, None) == "Need 500 points"
+
+    def test_zero_is_reported_as_zero_not_as_unknown(self):
+        assert roulette._too_poor(500, 0) == "Need 500 points, you have 0"
+
+    @pytest.mark.asyncio
+    async def test_a_trigger_refused_without_a_known_balance_still_names_the_cost(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"roulette_trigger_cost": 500})
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(False, None)))
+
+        result = await roulette.trigger_roulette("someviewer")
+
+        assert result["ok"] is False
+        assert result["reason"] == "Need 500 points"
+        assert roulette._state.is_active is False
