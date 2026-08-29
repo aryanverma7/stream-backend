@@ -98,6 +98,48 @@ DEFAULT_WEAPON_CREDS_COST = 0
 # roster built from the raw reading offers weapons that cannot actually
 # be bought alongside them - 5000 creds is an Odin OR a Vandal plus a
 # full kit, not both.
+# What a full kit costs, per agent. Only the agents whose totals could be
+# sourced are here; anything missing falls back to
+# DEFAULT_ABILITY_RESERVE_CREDS and says so in the log, so the gap is
+# visible rather than silently averaged over.
+#
+# ALL OF THESE NEED CHECKING AGAINST THE CURRENT PATCH. Riot retunes
+# ability prices, new agents ship without entries, and the buy menu in
+# game is the only authority. That is why the whole table is overridable
+# from config.json (`roulette_agent_ability_costs`) and editable straight
+# from the admin dashboard - correcting a price is a text edit, never a
+# deploy.
+#
+# Two shapes are accepted per agent:
+#   "jett": 900                                   - a flat kit total
+#   "jett": {"cloudburst": {"cost": 200, "charges": 3},
+#            "updraft":    {"cost": 150, "charges": 2}}
+# The second is summed as cost x charges. Start from the flat number and
+# break an agent out into abilities when you want the detail; both are
+# read the same way.
+#
+# Free signature abilities (the E slot for most agents) are deliberately
+# NOT counted - they cost nothing at the buy menu, which is the only
+# thing this number is for.
+AGENT_KIT_CREDS_COSTS = {
+    "astra": 600,
+    "cypher": 600,
+    "killjoy": 600,
+    "viper": 600,
+    "brimstone": 650,
+    "breach": 700,
+    "kayo": 700,
+    "omen": 700,
+    "phoenix": 700,
+    "reyna": 700,
+    "skye": 700,
+    "sova": 700,
+    "yoru": 700,
+    "raze": 800,
+    "sage": 800,
+    "jett": 900,
+}
+
 DEFAULT_SHIELD_RESERVE_CREDS = 1000     # heavy shield
 DEFAULT_ABILITY_RESERVE_CREDS = 400     # rough, agent-independent - see reserved_creds()
 # A pistol round issues 800, and nobody buys heavy shield out of that.
@@ -328,6 +370,105 @@ def creds_cost_for(weapon: str) -> int:
     return WEAPON_CREDS_COSTS.get(weapon, DEFAULT_WEAPON_CREDS_COST)
 
 
+def normalize_agent(name: str) -> str:
+    """
+    Agent names as this module keys them: lowercase, letters and digits
+    only. KAY/O is typed "kayo", "kay/o" and "Kay-O" by different people
+    and is one agent in all three cases.
+    """
+    return "".join(ch for ch in (name or "").lower() if ch.isalnum())
+
+
+def agent_kit_cost(agent: str) -> "int | None":
+    """
+    What `agent`'s buyable abilities cost for one round, or None if this
+    agent has no entry anywhere.
+
+    config's `roulette_agent_ability_costs` is checked first and wins
+    outright, so a price Riot changed is fixed from the dashboard. Both
+    the flat-total and per-ability shapes are accepted - see
+    AGENT_KIT_CREDS_COSTS.
+    """
+    key = normalize_agent(agent)
+    if not key:
+        return None
+
+    overrides = config.get("roulette_agent_ability_costs", {}) or {}
+    entry = None
+    for name, value in overrides.items():
+        if normalize_agent(name) == key:
+            entry = value
+            break
+    if entry is None:
+        entry = AGENT_KIT_CREDS_COSTS.get(key)
+    if entry is None:
+        return None
+
+    if isinstance(entry, dict):
+        total = 0
+        for ability in entry.values():
+            if isinstance(ability, dict):
+                total += int(ability.get("cost", 0)) * int(ability.get("charges", 1))
+            else:
+                # A bare number per ability - one charge, which is the
+                # common case and not worth making people spell out.
+                total += int(ability)
+        return total
+    return int(entry)
+
+
+def current_agent() -> "str | None":
+    """
+    The agent the streamer is playing, if anyone has said. Set by the
+    !agent chat command or the dashboard, and remembered in config so it
+    survives a restart mid-session.
+    """
+    return config.get("roulette_current_agent", None) or None
+
+
+def set_agent(name: str) -> "tuple[str, int | None]":
+    """
+    Records the agent being played and returns (stored name, kit cost).
+
+    Written to config rather than held in memory because it changes once
+    per match, not once per round: a backend restart between matches
+    should not quietly go back to guessing.
+
+    An agent with no price entry is still accepted. Knowing the name is
+    worth something on its own - it shows up on the dashboard and in the
+    log line that says the fallback is being used, which is how the
+    missing entry gets noticed and filled in.
+    """
+    stored = normalize_agent(name)
+    config.set("roulette_current_agent", stored)
+    config.save()
+    cost = agent_kit_cost(stored)
+    if cost is None:
+        log.warning(
+            f"Agent set to {stored!r}, which has no entry in roulette_agent_ability_costs - "
+            f"falling back to {config.get('roulette_ability_reserve_creds', DEFAULT_ABILITY_RESERVE_CREDS)} "
+            f"creds for abilities. Add one from the dashboard to make the roster exact."
+        )
+    else:
+        log.info(f"Agent set to {stored!r} - reserving {cost} creds for abilities")
+    return stored, cost
+
+
+def ability_reserve_creds() -> int:
+    """
+    What to hold back for abilities: the current agent's real kit cost
+    when it is known, and a flat average when it isn't.
+
+    The flat number is a fallback, not a default worth keeping - it is
+    wrong for every agent by construction, since kits range from 600 to
+    900 and that spread is a whole tier of weapon.
+    """
+    cost = agent_kit_cost(current_agent() or "")
+    if cost is not None:
+        return cost
+    return config.get("roulette_ability_reserve_creds", DEFAULT_ABILITY_RESERVE_CREDS)
+
+
 def reserved_creds(predicted_credits: int) -> int:
     """
     Credits that are spoken for before any gun is bought.
@@ -344,8 +485,7 @@ def reserved_creds(predicted_credits: int) -> int:
     if predicted_credits <= config.get("roulette_pistol_round_max_creds", DEFAULT_PISTOL_ROUND_MAX_CREDS):
         return config.get("roulette_pistol_reserved_creds", DEFAULT_PISTOL_RESERVE_CREDS)
     shield = config.get("roulette_shield_reserve_creds", DEFAULT_SHIELD_RESERVE_CREDS)
-    abilities = config.get("roulette_ability_reserve_creds", DEFAULT_ABILITY_RESERVE_CREDS)
-    return shield + abilities
+    return shield + ability_reserve_creds()
 
 
 def spendable_creds(predicted_credits: "int | None") -> "int | None":
@@ -833,6 +973,13 @@ async def handle_chat_command(event: dict):
         # during a busy window.
         if not result.get("ok"):
             await _reply_in_chat(platform, f"@{username} {result['reason']}")
+    elif command == "agent":
+        # Once per match, not once per round - so a typed name costs
+        # almost nothing, and is far more reliable than a second OCR
+        # target would be. The buy menu does show ability prices, but
+        # reading four more numbers multiplies every failure mode the
+        # credit reader already has, for a value that changes this rarely.
+        await _reply_in_chat(platform, _handle_agent_command(username, text))
     elif command in ("help", "commands"):
         # Answered regardless of whether a session is active - this is
         # the one command a viewer needs to be able to reach at any time,
@@ -848,6 +995,46 @@ async def handle_chat_command(event: dict):
         result = await vote(username, command, platform=platform)
         if not result.get("ok"):
             await _reply_in_chat(platform, f"@{username} {result['reason']}")
+
+
+def _agent_command_is_allowed(username: str) -> bool:
+    """
+    Who may set the agent.
+
+    Streamer.bot's chat payload carries no role here, so moderator status
+    cannot be read - the allowlist is explicit instead. It defaults to the
+    channel owner alone, because an open !agent would let anyone reshape
+    the votable roster by claiming a 900-cred kit.
+    """
+    allowed = config.get("roulette_agent_command_users", None)
+    if allowed is None:
+        owner = config.get("streamlabs_channel", "")
+        allowed = [owner] if owner else []
+    return username.lower() in {str(name).lower() for name in allowed}
+
+
+def _handle_agent_command(username: str, text: str) -> str:
+    """Answers !agent, and !agent <name>."""
+    parts = text.split()
+    if len(parts) < 2:
+        agent = current_agent()
+        if agent is None:
+            return f"@{username} No agent set - abilities are being estimated at {ability_reserve_creds()} creds"
+        cost = agent_kit_cost(agent)
+        if cost is None:
+            return f"@{username} Playing {agent} (no ability prices on file - estimating {ability_reserve_creds()} creds)"
+        return f"@{username} Playing {agent} - {cost} creds of abilities reserved each round"
+
+    if not _agent_command_is_allowed(username):
+        return f"@{username} Only the streamer can set the agent"
+
+    stored, cost = set_agent(parts[1])
+    if cost is None:
+        return (
+            f"@{username} Agent set to {stored} - no ability prices on file for them, "
+            f"so abilities stay estimated at {ability_reserve_creds()} creds"
+        )
+    return f"@{username} Agent set to {stored} - reserving {cost} creds for abilities each round"
 
 
 def _help_message() -> str:

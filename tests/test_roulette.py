@@ -1498,3 +1498,197 @@ class TestReservedCreds:
         payload = mock_broadcast.call_args[0][0]
         assert payload["predicted_credits"] == 5000
         assert payload["spendable_credits"] == 3600
+
+
+class TestAgentKitCosts:
+    """
+    Ability prices vary by 300 creds between the cheapest and priciest
+    kits - a whole tier of weapon - so a flat average is wrong for every
+    agent by construction. The agent changes once per match, which is why
+    a typed name beats a second OCR target here.
+    """
+
+    def test_reads_the_built_in_table(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+        assert roulette.agent_kit_cost("jett") == 900
+        assert roulette.agent_kit_cost("cypher") == 600
+
+    def test_an_unknown_agent_has_no_cost_rather_than_a_guess(self, monkeypatch):
+        """A new agent ships with no entry, and that has to be visible."""
+        monkeypatch.setattr(config, "_data", {})
+        assert roulette.agent_kit_cost("someagent") is None
+        assert roulette.agent_kit_cost("") is None
+
+    def test_names_are_normalized(self, monkeypatch):
+        """KAY/O gets typed three different ways and is one agent each time."""
+        monkeypatch.setattr(config, "_data", {})
+        assert roulette.agent_kit_cost("KAY/O") == 700
+        assert roulette.agent_kit_cost("kay-o") == 700
+        assert roulette.agent_kit_cost("Kayo") == 700
+
+    def test_a_config_override_beats_the_built_in_table(self, monkeypatch):
+        """Riot retunes ability prices, so this has to be fixable without a deploy."""
+        monkeypatch.setattr(config, "_data", {"roulette_agent_ability_costs": {"jett": 750}})
+        assert roulette.agent_kit_cost("jett") == 750
+
+    def test_an_override_can_add_an_agent_the_table_never_had(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"roulette_agent_ability_costs": {"Clove": 650}})
+        assert roulette.agent_kit_cost("clove") == 650
+
+    def test_a_per_ability_breakdown_is_summed(self, monkeypatch):
+        monkeypatch.setattr(
+            config,
+            "_data",
+            {
+                "roulette_agent_ability_costs": {
+                    "jett": {
+                        "cloudburst": {"cost": 200, "charges": 3},
+                        "updraft": {"cost": 150, "charges": 2},
+                    }
+                }
+            },
+        )
+        assert roulette.agent_kit_cost("jett") == 900
+
+    def test_an_ability_with_no_charge_count_is_one_charge(self, monkeypatch):
+        monkeypatch.setattr(
+            config,
+            "_data",
+            {"roulette_agent_ability_costs": {"sage": {"barrier": {"cost": 400}, "slow": 200}}},
+        )
+        assert roulette.agent_kit_cost("sage") == 600
+
+
+class TestAbilityReserve:
+    def test_the_current_agents_kit_is_reserved(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"roulette_current_agent": "jett"})
+        assert roulette.ability_reserve_creds() == 900
+        assert roulette.reserved_creds(5000) == 1900
+
+    def test_a_cheaper_agent_leaves_more_for_the_gun(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"roulette_current_agent": "cypher"})
+        assert roulette.spendable_creds(5000) == 3400
+
+    def test_the_agent_changes_which_weapons_are_offered(self, monkeypatch):
+        """
+        The whole reason this is worth knowing. At 4500 creds a Cypher can
+        take a Vandal and still buy shield and kit; a Jett cannot, because
+        her abilities cost 300 more. A flat average gets one of them wrong.
+        """
+        monkeypatch.setattr(config, "_data", {"roulette_current_agent": "cypher"})
+        assert roulette.spendable_creds(4500) == 2900   # 4500 - 1000 - 600
+        on_cypher = roulette.affordable_weapons(4500)
+
+        monkeypatch.setattr(config, "_data", {"roulette_current_agent": "jett"})
+        assert roulette.spendable_creds(4500) == 2600   # 4500 - 1000 - 900
+        on_jett = roulette.affordable_weapons(4500)
+
+        assert "vandal" in on_cypher
+        assert "vandal" not in on_jett
+        assert set(on_jett) < set(on_cypher)
+
+    def test_no_agent_set_falls_back_to_the_flat_estimate(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+        assert roulette.current_agent() is None
+        assert roulette.ability_reserve_creds() == roulette.DEFAULT_ABILITY_RESERVE_CREDS
+
+    def test_an_agent_with_no_prices_falls_back_too(self, monkeypatch):
+        """Knowing the name is still worth something - it names the gap in the log."""
+        monkeypatch.setattr(config, "_data", {"roulette_current_agent": "someagent"})
+        assert roulette.ability_reserve_creds() == roulette.DEFAULT_ABILITY_RESERVE_CREDS
+
+    def test_a_pistol_round_ignores_the_agent_entirely(self, monkeypatch):
+        """Nobody buys a full kit AND a shield out of 800."""
+        monkeypatch.setattr(config, "_data", {"roulette_current_agent": "jett"})
+        assert roulette.reserved_creds(800) == 400
+
+
+class TestAgentCommand:
+    """
+    !agent, gated on an allowlist. Streamer.bot's chat payload carries no
+    role here, so moderator status can't be read - and an open !agent
+    would let anyone reshape the votable roster by claiming a 900-cred kit.
+    """
+
+    def test_the_channel_owner_may_set_it(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"streamlabs_channel": "dualbladex"})
+        assert roulette._agent_command_is_allowed("dualbladex") is True
+        assert roulette._agent_command_is_allowed("DualBladeX") is True
+
+    def test_nobody_else_may(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"streamlabs_channel": "dualbladex"})
+        assert roulette._agent_command_is_allowed("someviewer") is False
+
+    def test_the_allowlist_is_configurable(self, monkeypatch):
+        monkeypatch.setattr(
+            config, "_data", {"roulette_agent_command_users": ["dualbladex", "amod"]}
+        )
+        assert roulette._agent_command_is_allowed("amod") is True
+        assert roulette._agent_command_is_allowed("someviewer") is False
+
+    def test_nothing_configured_means_nobody(self, monkeypatch):
+        """Safe by default - an open !agent is a way to rig the roster."""
+        monkeypatch.setattr(config, "_data", {})
+        assert roulette._agent_command_is_allowed("anyone") is False
+
+    def test_setting_an_agent_reports_the_reserve(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"streamlabs_channel": "dualbladex"})
+        monkeypatch.setattr(config, "save", lambda: None)
+
+        reply = roulette._handle_agent_command("dualbladex", "!agent jett")
+
+        assert "jett" in reply
+        assert "900" in reply
+        assert roulette.current_agent() == "jett"
+
+    def test_setting_an_unknown_agent_says_the_prices_are_missing(self, monkeypatch):
+        """That message is how a missing entry gets noticed and filled in."""
+        monkeypatch.setattr(config, "_data", {"streamlabs_channel": "dualbladex"})
+        monkeypatch.setattr(config, "save", lambda: None)
+
+        reply = roulette._handle_agent_command("dualbladex", "!agent someagent")
+
+        assert "someagent" in reply
+        assert "no ability prices" in reply.lower()
+        assert roulette.current_agent() == "someagent"
+
+    def test_a_viewer_setting_it_is_refused_and_changes_nothing(self, monkeypatch):
+        monkeypatch.setattr(
+            config, "_data", {"streamlabs_channel": "dualbladex", "roulette_current_agent": "sage"}
+        )
+        monkeypatch.setattr(config, "save", lambda: None)
+
+        reply = roulette._handle_agent_command("someviewer", "!agent jett")
+
+        assert "only the streamer" in reply.lower()
+        assert roulette.current_agent() == "sage"
+
+    def test_anyone_may_ask_what_the_agent_is(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"roulette_current_agent": "jett"})
+
+        reply = roulette._handle_agent_command("someviewer", "!agent")
+
+        assert "jett" in reply
+        assert "900" in reply
+
+    def test_asking_with_no_agent_set_says_it_is_estimated(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+
+        reply = roulette._handle_agent_command("someviewer", "!agent")
+
+        assert "no agent set" in reply.lower()
+
+    @pytest.mark.asyncio
+    async def test_the_command_is_wired_up(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"roulette_current_agent": "jett"})
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+
+        await roulette.handle_chat_command(
+            {
+                "event": {"source": "Twitch", "type": "ChatMessage"},
+                "data": {"user": {"login": "someviewer"}, "text": "!agent"},
+            }
+        )
+
+        assert "jett" in mock_send.await_args[0][0]

@@ -31,6 +31,34 @@
   "roulette_affordability_filter_enabled": true,
   "roulette_random_pick_when_no_votes": true,
   "roulette_weapon_base_costs": {},
+  "roulette_base_wheel_share": 1,
+
+  "roulette_shield_reserve_creds": 1000,
+  "roulette_ability_reserve_creds": 400,
+  "roulette_pistol_round_max_creds": 800,
+  "roulette_pistol_reserved_creds": 400,
+
+  "roulette_current_agent": "",
+  "roulette_agent_command_users": null,
+
+  "roulette_agent_ability_costs": {
+    "astra": 600,
+    "breach": 700,
+    "brimstone": 650,
+    "cypher": 600,
+    "jett": 900,
+    "kayo": 700,
+    "killjoy": 600,
+    "omen": 700,
+    "phoenix": 700,
+    "raze": 800,
+    "reyna": 700,
+    "sage": 800,
+    "skye": 700,
+    "sova": 700,
+    "viper": 600,
+    "yoru": 700
+  },
   "forced_buy_queued_duration_seconds": 30,
   "forced_buy_active_duration_seconds": 100,
 

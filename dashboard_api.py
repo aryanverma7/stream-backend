@@ -83,6 +83,44 @@ async def grant_points_route(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=502)
 
 
+# ---------- Agent selection ----------
+
+async def get_agents(request: web.Request) -> web.Response:
+    """
+    Every agent with ability prices on file, plus whoever is selected.
+
+    Serves the merged view - config's overrides on top of the built-in
+    table - so the dashboard's dropdown lists exactly what the roster
+    calculation will actually find.
+    """
+    names = {roulette.normalize_agent(name) for name in roulette.AGENT_KIT_CREDS_COSTS}
+    names |= {
+        roulette.normalize_agent(name)
+        for name in (config.get("roulette_agent_ability_costs", {}) or {})
+    }
+    return web.json_response({
+        "current": roulette.current_agent(),
+        "agents": [
+            {"name": name, "kit_cost": roulette.agent_kit_cost(name)}
+            for name in sorted(n for n in names if n)
+        ],
+    })
+
+
+async def set_agent_route(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+        name = body["agent"]
+    except (KeyError, ValueError, TypeError):
+        return web.json_response({"error": "Body must be {\"agent\": str}"}, status=400)
+
+    stored, cost = roulette.set_agent(name)
+    # kit_cost null means no prices on file - accepted deliberately, since
+    # the name alone still shows up on the panel and in the log line that
+    # says the fallback is in use, which is how a missing entry gets seen.
+    return web.json_response({"agent": stored, "kit_cost": cost})
+
+
 # ---------- Log viewer ----------
 
 async def get_logs(request: web.Request) -> web.Response:
@@ -118,8 +156,20 @@ def _credit_prediction() -> dict:
     """
     predicted = credit_ocr.get_predicted_credits()
     votable = roulette.affordable_weapons(predicted)
+    agent = roulette.current_agent()
     return {
         "predicted_credits": predicted,
+        # What is actually left for a gun once shields and abilities are
+        # taken out, which is the number the roster was built from. The
+        # raw reading is what the streamer sees in game; showing only that
+        # makes the roster look wrong.
+        "spendable_credits": roulette.spendable_creds(predicted),
+        "reserved_credits": None if predicted is None else roulette.reserved_creds(predicted),
+        "agent": agent,
+        # None means this agent has no ability prices on file and the flat
+        # fallback is in use - worth surfacing, since that is the state
+        # somebody has to fix by adding an entry.
+        "agent_kit_cost": roulette.agent_kit_cost(agent or ""),
         "readings": credit_ocr.recent_readings(),
         # Not part of the prediction and never used as one - the last value
         # OCR ever managed to read, which survives the per-buy-phase reset
@@ -189,5 +239,7 @@ def register_routes(app: web.Application):
     app.router.add_put("/api/config", update_config)
     app.router.add_get("/api/points/{username}", get_points_balance)
     app.router.add_post("/api/points/grant", grant_points_route)
+    app.router.add_get("/api/agents", get_agents)
+    app.router.add_post("/api/agents", set_agent_route)
     app.router.add_get("/api/logs", get_logs)
     app.router.add_get("/api/status", get_status)
