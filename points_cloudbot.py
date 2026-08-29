@@ -259,8 +259,16 @@ async def _await_reply(waiters: dict, username: str, command: str):
     try:
         return await asyncio.wait_for(future, timeout=_timeout())
     except asyncio.TimeoutError:
+        # Named causes, in the order they have actually happened here. The
+        # first one used to be the only suggestion, and it sent a real
+        # investigation the wrong way: the silence was a username Cloudbot
+        # has no record of on this platform, which it answers on YouTube
+        # with "Unable to find" and on Twitch with nothing at all.
         raise TimeoutError(
-            f"Cloudbot did not answer {command!r} within {_timeout()}s - is the bot account a moderator?"
+            f"Cloudbot did not answer {command!r} within {_timeout()}s. Either it has no "
+            f"record of that user on {config.get('cloudbot_platform', 'twitch')} (it stays "
+            f"silent there rather than saying so), or its command cooldown swallowed this "
+            f"one, or the account we speak as is not a moderator."
         )
     finally:
         remaining = waiters.get(key, [])

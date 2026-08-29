@@ -787,7 +787,7 @@ class TestHandleChatCommand:
 
         await roulette.handle_chat_command(self.make_chat_event("someviewer", "!vandal"))
 
-        mock_vote.assert_called_once_with("someviewer", "vandal")
+        mock_vote.assert_called_once_with("someviewer", "vandal", platform="twitch")
 
     @pytest.mark.asyncio
     async def test_ignores_messages_that_are_not_commands(self, monkeypatch):
@@ -842,7 +842,7 @@ class TestHandleChatCommand:
 
         await roulette.handle_chat_command(self.make_chat_event("someviewer", "!notarealgun"))
 
-        mock_vote.assert_called_once_with("someviewer", "notarealgun")
+        mock_vote.assert_called_once_with("someviewer", "notarealgun", platform="twitch")
 
     @pytest.mark.asyncio
     async def test_broadcasts_invalid_vote_feedback_for_an_unrecognized_weapon(self, monkeypatch):
@@ -1106,3 +1106,80 @@ class TestUnknownUserRefusal:
         assert result["ok"] is False
         assert "try again" in result["reason"].lower()
         assert "no record" not in result["reason"].lower()
+
+
+class TestUnreachableWallet:
+    """
+    Cloudbot on Twitch answers a username it has never seen with silence,
+    not with "Unable to find" - so charging a YouTube viewer costs the
+    full reply timeout and then reports a generic outage. Refused up front
+    instead, before any command goes out.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_trigger_from_the_other_platform_is_refused_without_spending(self, monkeypatch):
+        monkeypatch.setattr(
+            config, "_data", {"points_backend": "cloudbot", "cloudbot_platform": "twitch"}
+        )
+        mock_spend = AsyncMock(return_value=(True, None))
+        monkeypatch.setattr(roulette, "try_spend", mock_spend)
+
+        result = await roulette.trigger_roulette("someviewer", platform="youtube")
+
+        assert result["ok"] is False
+        assert "twitch chat" in result["reason"].lower()
+        mock_spend.assert_not_called()
+        assert roulette._state.is_active is False
+
+    @pytest.mark.asyncio
+    async def test_a_vote_from_the_other_platform_is_refused_without_spending(self, monkeypatch):
+        monkeypatch.setattr(
+            config, "_data", {"points_backend": "cloudbot", "cloudbot_platform": "twitch"}
+        )
+        roulette._state.is_active = True
+        roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
+        mock_spend = AsyncMock(return_value=(True, None))
+        monkeypatch.setattr(roulette, "try_spend", mock_spend)
+
+        result = await roulette.vote("someviewer", "vandal", platform="youtube")
+
+        assert result["ok"] is False
+        mock_spend.assert_not_called()
+        assert roulette._state.weights["vandal"] == 0
+
+    @pytest.mark.asyncio
+    async def test_the_ledger_platform_itself_is_allowed(self, monkeypatch):
+        monkeypatch.setattr(
+            config, "_data", {"points_backend": "cloudbot", "cloudbot_platform": "twitch"}
+        )
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+
+        result = await roulette.trigger_roulette("someviewer", platform="twitch")
+
+        assert result["ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_the_other_backends_charge_everyone_normally(self, monkeypatch):
+        """Only Cloudbot keeps a separate wallet per platform."""
+        monkeypatch.setattr(config, "_data", {"points_backend": "local"})
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+
+        result = await roulette.trigger_roulette("someviewer", platform="youtube")
+
+        assert result["ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_mistyped_word_still_reads_as_a_typo_not_a_wallet_problem(self, monkeypatch):
+        """The guard sits with the payment, after the "is that a weapon?" checks."""
+        monkeypatch.setattr(
+            config, "_data", {"points_backend": "cloudbot", "cloudbot_platform": "twitch"}
+        )
+        roulette._state.is_active = True
+        roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+
+        result = await roulette.vote("someviewer", "aries", platform="youtube")
+
+        assert "isn't a recognized weapon" in result["reason"]

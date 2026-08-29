@@ -39,7 +39,7 @@ import time
 import credit_ocr
 from config import config
 from logger import get_logger
-from points import UnknownUser, try_spend
+from points import UnknownUser, backend_name as points_backend_name, try_spend
 from streamerbot_client import parse_chat_message, streamerbot
 from widget_hub import widget_hub
 
@@ -155,6 +155,35 @@ def _now() -> float:
     return time.time()
 
 
+def _unreachable_wallet(platform: str) -> "str | None":
+    """
+    The refusal for a viewer whose chat has no wallet this backend can
+    reach, or None when they are fine.
+
+    Checked BEFORE any spend, because the alternative is worse than a
+    wrong answer: Cloudbot on Twitch does not say "Unable to find" for a
+    name it has never seen, it says nothing, so charging a YouTube viewer
+    sits out the full reply timeout and then reports a generic outage. Six
+    seconds inside an eighteen-second voting window, for a viewer who was
+    never going to be chargeable.
+
+    Only the cloudbot backend has this problem. Cloudbot keeps a separate
+    wallet per platform, and only the one on `cloudbot_platform` can be
+    addressed by username at all - `!addpoints <youtube name>` typed in
+    YouTube chat answers "Unable to find" for both the YouTube display
+    name and the Twitch login.
+    """
+    if points_backend_name() != "cloudbot":
+        return None
+    ledger = config.get("cloudbot_platform", "twitch")
+    if not platform or platform.lower() == ledger.lower():
+        return None
+    return (
+        f"Points are only kept in {ledger} chat right now, so the roulette can't "
+        f"charge {platform} viewers - come say hello in {ledger} chat"
+    )
+
+
 def _unknown_user_message() -> str:
     """
     What a viewer is told when the points ledger has never heard of them.
@@ -254,6 +283,10 @@ async def trigger_roulette(username: str, platform: str = "twitch") -> dict:
     if is_on_cooldown():
         return {"ok": False, "reason": "Roulette is on cooldown"}
 
+    unreachable = _unreachable_wallet(platform)
+    if unreachable is not None:
+        return {"ok": False, "reason": unreachable}
+
     cost = config.get("roulette_trigger_cost", DEFAULT_TRIGGER_COST)
     async with _spend_lock:
         # One call, not a balance check followed by a deduction. Whether
@@ -314,7 +347,7 @@ async def trigger_roulette(username: str, platform: str = "twitch") -> dict:
     return {"ok": True}
 
 
-async def vote(username: str, weapon: str) -> dict:
+async def vote(username: str, weapon: str, platform: str = "twitch") -> dict:
     weapon = weapon.lower()
     if not _state.is_active:
         return {"ok": False, "reason": "No roulette is currently active"}
@@ -358,6 +391,10 @@ async def vote(username: str, weapon: str) -> dict:
     # paying more than the first. The escalating cost only actually
     # escalates if the whole read-cost -> spend -> increment sequence is
     # serialized per weapon, not just the spend itself.
+    unreachable = _unreachable_wallet(platform)
+    if unreachable is not None:
+        return {"ok": False, "reason": unreachable}
+
     async with _spend_lock:
         cost = vote_cost_for(weapon)
         try:
@@ -624,7 +661,7 @@ async def handle_chat_command(event: dict):
         else:
             await _reply_in_chat(platform, f"@{username} {result['reason']}")
     elif command in WEAPONS:
-        result = await vote(username, command)
+        result = await vote(username, command, platform=platform)
         # A successful vote stays silent on purpose - the overlay already
         # shows it, and one chat line per vote would drown the channel
         # during a busy window.
@@ -642,7 +679,7 @@ async def handle_chat_command(event: dict):
         # other bot setup) would get incorrectly flagged as an "invalid
         # weapon" every time it happened to coincide with a live roulette,
         # which isn't what this is meant to catch.
-        result = await vote(username, command)
+        result = await vote(username, command, platform=platform)
         if not result.get("ok"):
             await _reply_in_chat(platform, f"@{username} {result['reason']}")
 
