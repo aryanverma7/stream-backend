@@ -46,12 +46,26 @@ load-bearing, none of them documented anywhere:
     without a read: try_spend() spends first, and a short spend both
     identifies itself and reveals the exact balance. See try_spend().
 
-  * Cloudbot's user database is PER PLATFORM. `!addpoints pinkuthagoat`
-    works in Twitch chat and answers "Unable to find pinkuthagoat." in
-    YouTube chat, and no YouTube name works there either. Commands go to
-    `cloudbot_platform` (default "twitch"), so the points economy is
-    Twitch-only - a YouTube-only viewer has a separate Cloudbot wallet
-    that nothing here can address.
+  * Lookups are scoped to the platform the command is typed on, AND to
+    that platform's own users. Streamlabs' dashboard shows one Loyalty
+    list holding both platforms, which is display-only - it is not one
+    addressable pool. Established by test:
+      - `!addpoints pinkuthagoat 500` in TWITCH chat: works.
+      - the same command in YOUTUBE chat: "Unable to find pinkuthagoat."
+        Mod commands resolve nobody there, not even Twitch users.
+      - `!addpoints pinkukumarchinkiwala4849 10` (a YouTube row) in
+        TWITCH chat: "Unable to find pinkukumarchinkiwala4849."
+    So YouTube rows are unreachable from everywhere, and the points
+    economy is Twitch-only. roulette._unreachable_wallet() refuses a
+    non-Twitch viewer up front rather than sending a command that cannot
+    work.
+
+  * Cloudbot lowercases the target and strips ONE leading "@" before
+    looking it up. `!addpoints @DualBladeX 10` answered "successfully
+    added 10 Bunds to dualbladex" - it matched the Twitch login, not the
+    YouTube row literally named "@DualBladeX", and `!addpoints
+    @@DualBladeX` then failed on "@dualbladex". Two YouTube rows are
+    stored with a leading "@", which no input can address.
 
 Requirements this backend has that the others don't:
   * The account Streamer.bot speaks as must be a MODERATOR - !addpoints
@@ -259,16 +273,15 @@ async def _await_reply(waiters: dict, username: str, command: str):
     try:
         return await asyncio.wait_for(future, timeout=_timeout())
     except asyncio.TimeoutError:
-        # Named causes, in the order they have actually happened here. The
-        # first one used to be the only suggestion, and it sent a real
-        # investigation the wrong way: the silence was a username Cloudbot
-        # has no record of on this platform, which it answers on YouTube
-        # with "Unable to find" and on Twitch with nothing at all.
+        # Named causes rather than one guess. The only suggestion here
+        # used to be "is the bot account a moderator?", and it sent a real
+        # investigation the wrong way twice - the actual cause that time
+        # was this module's own caller blocking the socket read loop, so
+        # Cloudbot's reply was sitting unread rather than unsent.
         raise TimeoutError(
-            f"Cloudbot did not answer {command!r} within {_timeout()}s. Either it has no "
-            f"record of that user on {config.get('cloudbot_platform', 'twitch')} (it stays "
-            f"silent there rather than saying so), or its command cooldown swallowed this "
-            f"one, or the account we speak as is not a moderator."
+            f"Cloudbot did not answer {command!r} within {_timeout()}s - its command "
+            f"cooldown may have swallowed this one, the account we speak as may not be a "
+            f"moderator, or nothing may be reading the socket."
         )
     finally:
         remaining = waiters.get(key, [])

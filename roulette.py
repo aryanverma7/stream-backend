@@ -160,18 +160,19 @@ def _unreachable_wallet(platform: str) -> "str | None":
     The refusal for a viewer whose chat has no wallet this backend can
     reach, or None when they are fine.
 
-    Checked BEFORE any spend, because the alternative is worse than a
-    wrong answer: Cloudbot on Twitch does not say "Unable to find" for a
-    name it has never seen, it says nothing, so charging a YouTube viewer
-    sits out the full reply timeout and then reports a generic outage. Six
-    seconds inside an eighteen-second voting window, for a viewer who was
-    never going to be chargeable.
+    Checked BEFORE any spend, because the spend cannot succeed and the
+    viewer would otherwise wait out the full Cloudbot reply timeout to be
+    told something generic - six seconds inside an eighteen-second voting
+    window, for someone who was never chargeable.
 
-    Only the cloudbot backend has this problem. Cloudbot keeps a separate
-    wallet per platform, and only the one on `cloudbot_platform` can be
-    addressed by username at all - `!addpoints <youtube name>` typed in
-    YouTube chat answers "Unable to find" for both the YouTube display
-    name and the Twitch login.
+    Only the cloudbot backend has this problem, and it is not fixable from
+    here. Cloudbot resolves a username only within the platform the
+    command is typed on, and only among that platform's own users:
+    `!addpoints pinkuthagoat` works in Twitch chat, answers "Unable to
+    find" in YouTube chat, and a YouTube row is equally unreachable from
+    Twitch chat. Streamlabs' dashboard shows both platforms in one Loyalty
+    list, which is display-only. See points_cloudbot.py's module docstring
+    for the tests behind each of those.
     """
     if points_backend_name() != "cloudbot":
         return None
