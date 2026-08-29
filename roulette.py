@@ -97,6 +97,13 @@ DEFAULT_TRIGGER_COST = 500
 DEFAULT_VOTE_BASE_COST = 50
 DEFAULT_VOTE_COST_INCREMENT = 25
 DEFAULT_VOTING_DURATION_SECONDS = 18
+# What every votable weapon is worth on the wheel before anyone votes.
+# Each vote adds one more, so at the default a single vote doubles that
+# weapon's slice rather than eliminating the rest of the roster. Raise it
+# to flatten the odds (at 5, one vote is a 20% edge rather than 100%);
+# lower it towards 0 to make votes decisive, which is the behaviour this
+# replaced.
+DEFAULT_BASE_WHEEL_SHARE = 1
 DEFAULT_COOLDOWN_SECONDS = 90
 DEFAULT_FORCED_BUY_QUEUED_SECONDS = 30  # rough stand-in for "the buy phase has probably ended"
 # ...and this one for "the round is over, so the gun isn't in play any more".
@@ -153,6 +160,53 @@ _spend_lock = asyncio.Lock()
 
 def _now() -> float:
     return time.time()
+
+
+def wheel_shares() -> dict:
+    """
+    How much of the wheel each votable weapon occupies.
+
+    Every weapon on the session's roster gets `roulette_base_wheel_share`
+    to begin with, and each vote adds one more. A vote is therefore a
+    thumb on the scale, not an elimination: one vote for the vandal in an
+    18-weapon session makes it 2/19 of the wheel while the other
+    seventeen hold 1/19 each, which is what a viewer paying 50 points for
+    "more chance" is actually buying.
+
+    This replaced taking the single highest weight, which made the first
+    vote decide the round outright - the other seventeen weapons were
+    still listed, still votable, and could no longer win. It also folds
+    the no-votes case in rather than special-casing it: with no votes
+    every share is the base, and a uniform wheel is exactly what an
+    unvoted roulette is.
+    """
+    base = config.get("roulette_base_wheel_share", DEFAULT_BASE_WHEEL_SHARE)
+    return {weapon: base + votes for weapon, votes in _state.weights.items()}
+
+
+def draw_winner(shares: dict) -> "str | None":
+    """
+    Spins the wheel described by `shares`.
+
+    sorted() rather than the dict's own order so a seeded random is
+    reproducible in tests - the roster's order depends on the
+    affordability snapshot, which depends on OCR.
+    """
+    weapons = sorted(shares)
+    if not weapons:
+        return None
+    weights = [shares[w] for w in weapons]
+    if sum(weights) <= 0:
+        return None
+    return random.choices(weapons, weights=weights, k=1)[0]
+
+
+def _odds_text(shares: dict, winner: str) -> str:
+    """The winner's share of the wheel, for the chat announcement."""
+    total = sum(shares.values())
+    if total <= 0:
+        return "no odds"
+    return f"{round(100 * shares[winner] / total)}% of the wheel"
 
 
 def _unreachable_wallet(platform: str) -> "str | None":
@@ -334,6 +388,10 @@ async def trigger_roulette(username: str, platform: str = "twitch") -> dict:
             # message, so no widget change is needed for it to keep working.
             "predicted_credits": predicted,
             "weapon_creds_costs": {w: creds_cost_for(w) for w in votable},
+            # What every weapon is worth on the wheel before any votes,
+            # so the overlay draws the same odds the draw will use rather
+            # than hardcoding a number that can drift from config.
+            "base_wheel_share": config.get("roulette_base_wheel_share", DEFAULT_BASE_WHEEL_SHARE),
         },
         tag="roulette",
     )
@@ -433,32 +491,29 @@ async def end_roulette() -> "str | None":
 
     _state.is_active = False
     anyone_voted = bool(_state.weights) and max(_state.weights.values()) > 0
-    randomly_picked = False
+    shares = wheel_shares()
 
-    if anyone_voted:
-        winner = max(_state.weights, key=_state.weights.get)
-    elif _state.weights and config.get("roulette_random_pick_when_no_votes", True):
-        # Nobody voted, so every weapon on the roster is carrying the same
-        # weight - and a field of equal weights still has an outcome. This
-        # used to return None and end the session with nothing, which made
-        # the trigger cost buy silence: whoever paid it got no forced buy,
-        # no result on the overlay, and no reason to ever pay it again on a
-        # quiet chat. A uniform draw is what an unvoted roulette actually
-        # is, so it is drawn.
-        #
-        # sorted() rather than the dict's own order so a seeded random is
-        # reproducible - the roster's order depends on the affordability
-        # snapshot, which depends on OCR.
-        winner = random.choice(sorted(_state.weights))
-        randomly_picked = True
-    else:
+    # The one case that still ends with nothing: a streamer who would
+    # rather a silent chat produced no forced buy at all than a weapon
+    # nobody asked for. Off by default, because a trigger that buys
+    # silence is a trigger nobody pays twice.
+    if not anyone_voted and not config.get("roulette_random_pick_when_no_votes", True):
         winner = None
+    else:
+        winner = draw_winner(shares)
+    randomly_picked = winner is not None and not anyone_voted
 
     await widget_hub.broadcast(
         {
             "type": "roulette_ended",
             "winner": winner,
             "final_weights": dict(_state.weights),
+            # The wheel the draw was actually made on. Every votable
+            # weapon is present, votes only change how much room each one
+            # gets - so the overlay can render the real odds instead of
+            # inferring them from vote counts and dropping everything at
+            # zero.
+            "wheel_shares": shares,
             # Additive, so an older overlay ignores it and still renders
             # the winner. It exists so the overlay can say "no votes" out
             # loud rather than presenting a uniform draw as a vote result -
@@ -480,7 +535,10 @@ async def end_roulette() -> "str | None":
         )
         await _start_forced_buy(winner)
     elif winner:
-        await _reply_in_chat(_state.platform, f"Roulette locked in: {winner}. Forced buy next round.")
+        await _reply_in_chat(
+            _state.platform,
+            f"The wheel landed on {winner} ({_odds_text(shares, winner)}). Forced buy next round.",
+        )
         await _start_forced_buy(winner)
     else:
         await _reply_in_chat(_state.platform, "Roulette closed with no votes - no forced buy this round.")

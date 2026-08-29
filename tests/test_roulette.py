@@ -1,4 +1,5 @@
 import sys
+import random
 import asyncio
 from pathlib import Path
 
@@ -396,16 +397,22 @@ class TestVote:
 
 class TestEndRoulette:
     @pytest.mark.asyncio
-    async def test_declares_the_highest_weighted_weapon_as_winner(self, monkeypatch):
+    async def test_draws_from_the_whole_roster_not_just_the_top_vote(self, monkeypatch):
+        """
+        A vote is a thumb on the scale, not an elimination. The first vote
+        used to decide the round outright while the other seventeen
+        weapons stayed listed and votable but could no longer win.
+        """
         roulette._state.is_active = True
         roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
         roulette._state.weights["phantom"] = 5
-        roulette._state.weights["vandal"] = 3
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        monkeypatch.setattr(roulette, "_start_forced_buy", AsyncMock())
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", AsyncMock(return_value=True))
 
         winner = await roulette.end_roulette()
 
-        assert winner == "phantom"
+        assert winner in roulette.WEAPONS
         assert roulette._state.is_active is False
 
     @pytest.mark.asyncio
@@ -477,8 +484,11 @@ class TestEndRoulette:
         mock_broadcast = AsyncMock()
         monkeypatch.setattr(roulette.widget_hub, "broadcast", mock_broadcast)
         monkeypatch.setattr(roulette, "_start_forced_buy", AsyncMock())
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", AsyncMock(return_value=True))
 
-        assert await roulette.end_roulette() == "vandal"
+        winner = await roulette.end_roulette()
+
+        assert winner in ("vandal", "phantom")
         assert mock_broadcast.await_args[0][0]["randomly_picked"] is False
 
     @pytest.mark.asyncio
@@ -506,6 +516,8 @@ class TestEndRoulette:
         monkeypatch.setattr(roulette, "_start_forced_buy", AsyncMock())
         mock_send = AsyncMock(return_value=True)
         monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+
+        monkeypatch.setattr(roulette, "draw_winner", lambda shares: "vandal")
 
         assert await roulette.end_roulette() == "vandal"
         assert "vandal" in mock_send.await_args[0][0]
@@ -561,6 +573,9 @@ class TestForcedBuyBadge:
         monkeypatch.setattr(config, "_data", {"forced_buy_queued_duration_seconds": 9999})  # long, so it stays "queued" for this test
         mock_broadcast = AsyncMock()
         monkeypatch.setattr(roulette.widget_hub, "broadcast", mock_broadcast)
+        # The draw is weighted, not deterministic - pinned here so this
+        # test is about the badge, not about which weapon came up.
+        monkeypatch.setattr(roulette, "draw_winner", lambda shares: "vandal")
 
         await roulette.end_roulette()
 
@@ -1183,3 +1198,101 @@ class TestUnreachableWallet:
         result = await roulette.vote("someviewer", "aries", platform="youtube")
 
         assert "isn't a recognized weapon" in result["reason"]
+
+
+class TestWheelShares:
+    """
+    A vote buys more room on the wheel, not the round. Every votable
+    weapon keeps a slice, so seventeen unvoted weapons are still live
+    after somebody votes for the eighteenth - which is what a viewer
+    paying 50 points for "more chance" is buying.
+    """
+
+    def test_every_votable_weapon_has_a_slice_before_anyone_votes(self):
+        roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
+        shares = roulette.wheel_shares()
+
+        assert set(shares) == set(roulette.WEAPONS)
+        assert set(shares.values()) == {1}
+
+    def test_one_vote_doubles_that_weapon_and_removes_nothing(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+        roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
+        roulette._state.weights["vandal"] = 1
+
+        shares = roulette.wheel_shares()
+
+        assert shares["vandal"] == 2
+        assert shares["phantom"] == 1
+        assert len(shares) == len(roulette.WEAPONS)
+
+    def test_only_the_session_roster_is_on_the_wheel(self):
+        """An unaffordable weapon was never votable, so it isn't drawable."""
+        roulette._state.weights = {"classic": 0, "ghost": 2}
+
+        assert set(roulette.wheel_shares()) == {"classic", "ghost"}
+
+    def test_the_base_share_is_configurable(self, monkeypatch):
+        """Raise it to flatten the odds, lower it to make votes decisive."""
+        monkeypatch.setattr(config, "_data", {"roulette_base_wheel_share": 5})
+        roulette._state.weights = {"vandal": 1, "phantom": 0}
+
+        assert roulette.wheel_shares() == {"vandal": 6, "phantom": 5}
+
+    def test_a_zero_base_restores_the_old_winner_takes_all(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"roulette_base_wheel_share": 0})
+        roulette._state.weights = {"vandal": 1, "phantom": 0}
+
+        assert roulette.draw_winner(roulette.wheel_shares()) == "vandal"
+
+
+class TestDrawWinner:
+    def test_an_empty_wheel_has_no_winner(self):
+        assert roulette.draw_winner({}) is None
+
+    def test_a_wheel_of_nothing_has_no_winner(self):
+        """Reachable with roulette_base_wheel_share at 0 and no votes."""
+        assert roulette.draw_winner({"vandal": 0, "phantom": 0}) is None
+
+    def test_a_weapon_with_no_share_never_wins(self):
+        assert roulette.draw_winner({"vandal": 1, "phantom": 0}) == "vandal"
+
+    def test_the_heavier_weapon_wins_more_often(self):
+        """
+        Statistical, so it is pinned to a seed - the point is that weight
+        biases the draw, not that any single spin goes one way.
+        """
+        random.seed(1234)
+        shares = {"vandal": 9, "phantom": 1}
+        wins = [roulette.draw_winner(shares) for _ in range(2000)]
+
+        assert 0.8 < wins.count("vandal") / len(wins) < 0.98
+
+    def test_an_even_wheel_is_roughly_even(self):
+        random.seed(1234)
+        shares = {w: 1 for w in ("vandal", "phantom", "ghost", "sheriff")}
+        wins = [roulette.draw_winner(shares) for _ in range(2000)]
+
+        for weapon in shares:
+            assert 0.2 < wins.count(weapon) / len(wins) < 0.3
+
+    @pytest.mark.asyncio
+    async def test_the_broadcast_carries_the_wheel_it_drew_on(self, monkeypatch):
+        """
+        So the overlay renders the real odds instead of inferring them
+        from vote counts and dropping every weapon still at zero.
+        """
+        roulette._state.is_active = True
+        roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
+        roulette._state.weights["vandal"] = 2
+        mock_broadcast = AsyncMock()
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", mock_broadcast)
+        monkeypatch.setattr(roulette, "_start_forced_buy", AsyncMock())
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+
+        await roulette.end_roulette()
+
+        ended = mock_broadcast.await_args[0][0]
+        assert ended["wheel_shares"]["vandal"] == 3
+        assert ended["wheel_shares"]["phantom"] == 1
+        assert len(ended["wheel_shares"]) == len(roulette.WEAPONS)
