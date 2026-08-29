@@ -65,9 +65,10 @@ class TestParseWriteReply:
         assert points_cloudbot.parse_write_reply("@viewer, you have 19 Bunds.") is None
 
 
-def _cache_now(username, balance):
+def _cache_now(username, balance, platform="twitch"):
     """Seeds the cache the way real chat does - a viewer typing !points."""
-    points_cloudbot._cache[username] = (points_cloudbot.time.monotonic(), balance)
+    key = points_cloudbot._key(platform, username)
+    points_cloudbot._cache[key] = (points_cloudbot.time.monotonic(), balance)
 
 
 class TestReadingABalance:
@@ -96,7 +97,7 @@ class TestReadingABalance:
         handle_chat_event, which is how the cache fills up without this
         module ever asking.
         """
-        await points_cloudbot.handle_chat_event({"text": "@someviewer, you have 750 Bunds."})
+        await points_cloudbot.handle_chat_event({"platform": "twitch", "text": "@someviewer, you have 750 Bunds."})
         assert await points_cloudbot.get_user_points("someviewer") == 750
 
     @pytest.mark.asyncio
@@ -109,7 +110,7 @@ class TestReadingABalance:
 
     @pytest.mark.asyncio
     async def test_a_reply_about_somebody_else_does_not_fill_this_entry(self):
-        await points_cloudbot.handle_chat_event({"text": "@anotherviewer, you have 999 Bunds."})
+        await points_cloudbot.handle_chat_event({"platform": "twitch", "text": "@anotherviewer, you have 999 Bunds."})
 
         with pytest.raises(points_cloudbot.CloudbotReadUnavailable):
             await points_cloudbot.get_user_points("someviewer")
@@ -121,7 +122,7 @@ class TestReadingABalance:
         "@dualbladex, you have 961 Bunds." - matching on the name Cloudbot
         prints is what stops 961 being recorded as pinkuthagoat's balance.
         """
-        await points_cloudbot.handle_chat_event({"text": "@dualbladex, you have 961 Bunds."})
+        await points_cloudbot.handle_chat_event({"platform": "twitch", "text": "@dualbladex, you have 961 Bunds."})
 
         assert await points_cloudbot.get_user_points("dualbladex") == 961
         with pytest.raises(points_cloudbot.CloudbotReadUnavailable):
@@ -144,7 +145,7 @@ class TestTrySpend:
         spender = asyncio.ensure_future(points_cloudbot.try_spend("someviewer", 500))
         await asyncio.sleep(0)
         await points_cloudbot.handle_chat_event(
-            {"text": "mod has successfully removed 500 Bunds from someviewer."}
+            {"platform": "twitch", "text": "mod has successfully removed 500 Bunds from someviewer."}
         )
 
         assert await spender == (True, None)
@@ -157,11 +158,11 @@ class TestTrySpend:
         spender = asyncio.ensure_future(points_cloudbot.try_spend("someviewer", 500))
         await asyncio.sleep(0)
         await points_cloudbot.handle_chat_event(
-            {"text": "mod has successfully removed 120 Bunds from someviewer."}
+            {"platform": "twitch", "text": "mod has successfully removed 120 Bunds from someviewer."}
         )
         await asyncio.sleep(0)
         await points_cloudbot.handle_chat_event(
-            {"text": "mod has successfully added 120 Bunds to someviewer"}
+            {"platform": "twitch", "text": "mod has successfully added 120 Bunds to someviewer"}
         )
 
         assert await spender == (False, 120)
@@ -174,11 +175,11 @@ class TestTrySpend:
         spender = asyncio.ensure_future(points_cloudbot.try_spend("someviewer", 500))
         await asyncio.sleep(0)
         await points_cloudbot.handle_chat_event(
-            {"text": "mod has successfully removed 120 Bunds from someviewer."}
+            {"platform": "twitch", "text": "mod has successfully removed 120 Bunds from someviewer."}
         )
         await asyncio.sleep(0)
         await points_cloudbot.handle_chat_event(
-            {"text": "mod has successfully added 120 Bunds to someviewer"}
+            {"platform": "twitch", "text": "mod has successfully added 120 Bunds to someviewer"}
         )
         await spender
 
@@ -195,7 +196,7 @@ class TestTrySpend:
         spender = asyncio.ensure_future(points_cloudbot.try_spend("someviewer", 500))
         await asyncio.sleep(0)
         await points_cloudbot.handle_chat_event(
-            {"text": "mod has successfully removed 0 Bunds from someviewer."}
+            {"platform": "twitch", "text": "mod has successfully removed 0 Bunds from someviewer."}
         )
 
         assert await spender == (False, 0)
@@ -209,11 +210,11 @@ class TestTrySpend:
         spender = asyncio.ensure_future(points_cloudbot.try_spend("someviewer", 500))
         await asyncio.sleep(0)
         await points_cloudbot.handle_chat_event(
-            {"text": "mod has successfully removed 120 Bunds from someviewer."}
+            {"platform": "twitch", "text": "mod has successfully removed 120 Bunds from someviewer."}
         )
         await asyncio.sleep(0)
         await points_cloudbot.handle_chat_event(
-            {"text": "mod has successfully added 120 Bunds to someviewer"}
+            {"platform": "twitch", "text": "mod has successfully added 120 Bunds to someviewer"}
         )
         await spender
 
@@ -227,7 +228,7 @@ class TestTrySpend:
         spender = asyncio.ensure_future(points_cloudbot.try_spend("someviewer", 500))
         await asyncio.sleep(0)
         await points_cloudbot.handle_chat_event(
-            {"text": "mod has successfully removed 500 Bunds from someviewer."}
+            {"platform": "twitch", "text": "mod has successfully removed 500 Bunds from someviewer."}
         )
         await spender
 
@@ -255,7 +256,7 @@ class TestTrySpend:
         spender = asyncio.ensure_future(points_cloudbot.try_spend("someviewer", 500))
         await asyncio.sleep(0)
         await points_cloudbot.handle_chat_event(
-            {"text": "mod has successfully removed 120 Bunds from someviewer."}
+            {"platform": "twitch", "text": "mod has successfully removed 120 Bunds from someviewer."}
         )
 
         with pytest.raises(TimeoutError):
@@ -267,7 +268,7 @@ class TestTrySpend:
 
         spender = asyncio.ensure_future(points_cloudbot.try_spend("someviewer", 500))
         await asyncio.sleep(0)
-        await points_cloudbot.handle_chat_event({"text": "Unable to find someviewer."})
+        await points_cloudbot.handle_chat_event({"platform": "twitch", "text": "Unable to find someviewer."})
 
         with pytest.raises(points_cloudbot.CloudbotUserNotFound):
             await spender
@@ -293,7 +294,7 @@ class TestSpending:
         spender = asyncio.ensure_future(points_cloudbot.subtract_points("someviewer", 500))
         await asyncio.sleep(0)
         await points_cloudbot.handle_chat_event(
-            {"text": "mod has successfully removed 500 Bunds from someviewer."}
+            {"platform": "twitch", "text": "mod has successfully removed 500 Bunds from someviewer."}
         )
         await spender
 
@@ -315,7 +316,7 @@ class TestSpending:
         spender = asyncio.ensure_future(points_cloudbot.subtract_points("someviewer", 500))
         await asyncio.sleep(0)
         await points_cloudbot.handle_chat_event(
-            {"text": "mod has successfully removed 500 Bunds from someviewer."}
+            {"platform": "twitch", "text": "mod has successfully removed 500 Bunds from someviewer."}
         )
         await spender
 
@@ -329,11 +330,11 @@ class TestSpending:
         spender = asyncio.ensure_future(points_cloudbot.subtract_points("someviewer", 500))
         await asyncio.sleep(0)
         await points_cloudbot.handle_chat_event(
-            {"text": "mod has successfully removed 500 Bunds from someviewer."}
+            {"platform": "twitch", "text": "mod has successfully removed 500 Bunds from someviewer."}
         )
         await spender
 
-        assert points_cloudbot._cache["someviewer"][1] == 0
+        assert points_cloudbot._cache[points_cloudbot._key("twitch", "someviewer")][1] == 0
 
 
 class TestGranting:
@@ -346,7 +347,7 @@ class TestGranting:
         granter = asyncio.ensure_future(points_cloudbot.grant_points("someviewer", 100))
         await asyncio.sleep(0)
         await points_cloudbot.handle_chat_event(
-            {"text": "mod has successfully added 100 Bunds to someviewer"}
+            {"platform": "twitch", "text": "mod has successfully added 100 Bunds to someviewer"}
         )
 
         assert await granter == 850
@@ -361,7 +362,7 @@ class TestGranting:
         granter = asyncio.ensure_future(points_cloudbot.grant_points("someviewer", 100))
         await asyncio.sleep(0)
         await points_cloudbot.handle_chat_event(
-            {"text": "mod has successfully added 100 Bunds to someviewer"}
+            {"platform": "twitch", "text": "mod has successfully added 100 Bunds to someviewer"}
         )
         await granter
 
@@ -379,7 +380,7 @@ class TestGranting:
         granter = asyncio.ensure_future(points_cloudbot.grant_points("someviewer", 100))
         await asyncio.sleep(0)
         await points_cloudbot.handle_chat_event(
-            {"text": "mod has successfully added 100 Bunds to someviewer"}
+            {"platform": "twitch", "text": "mod has successfully added 100 Bunds to someviewer"}
         )
 
         assert await granter is None
@@ -419,7 +420,7 @@ class TestUnknownUser:
 
         spender = asyncio.ensure_future(points_cloudbot.subtract_points("someviewer", 50))
         await asyncio.sleep(0)
-        await points_cloudbot.handle_chat_event({"text": "Unable to find someviewer."})
+        await points_cloudbot.handle_chat_event({"platform": "twitch", "text": "Unable to find someviewer."})
 
         with pytest.raises(points_cloudbot.CloudbotUserNotFound):
             await spender
@@ -431,7 +432,119 @@ class TestUnknownUser:
 
         granter = asyncio.ensure_future(points_cloudbot.grant_points("someviewer", 50))
         await asyncio.sleep(0)
-        await points_cloudbot.handle_chat_event({"text": "Unable to find someviewer."})
+        await points_cloudbot.handle_chat_event({"platform": "twitch", "text": "Unable to find someviewer."})
 
         with pytest.raises(points_cloudbot.CloudbotUserNotFound):
             await granter
+
+
+class TestPerPlatformWallets:
+    """
+    Cloudbot keeps a separate wallet per platform and only resolves a
+    username in the chat the command was typed in. So the command has to
+    go to the VIEWER's chat, and a reply arriving in one chat must never
+    answer a lookup made in the other.
+
+    This is the bug that made YouTube look impossible: every YouTube spend
+    was being sent to Twitch chat, where that handle does not exist, and
+    the resulting silence was read as Cloudbot refusing to serve YouTube.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_command_goes_to_the_viewers_own_chat(self, monkeypatch):
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", mock_send)
+
+        spender = asyncio.ensure_future(
+            points_cloudbot.try_spend("someviewer", 350, platform="youtube")
+        )
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event(
+            {"platform": "youtube", "text": "mod has successfully removed 350 Bunds from someviewer."}
+        )
+
+        assert await spender == (True, None)
+        assert mock_send.await_args.kwargs["platform"] == "youtube"
+
+    @pytest.mark.asyncio
+    async def test_a_reply_in_the_other_chat_does_not_answer_this_spend(self, monkeypatch):
+        """The same handle on two platforms is two different wallets."""
+        monkeypatch.setattr(config, "_data", {"cloudbot_reply_timeout_seconds": 0.05})
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+
+        spender = asyncio.ensure_future(
+            points_cloudbot.try_spend("someviewer", 350, platform="youtube")
+        )
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event(
+            {"platform": "twitch", "text": "mod has successfully removed 350 Bunds from someviewer."}
+        )
+
+        with pytest.raises(TimeoutError):
+            await spender
+
+    @pytest.mark.asyncio
+    async def test_balances_are_held_per_platform(self):
+        await points_cloudbot.handle_chat_event(
+            {"platform": "twitch", "text": "@someviewer, you have 750 Bunds."}
+        )
+        await points_cloudbot.handle_chat_event(
+            {"platform": "youtube", "text": "@someviewer, you have 120 Bunds."}
+        )
+
+        assert await points_cloudbot.get_user_points("someviewer", "twitch") == 750
+        assert await points_cloudbot.get_user_points("someviewer", "youtube") == 120
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_user_on_one_platform_is_not_unknown_on_the_other(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"cloudbot_reply_timeout_seconds": 0.05})
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+
+        spender = asyncio.ensure_future(
+            points_cloudbot.try_spend("someviewer", 350, platform="youtube")
+        )
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event(
+            {"platform": "twitch", "text": "Unable to find someviewer."}
+        )
+
+        with pytest.raises(TimeoutError):
+            await spender
+
+    @pytest.mark.asyncio
+    async def test_two_platforms_can_be_charged_at_once(self, monkeypatch):
+        """Locks are per (platform, user), so one does not queue behind the other."""
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+
+        twitch = asyncio.ensure_future(
+            points_cloudbot.try_spend("someviewer", 50, platform="twitch")
+        )
+        youtube = asyncio.ensure_future(
+            points_cloudbot.try_spend("someviewer", 50, platform="youtube")
+        )
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event(
+            {"platform": "youtube", "text": "mod has successfully removed 50 Bunds from someviewer."}
+        )
+        await points_cloudbot.handle_chat_event(
+            {"platform": "twitch", "text": "mod has successfully removed 50 Bunds from someviewer."}
+        )
+
+        assert await youtube == (True, None)
+        assert await twitch == (True, None)
+
+    @pytest.mark.asyncio
+    async def test_no_platform_falls_back_to_the_configured_one(self, monkeypatch):
+        """Donations and the dashboard's manual tools reach that state."""
+        monkeypatch.setattr(config, "_data", {"cloudbot_platform": "twitch"})
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", mock_send)
+
+        granter = asyncio.ensure_future(points_cloudbot.grant_points("someviewer", 100))
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event(
+            {"platform": "twitch", "text": "mod has successfully added 100 Bunds to someviewer"}
+        )
+        await granter
+
+        assert mock_send.await_args.kwargs["platform"] == "twitch"

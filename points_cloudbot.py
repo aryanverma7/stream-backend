@@ -51,14 +51,21 @@ load-bearing, none of them documented anywhere:
     list holding both platforms, which is display-only - it is not one
     addressable pool. Established by test:
       - `!addpoints pinkuthagoat 500` in TWITCH chat: works.
-      - the same command in YOUTUBE chat: "Unable to find pinkuthagoat."
-        Mod commands resolve nobody there, not even Twitch users.
       - `!addpoints pinkukumarchinkiwala4849 10` (a YouTube row) in
         TWITCH chat: "Unable to find pinkukumarchinkiwala4849."
-    So YouTube rows are unreachable from everywhere, and the points
-    economy is Twitch-only. roulette._unreachable_wallet() refuses a
-    non-Twitch viewer up front rather than sending a command that cannot
-    work.
+    So a command must be typed in the viewer's OWN chat. Everything here
+    is keyed on (platform, username) for that reason, and _await_reply()
+    sends to the platform the key names rather than to one configured
+    one. That single global was a real bug: every YouTube spend went to
+    Twitch chat, where the handle does not exist, and the silence that
+    came back was mistaken for Cloudbot refusing to serve YouTube at all.
+
+    Whether YouTube works once the command reaches YouTube chat is still
+    open. `!addpoints` typed there by the BOT account answered "Unable to
+    find" for every name tried - but it was never tried by the
+    broadcaster, and a mod-permission difference between the platforms
+    would look exactly like that. `cloudbot_platforms` in config can
+    switch a platform back off without a deploy if it proves unusable.
 
   * Cloudbot lowercases the target and strips ONE leading "@" before
     looking it up. `!addpoints @DualBladeX 10` answered "successfully
@@ -115,11 +122,18 @@ _NOT_FOUND_RE = re.compile(
     re.IGNORECASE,
 )
 
-# username (lowercased) -> (monotonic timestamp, balance)
-_cache: "dict[str, tuple[float, int]]" = {}
-# username (lowercased) -> futures waiting on a reply about that user
-_pending_reads: "dict[str, list[asyncio.Future]]" = {}
-_pending_writes: "dict[str, list[asyncio.Future]]" = {}
+# Every key below is (platform, username), both lowercased. Cloudbot
+# keeps a separate wallet per platform, so the same handle on Twitch and
+# on YouTube is two different people as far as points are concerned - and
+# a reply arriving in one chat must never resolve a lookup made in the
+# other.
+_cache: "dict[tuple, tuple[float, int]]" = {}
+_pending_reads: "dict[tuple, list[asyncio.Future]]" = {}
+_pending_writes: "dict[tuple, list[asyncio.Future]]" = {}
+
+
+def _key(platform: str, username: str) -> tuple:
+    return ((platform or "").lower(), (username or "").lower())
 
 class CloudbotUserNotFound(Exception):
     """
@@ -149,11 +163,19 @@ class CloudbotReadUnavailable(Exception):
 _locks: "dict[str, asyncio.Lock]" = {}
 
 
-def _lock_for(username: str) -> asyncio.Lock:
-    key = username.lower()
+def _lock_for(key: tuple) -> asyncio.Lock:
     if key not in _locks:
         _locks[key] = asyncio.Lock()
     return _locks[key]
+
+
+def default_platform() -> str:
+    """
+    Where a command goes when the caller doesn't say. Only donations and
+    the dashboard's manual tools reach that state - a chat command always
+    knows which chat it came from.
+    """
+    return config.get("cloudbot_platform", "twitch")
 
 
 def _timeout() -> float:
@@ -206,14 +228,14 @@ def parse_not_found_reply(text: str) -> "str | None":
 
 # ---------- Listening for Cloudbot ----------
 
-def _resolve(waiters: dict, username: str, value) -> None:
-    for future in waiters.pop(username, []):
+def _resolve(waiters: dict, key: tuple, value) -> None:
+    for future in waiters.pop(key, []):
         if not future.done():
             future.set_result(value)
 
 
-def _resolve_error(waiters: dict, username: str, error: Exception) -> None:
-    for future in waiters.pop(username, []):
+def _resolve_error(waiters: dict, key: tuple, error: Exception) -> None:
+    for future in waiters.pop(key, []):
         if not future.done():
             future.set_exception(error)
 
@@ -234,17 +256,24 @@ async def handle_chat_event(chat: dict) -> None:
     if not text:
         return
 
+    # The chat this reply arrived in decides which wallet it is about.
+    # Cloudbot answers in the same chat the command was typed in, and its
+    # wallets are per platform, so a Twitch reply must not resolve a
+    # YouTube lookup that happens to name the same handle.
+    platform = chat.get("platform", "")
+
     balance = parse_balance_reply(text)
     if balance is not None:
         username, points = balance
-        _cache[username] = (time.monotonic(), points)
-        _resolve(_pending_reads, username, points)
+        key = _key(platform, username)
+        _cache[key] = (time.monotonic(), points)
+        _resolve(_pending_reads, key, points)
         return
 
     write = parse_write_reply(text)
     if write is not None:
         username, points, direction = write
-        _resolve(_pending_writes, username, (points, direction))
+        _resolve(_pending_writes, _key(platform, username), (points, direction))
         return
 
     # Answered, and answered "no". Without this the caller sits out the
@@ -253,20 +282,27 @@ async def handle_chat_event(chat: dict) -> None:
     missing = parse_not_found_reply(text)
     if missing is not None:
         error = CloudbotUserNotFound(missing)
-        _resolve_error(_pending_writes, missing, error)
-        _resolve_error(_pending_reads, missing, error)
+        key = _key(platform, missing)
+        _resolve_error(_pending_writes, key, error)
+        _resolve_error(_pending_reads, key, error)
 
 
-async def _await_reply(waiters: dict, username: str, command: str):
+async def _await_reply(waiters: dict, key: tuple, command: str):
     """
-    Sends `command` in chat and waits for Cloudbot to answer about
-    `username`. Raises on timeout - never returns a guess.
+    Sends `command` in the chat `key`'s platform names, and waits for
+    Cloudbot to answer about that user there. Raises on timeout - never
+    returns a guess.
+
+    The command goes to the VIEWER's own chat, not to one configured
+    platform. Cloudbot only resolves a username within the chat the
+    command was typed in, so a YouTube viewer's spend sent to Twitch chat
+    could never work no matter what Cloudbot's YouTube support does.
     """
-    key = username.lower()
+    platform = key[0] or default_platform()
     future: asyncio.Future = asyncio.get_running_loop().create_future()
     waiters.setdefault(key, []).append(future)
 
-    if not await streamerbot.send_chat_message(command, platform=config.get("cloudbot_platform", "twitch")):
+    if not await streamerbot.send_chat_message(command, platform=platform):
         waiters.get(key, []).remove(future)
         raise RuntimeError("Not connected to Streamer.bot - cannot reach Cloudbot")
 
@@ -293,7 +329,7 @@ async def _await_reply(waiters: dict, username: str, command: str):
 
 # ---------- The operations points.py dispatches to ----------
 
-async def get_user_points(username: str, use_cache: bool = True) -> int:
+async def get_user_points(username: str, platform: str = "", use_cache: bool = True) -> int:
     """
     A viewer's balance - only if one is already cached.
 
@@ -314,7 +350,7 @@ async def get_user_points(username: str, use_cache: bool = True) -> int:
     Affordability is NOT decided here. try_spend() does it without a read,
     by spending and reading how much Cloudbot actually took.
     """
-    key = username.lower()
+    key = _key(platform or default_platform(), username)
     if use_cache:
         cached = _cache.get(key)
         if cached is not None and time.monotonic() - cached[0] < _cache_ttl():
@@ -326,7 +362,7 @@ async def get_user_points(username: str, use_cache: bool = True) -> int:
     )
 
 
-async def try_spend(username: str, amount: int) -> "tuple[bool, int | None]":
+async def try_spend(username: str, amount: int, platform: str = "") -> "tuple[bool, int | None]":
     """
     Spends `amount`, and reports whether it could be paid in full.
 
@@ -349,7 +385,7 @@ async def try_spend(username: str, amount: int) -> "tuple[bool, int | None]":
     level with the amount, which is the one case here a human has to fix
     by hand.
     """
-    key = username.lower()
+    key = _key(platform or default_platform(), username)
     async with _lock_for(key):
         removed, _ = await _await_reply(
             _pending_writes, key, f"!removepoints {username} {amount}"
@@ -382,7 +418,7 @@ async def try_spend(username: str, amount: int) -> "tuple[bool, int | None]":
         return False, removed
 
 
-async def subtract_points(username: str, amount: int) -> None:
+async def subtract_points(username: str, amount: int, platform: str = "") -> None:
     """
     Spends points unconditionally, and waits for Cloudbot to confirm.
 
@@ -391,7 +427,7 @@ async def subtract_points(username: str, amount: int) -> None:
     want try_spend instead - Cloudbot clamps, so this quietly takes
     whatever is there when the balance is short.
     """
-    key = username.lower()
+    key = _key(platform or default_platform(), username)
     async with _lock_for(key):
         await _await_reply(_pending_writes, key, f"!removepoints {username} {amount}")
         cached = _cache.get(key)
@@ -400,7 +436,7 @@ async def subtract_points(username: str, amount: int) -> None:
         log.info(f"Removed {amount} points from {username} via Cloudbot")
 
 
-async def grant_points(username: str, amount: int) -> "int | None":
+async def grant_points(username: str, amount: int, platform: str = "") -> "int | None":
     """
     Grants points. Returns the new balance, or None when it isn't knowable.
 
@@ -410,7 +446,7 @@ async def grant_points(username: str, amount: int) -> "int | None":
     to add to; otherwise the grant is confirmed and the total is None,
     which is the honest answer rather than a plausible one.
     """
-    key = username.lower()
+    key = _key(platform or default_platform(), username)
     async with _lock_for(key):
         await _await_reply(_pending_writes, key, f"!addpoints {username} {amount}")
         cached = _cache.get(key)

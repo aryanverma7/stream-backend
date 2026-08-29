@@ -158,7 +158,7 @@ class TestBackendDispatch:
         monkeypatch.setattr(config, "_data", {"points_backend": "cloudbot"})
         called = {}
 
-        async def fake_read(username):
+        async def fake_read(username, platform=""):
             called["username"] = username
             return 19
 
@@ -230,7 +230,7 @@ class TestTrySpend:
     async def test_dispatches_to_the_cloudbot_backend(self, monkeypatch):
         monkeypatch.setattr(config, "_data", {"points_backend": "cloudbot"})
 
-        async def fake_try_spend(username, amount):
+        async def fake_try_spend(username, amount, platform=""):
             return False, 120
 
         monkeypatch.setattr(points.points_cloudbot, "try_spend", fake_try_spend)
@@ -280,7 +280,7 @@ class TestUnknownUserTranslation:
         """
         monkeypatch.setattr(config, "_data", {"points_backend": "cloudbot"})
 
-        async def fake_try_spend(username, amount):
+        async def fake_try_spend(username, amount, platform=""):
             raise points.points_cloudbot.CloudbotUserNotFound("someviewer")
 
         monkeypatch.setattr(points.points_cloudbot, "try_spend", fake_try_spend)
@@ -293,10 +293,38 @@ class TestUnknownUserTranslation:
         """A timeout is an outage, not an unknown viewer."""
         monkeypatch.setattr(config, "_data", {"points_backend": "cloudbot"})
 
-        async def fake_try_spend(username, amount):
+        async def fake_try_spend(username, amount, platform=""):
             raise TimeoutError("no answer")
 
         monkeypatch.setattr(points.points_cloudbot, "try_spend", fake_try_spend)
 
         with pytest.raises(TimeoutError):
             await points.try_spend("someviewer", 500)
+
+
+class TestPlatformIsPassedThrough:
+    @pytest.mark.asyncio
+    async def test_try_spend_hands_the_platform_to_the_cloudbot_backend(self, monkeypatch):
+        """
+        Cloudbot resolves a username only in the chat the command was
+        typed in, so the viewer's platform has to survive the dispatcher.
+        """
+        monkeypatch.setattr(config, "_data", {"points_backend": "cloudbot"})
+        seen = {}
+
+        async def fake_try_spend(username, amount, platform=""):
+            seen["platform"] = platform
+            return True, None
+
+        monkeypatch.setattr(points.points_cloudbot, "try_spend", fake_try_spend)
+        await points.try_spend("someviewer", 350, platform="youtube")
+
+        assert seen["platform"] == "youtube"
+
+    @pytest.mark.asyncio
+    async def test_the_local_backend_ignores_it(self, local_ledger):
+        """Only Cloudbot keeps a wallet per platform."""
+        await points.grant_points("viewer", 500)
+
+        assert await points.try_spend("viewer", 200, platform="youtube") == (True, None)
+        assert await points.get_user_points("viewer", platform="twitch") == 300

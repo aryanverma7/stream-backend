@@ -183,7 +183,7 @@ async def _api_grant_points(username: str, amount: int) -> int:
 
 # ---------- Public API - identical whichever backend is live ----------
 
-async def get_user_points(username: str) -> int:
+async def get_user_points(username: str, platform: str = "") -> int:
     """
     Read a specific user's current balance. Raises if it can't be read -
     and under the cloudbot backend that is the normal case for anyone
@@ -196,11 +196,11 @@ async def get_user_points(username: str) -> int:
     if backend == "local":
         return await points_local.get_user_points(username)
     if backend == "cloudbot":
-        return await points_cloudbot.get_user_points(username)
+        return await points_cloudbot.get_user_points(username, platform)
     return await _api_get_user_points(username)
 
 
-async def subtract_points(username: str, amount: int) -> None:
+async def subtract_points(username: str, amount: int, platform: str = "") -> None:
     """
     Decrement, without the grant lock: neither backend implements this as
     a read-modify-write that could interleave (see _grant_lock's comment).
@@ -209,11 +209,11 @@ async def subtract_points(username: str, amount: int) -> None:
     if backend == "local":
         return await points_local.subtract_points(username, amount)
     if backend == "cloudbot":
-        return await points_cloudbot.subtract_points(username, amount)
+        return await points_cloudbot.subtract_points(username, amount, platform)
     return await _api_subtract_points(username, amount)
 
 
-async def try_spend(username: str, amount: int) -> "tuple[bool, int | None]":
+async def try_spend(username: str, amount: int, platform: str = "") -> "tuple[bool, int | None]":
     """
     Spend `amount` if the viewer can afford it. The primitive every
     points-charging feature should use.
@@ -222,6 +222,12 @@ async def try_spend(username: str, amount: int) -> "tuple[bool, int | None]":
     was short, where `balance` is what they actually had - None only if a
     backend genuinely cannot tell. Raises only when the ledger could not
     be reached at all, which callers must treat as "not paid".
+
+    `platform` is the chat the viewer spoke in. It matters only to the
+    cloudbot backend, which keeps a separate wallet per platform and can
+    only resolve a username in the chat the command is typed in - so the
+    command has to go to the viewer's own chat, not to one configured
+    one. The other backends ignore it.
 
     This exists instead of get_user_points-then-subtract_points because
     that pair is a check followed by a separate write, and only some
@@ -237,13 +243,13 @@ async def try_spend(username: str, amount: int) -> "tuple[bool, int | None]":
             return await points_local.try_spend(username, amount)
         if backend == "cloudbot":
             try:
-                return await points_cloudbot.try_spend(username, amount)
+                return await points_cloudbot.try_spend(username, amount, platform)
             except points_cloudbot.CloudbotUserNotFound as e:
                 raise UnknownUser(str(e)) from e
         return await _api_try_spend(username, amount)
 
 
-async def grant_points(username: str, amount: int) -> "int | None":
+async def grant_points(username: str, amount: int, platform: str = "") -> "int | None":
     """
     The shared "add points to this user" function - used by BOTH the
     Streamlabs Tips Socket API listener (Task #6, real donations) and the
@@ -262,5 +268,5 @@ async def grant_points(username: str, amount: int) -> "int | None":
         if backend == "local":
             return await points_local.grant_points(username, amount)
         if backend == "cloudbot":
-            return await points_cloudbot.grant_points(username, amount)
+            return await points_cloudbot.grant_points(username, amount, platform)
         return await _api_grant_points(username, amount)

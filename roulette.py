@@ -211,32 +211,29 @@ def _odds_text(shares: dict, winner: str) -> str:
 
 def _unreachable_wallet(platform: str) -> "str | None":
     """
-    The refusal for a viewer whose chat has no wallet this backend can
-    reach, or None when they are fine.
+    The refusal for a viewer whose chat this backend is configured not to
+    charge in, or None when they are fine.
 
-    Checked BEFORE any spend, because the spend cannot succeed and the
-    viewer would otherwise wait out the full Cloudbot reply timeout to be
-    told something generic - six seconds inside an eighteen-second voting
-    window, for someone who was never chargeable.
+    Empty by default: every platform is attempted, because the spend now
+    goes to the VIEWER's own chat rather than to one configured one, and
+    Cloudbot can only resolve a username in the chat the command was
+    typed in. An earlier version of this refused every non-Twitch viewer
+    outright, on evidence that turned out to be about our own bug - the
+    YouTube spends it was "protecting" against had all been sent to
+    Twitch chat, where that handle does not exist.
 
-    Only the cloudbot backend has this problem, and it is not fixable from
-    here. Cloudbot resolves a username only within the platform the
-    command is typed on, and only among that platform's own users:
-    `!addpoints pinkuthagoat` works in Twitch chat, answers "Unable to
-    find" in YouTube chat, and a YouTube row is equally unreachable from
-    Twitch chat. Streamlabs' dashboard shows both platforms in one Loyalty
-    list, which is display-only. See points_cloudbot.py's module docstring
-    for the tests behind each of those.
+    `cloudbot_platforms` exists as a way to switch a platform back off
+    without a deploy, if one really does prove unusable.
     """
     if points_backend_name() != "cloudbot":
         return None
-    ledger = config.get("cloudbot_platform", "twitch")
-    if not platform or platform.lower() == ledger.lower():
+    allowed = config.get("cloudbot_platforms", None)
+    if not allowed:
         return None
-    return (
-        f"Points are only kept in {ledger} chat right now, so the roulette can't "
-        f"charge {platform} viewers - come say hello in {ledger} chat"
-    )
+    if (platform or "").lower() in {str(p).lower() for p in allowed}:
+        return None
+    usable = ", ".join(str(p) for p in allowed)
+    return f"Points aren't set up for {platform} yet - the roulette runs on {usable}"
 
 
 def _unknown_user_message() -> str:
@@ -244,15 +241,13 @@ def _unknown_user_message() -> str:
     What a viewer is told when the points ledger has never heard of them.
 
     Worth its own message rather than folding into the generic failure,
-    because it is the one failure here the viewer can fix themselves, and
-    because it is the expected answer for anyone who only ever watches on
-    the other platform: Cloudbot keeps a separate wallet per platform and
-    can only be asked about users on `cloudbot_platform`.
+    because it is the one failure here the viewer can fix themselves:
+    Cloudbot only knows people it has seen chat, and it is asked in the
+    viewer's own chat, so saying anything at all is the whole fix.
     """
-    platform = config.get("cloudbot_platform", "twitch")
     return (
-        f"The points bot has no record of you - points are kept in {platform} chat, "
-        f"so say something there first and try again"
+        "The points bot has no record of you yet - say something in chat "
+        "and try again in a moment"
     )
 
 
@@ -349,7 +344,7 @@ async def trigger_roulette(username: str, platform: str = "twitch") -> dict:
         # the cloudbot backend cannot read a balance at all and decides by
         # spending, so a check here would have nothing to check.
         try:
-            paid, balance = await try_spend(username, cost)
+            paid, balance = await try_spend(username, cost, platform=platform)
         except UnknownUser:
             log.warning(f"{username} tried to trigger roulette but the points ledger has no record of them")
             return {"ok": False, "reason": _unknown_user_message()}
@@ -457,7 +452,7 @@ async def vote(username: str, weapon: str, platform: str = "twitch") -> dict:
     async with _spend_lock:
         cost = vote_cost_for(weapon)
         try:
-            paid, balance = await try_spend(username, cost)
+            paid, balance = await try_spend(username, cost, platform=platform)
         except UnknownUser:
             log.warning(f"{username} tried to vote for {weapon} but the points ledger has no record of them")
             return {"ok": False, "reason": _unknown_user_message()}

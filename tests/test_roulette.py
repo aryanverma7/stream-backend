@@ -333,7 +333,9 @@ class TestVote:
 
         assert result["ok"] is True
         assert roulette._state.weights["vandal"] == 1
-        mock_spend.assert_called_once_with("someviewer", roulette.DEFAULT_VOTE_BASE_COST)
+        mock_spend.assert_called_once_with(
+            "someviewer", roulette.DEFAULT_VOTE_BASE_COST, platform="twitch"
+        )
 
     @pytest.mark.asyncio
     async def test_cost_escalates_with_each_subsequent_vote_on_the_same_weapon(self, monkeypatch):
@@ -365,9 +367,9 @@ class TestVote:
 
         mock_spend = AsyncMock(return_value=(True, None))
 
-        async def slow_spend(username, amount):
+        async def slow_spend(username, amount, platform="twitch"):
             await asyncio.sleep(0)  # yield control, encouraging real interleaving
-            return await mock_spend(username, amount)
+            return await mock_spend(username, amount, platform=platform)
 
         monkeypatch.setattr(roulette, "try_spend", slow_spend)
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
@@ -1090,7 +1092,7 @@ class TestUnknownUserRefusal:
         result = await roulette.trigger_roulette("someviewer")
 
         assert result["ok"] is False
-        assert "twitch chat" in result["reason"].lower()
+        assert "no record of you" in result["reason"].lower()
         assert roulette._state.is_active is False
 
     @pytest.mark.asyncio
@@ -1105,7 +1107,7 @@ class TestUnknownUserRefusal:
         result = await roulette.vote("someviewer", "vandal")
 
         assert result["ok"] is False
-        assert "twitch chat" in result["reason"].lower()
+        assert "no record of you" in result["reason"].lower()
         assert roulette._state.weights["vandal"] == 0
 
     @pytest.mark.asyncio
@@ -1125,16 +1127,46 @@ class TestUnknownUserRefusal:
 
 class TestUnreachableWallet:
     """
-    Cloudbot on Twitch answers a username it has never seen with silence,
-    not with "Unable to find" - so charging a YouTube viewer costs the
-    full reply timeout and then reports a generic outage. Refused up front
-    instead, before any command goes out.
+    Every platform is charged by default, because the spend goes to the
+    viewer's own chat - Cloudbot resolves a username only in the chat the
+    command was typed in. An earlier version refused every non-Twitch
+    viewer outright, on evidence that was really about YouTube spends
+    being sent to Twitch chat.
+
+    `cloudbot_platforms` is the way to switch one back off without a
+    deploy, if it turns out Cloudbot genuinely can't serve it.
     """
 
     @pytest.mark.asyncio
-    async def test_a_trigger_from_the_other_platform_is_refused_without_spending(self, monkeypatch):
+    async def test_youtube_is_charged_like_anywhere_else_by_default(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"points_backend": "cloudbot"})
+        mock_spend = AsyncMock(return_value=(True, None))
+        monkeypatch.setattr(roulette, "try_spend", mock_spend)
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+
+        result = await roulette.trigger_roulette("someviewer", platform="youtube")
+
+        assert result["ok"] is True
+        assert mock_spend.await_args.kwargs["platform"] == "youtube"
+
+    @pytest.mark.asyncio
+    async def test_a_vote_charges_in_the_chat_it_came_from(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"points_backend": "cloudbot"})
+        roulette._state.is_active = True
+        roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
+        mock_spend = AsyncMock(return_value=(True, None))
+        monkeypatch.setattr(roulette, "try_spend", mock_spend)
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+
+        result = await roulette.vote("someviewer", "vandal", platform="youtube")
+
+        assert result["ok"] is True
+        assert mock_spend.await_args.kwargs["platform"] == "youtube"
+
+    @pytest.mark.asyncio
+    async def test_a_platform_can_be_switched_off_by_config(self, monkeypatch):
         monkeypatch.setattr(
-            config, "_data", {"points_backend": "cloudbot", "cloudbot_platform": "twitch"}
+            config, "_data", {"points_backend": "cloudbot", "cloudbot_platforms": ["twitch"]}
         )
         mock_spend = AsyncMock(return_value=(True, None))
         monkeypatch.setattr(roulette, "try_spend", mock_spend)
@@ -1142,42 +1174,16 @@ class TestUnreachableWallet:
         result = await roulette.trigger_roulette("someviewer", platform="youtube")
 
         assert result["ok"] is False
-        assert "twitch chat" in result["reason"].lower()
+        assert "twitch" in result["reason"].lower()
         mock_spend.assert_not_called()
         assert roulette._state.is_active is False
 
     @pytest.mark.asyncio
-    async def test_a_vote_from_the_other_platform_is_refused_without_spending(self, monkeypatch):
-        monkeypatch.setattr(
-            config, "_data", {"points_backend": "cloudbot", "cloudbot_platform": "twitch"}
-        )
-        roulette._state.is_active = True
-        roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
-        mock_spend = AsyncMock(return_value=(True, None))
-        monkeypatch.setattr(roulette, "try_spend", mock_spend)
-
-        result = await roulette.vote("someviewer", "vandal", platform="youtube")
-
-        assert result["ok"] is False
-        mock_spend.assert_not_called()
-        assert roulette._state.weights["vandal"] == 0
-
-    @pytest.mark.asyncio
-    async def test_the_ledger_platform_itself_is_allowed(self, monkeypatch):
-        monkeypatch.setattr(
-            config, "_data", {"points_backend": "cloudbot", "cloudbot_platform": "twitch"}
-        )
-        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
-        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
-
-        result = await roulette.trigger_roulette("someviewer", platform="twitch")
-
-        assert result["ok"] is True
-
-    @pytest.mark.asyncio
-    async def test_the_other_backends_charge_everyone_normally(self, monkeypatch):
+    async def test_the_allowlist_never_applies_to_the_other_backends(self, monkeypatch):
         """Only Cloudbot keeps a separate wallet per platform."""
-        monkeypatch.setattr(config, "_data", {"points_backend": "local"})
+        monkeypatch.setattr(
+            config, "_data", {"points_backend": "local", "cloudbot_platforms": ["twitch"]}
+        )
         monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
 
@@ -1189,7 +1195,7 @@ class TestUnreachableWallet:
     async def test_a_mistyped_word_still_reads_as_a_typo_not_a_wallet_problem(self, monkeypatch):
         """The guard sits with the payment, after the "is that a weapon?" checks."""
         monkeypatch.setattr(
-            config, "_data", {"points_backend": "cloudbot", "cloudbot_platform": "twitch"}
+            config, "_data", {"points_backend": "cloudbot", "cloudbot_platforms": ["twitch"]}
         )
         roulette._state.is_active = True
         roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
