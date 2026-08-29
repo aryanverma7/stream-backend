@@ -89,6 +89,16 @@ class TestTriggerRoulette:
         assert kwargs["tag"] == "roulette"
 
 
+# Shields and abilities are reserved out of every reading (see
+# roulette.reserved_creds), which is its own behaviour with its own tests
+# below. The price-filter tests zero it so they are about the prices.
+NO_RESERVE = {
+    "roulette_shield_reserve_creds": 0,
+    "roulette_ability_reserve_creds": 0,
+    "roulette_pistol_reserved_creds": 0,
+}
+
+
 class TestAffordableWeapons:
     """
     The pure filter, tested without a session - the trigger/vote paths get
@@ -106,7 +116,7 @@ class TestAffordableWeapons:
         assert roulette.affordable_weapons(None) == list(roulette.WEAPONS)
 
     def test_filters_to_what_the_predicted_credits_actually_cover(self, monkeypatch):
-        monkeypatch.setattr(config, "_data", {})
+        monkeypatch.setattr(config, "_data", dict(NO_RESERVE))
         votable = roulette.affordable_weapons(1000)
 
         assert "classic" in votable      # 0
@@ -119,7 +129,7 @@ class TestAffordableWeapons:
 
     def test_a_weapon_priced_exactly_at_the_prediction_is_affordable(self, monkeypatch):
         """Boundary, and a real one - buying with exactly enough creds is a buy, not a near miss."""
-        monkeypatch.setattr(config, "_data", {})
+        monkeypatch.setattr(config, "_data", dict(NO_RESERVE))
         assert "vandal" in roulette.affordable_weapons(roulette.WEAPON_CREDS_COSTS["vandal"])
         assert "vandal" not in roulette.affordable_weapons(roulette.WEAPON_CREDS_COSTS["vandal"] - 10)
 
@@ -145,7 +155,9 @@ class TestAffordableWeapons:
         Riot retunes weapon prices between patches, so this has to be
         fixable without a deploy.
         """
-        monkeypatch.setattr(config, "_data", {"roulette_weapon_creds_costs": {"operator": 100}})
+        monkeypatch.setattr(
+            config, "_data", {**NO_RESERVE, "roulette_weapon_creds_costs": {"operator": 100}}
+        )
         assert roulette.creds_cost_for("operator") == 100
         assert "operator" in roulette.affordable_weapons(100)
 
@@ -176,7 +188,7 @@ class TestAffordableWeapons:
 class TestAffordabilityDuringASession:
     @pytest.mark.asyncio
     async def test_trigger_snapshots_the_votable_set_and_only_weights_those(self, monkeypatch):
-        monkeypatch.setattr(config, "_data", {})
+        monkeypatch.setattr(config, "_data", dict(NO_RESERVE))
         monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
         monkeypatch.setattr(roulette.credit_ocr, "get_predicted_credits", lambda: 1000)
@@ -193,7 +205,7 @@ class TestAffordabilityDuringASession:
     @pytest.mark.asyncio
     async def test_the_started_broadcast_carries_the_prediction_and_the_prices(self, monkeypatch):
         mock_broadcast = AsyncMock()
-        monkeypatch.setattr(config, "_data", {})
+        monkeypatch.setattr(config, "_data", dict(NO_RESERVE))
         monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
         monkeypatch.setattr(roulette.widget_hub, "broadcast", mock_broadcast)
         monkeypatch.setattr(roulette.credit_ocr, "get_predicted_credits", lambda: 1000)
@@ -211,7 +223,7 @@ class TestAffordabilityDuringASession:
     @pytest.mark.asyncio
     async def test_rejects_a_vote_for_an_unaffordable_weapon_without_charging_points(self, monkeypatch):
         mock_spend = AsyncMock(return_value=(True, None))
-        monkeypatch.setattr(config, "_data", {})
+        monkeypatch.setattr(config, "_data", dict(NO_RESERVE))
         monkeypatch.setattr(roulette, "try_spend", mock_spend)
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
         roulette._state.is_active = True
@@ -251,7 +263,11 @@ class TestAffordabilityDuringASession:
 
     @pytest.mark.asyncio
     async def test_an_affordable_weapon_still_votes_normally(self, monkeypatch):
-        monkeypatch.setattr(config, "_data", {"roulette_weapon_base_costs": {}, "roulette_vote_cost_increment": 25})
+        monkeypatch.setattr(
+            config,
+            "_data",
+            {**NO_RESERVE, "roulette_weapon_base_costs": {}, "roulette_vote_cost_increment": 25},
+        )
         monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
         roulette._state.is_active = True
@@ -273,7 +289,7 @@ class TestAffordabilityDuringASession:
         pull a weapon off the wheel that viewers were shown, after some of
         them had already paid points for it.
         """
-        monkeypatch.setattr(config, "_data", {})
+        monkeypatch.setattr(config, "_data", dict(NO_RESERVE))
         monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
         monkeypatch.setattr(roulette.credit_ocr, "get_predicted_credits", lambda: 3000)
@@ -1302,3 +1318,183 @@ class TestDrawWinner:
         assert ended["wheel_shares"]["vandal"] == 3
         assert ended["wheel_shares"]["phantom"] == 1
         assert len(ended["wheel_shares"]) == len(roulette.WEAPONS)
+
+
+class TestRefunds:
+    """
+    Points are spent before the thing they pay for exists - they have to
+    be, or somebody who can't pay could start a session. That leaves a
+    window where the money is gone and the roulette isn't running, and
+    anything failing in it has to put the points back.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_trigger_that_cannot_open_refunds_the_cost(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"roulette_trigger_cost": 500})
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
+        monkeypatch.setattr(
+            roulette.widget_hub, "broadcast", AsyncMock(side_effect=RuntimeError("hub is down"))
+        )
+        mock_grant = AsyncMock(return_value=None)
+        monkeypatch.setattr(roulette, "grant_points", mock_grant)
+
+        result = await roulette.trigger_roulette("someviewer", platform="youtube")
+
+        assert result["ok"] is False
+        assert "points are back" in result["reason"]
+        mock_grant.assert_awaited_once_with("someviewer", 500, platform="youtube")
+
+    @pytest.mark.asyncio
+    async def test_a_failed_trigger_leaves_no_half_started_session(self, monkeypatch):
+        """Otherwise the next !roulette is refused as 'already in progress'."""
+        monkeypatch.setattr(config, "_data", {})
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
+        monkeypatch.setattr(
+            roulette.widget_hub, "broadcast", AsyncMock(side_effect=RuntimeError("hub is down"))
+        )
+        monkeypatch.setattr(roulette, "grant_points", AsyncMock(return_value=None))
+
+        await roulette.trigger_roulette("someviewer")
+
+        assert roulette._state.is_active is False
+
+    @pytest.mark.asyncio
+    async def test_a_refund_that_fails_does_not_hide_the_original_error(self, monkeypatch):
+        """Already the error path - a second failure must not replace the first."""
+        monkeypatch.setattr(config, "_data", {})
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
+        monkeypatch.setattr(
+            roulette.widget_hub, "broadcast", AsyncMock(side_effect=RuntimeError("hub is down"))
+        )
+        monkeypatch.setattr(
+            roulette, "grant_points", AsyncMock(side_effect=RuntimeError("cloudbot is down"))
+        )
+
+        result = await roulette.trigger_roulette("someviewer")
+
+        assert result["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_vote_that_lands_after_the_window_closed_is_refunded(self, monkeypatch):
+        """
+        The spend is a chat round trip of up to a couple of seconds, and
+        the window can close inside it - so the vote arrives at a session
+        that has already been drawn.
+        """
+        monkeypatch.setattr(config, "_data", {})
+        roulette._state.is_active = True
+        roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
+        mock_grant = AsyncMock(return_value=None)
+        monkeypatch.setattr(roulette, "grant_points", mock_grant)
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+
+        async def spend_then_close(username, amount, platform=""):
+            roulette._state.is_active = False
+            return True, None
+
+        monkeypatch.setattr(roulette, "try_spend", spend_then_close)
+
+        result = await roulette.vote("someviewer", "vandal", platform="twitch")
+
+        assert result["ok"] is False
+        assert "points are back" in result["reason"]
+        mock_grant.assert_awaited_once_with(
+            "someviewer", roulette.DEFAULT_VOTE_BASE_COST, platform="twitch"
+        )
+        assert roulette._state.weights["vandal"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_normal_vote_is_not_refunded(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+        roulette._state.is_active = True
+        roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
+        mock_grant = AsyncMock(return_value=None)
+        monkeypatch.setattr(roulette, "grant_points", mock_grant)
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+
+        result = await roulette.vote("someviewer", "vandal")
+
+        assert result["ok"] is True
+        mock_grant.assert_not_called()
+
+
+class TestReservedCreds:
+    """
+    Shields and abilities come out of the same wallet as the gun, every
+    round. A roster built from the raw reading offers weapons that can't
+    actually be bought alongside them - 5000 creds is an Odin OR a Vandal
+    plus a full kit, not both.
+    """
+
+    def test_a_full_buy_reserves_shield_and_abilities(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+        assert roulette.reserved_creds(5000) == 1400
+        assert roulette.spendable_creds(5000) == 3600
+
+    def test_the_odin_stops_being_offered_on_a_5000_cred_round(self, monkeypatch):
+        """3200 for the Odin plus 1400 of kit is 4600 - it fits. 5000 minus
+        the reserve leaves 3600, which still covers it; the Operator does not."""
+        monkeypatch.setattr(config, "_data", {})
+        votable = roulette.affordable_weapons(5000)
+
+        assert "odin" in votable       # 3200 <= 3600
+        assert "operator" not in votable  # 4700 > 3600, and unbuyable with a kit
+
+    def test_a_vandal_round_is_measured_against_what_is_left(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+        assert "vandal" not in roulette.affordable_weapons(3000)   # 2900 > 1600
+        assert "vandal" in roulette.affordable_weapons(4300)       # 2900 <= 2900
+
+    def test_a_pistol_round_reserves_less(self, monkeypatch):
+        """Nobody buys heavy shield out of the 800 a pistol round issues."""
+        monkeypatch.setattr(config, "_data", {})
+        assert roulette.reserved_creds(800) == 400
+        assert roulette.spendable_creds(800) == 400
+
+    def test_the_pistol_threshold_is_the_number_not_a_round_counter(self, monkeypatch):
+        """There is no round tracking here to ask."""
+        monkeypatch.setattr(config, "_data", {})
+        assert roulette.reserved_creds(800) == 400
+        assert roulette.reserved_creds(810) == 1400
+
+    def test_every_reserve_is_configurable(self, monkeypatch):
+        """Riot retunes shield and ability prices between patches."""
+        monkeypatch.setattr(
+            config,
+            "_data",
+            {"roulette_shield_reserve_creds": 500, "roulette_ability_reserve_creds": 100},
+        )
+        assert roulette.reserved_creds(5000) == 600
+
+    def test_the_reserve_never_makes_the_budget_negative(self, monkeypatch):
+        """
+        A negative budget would make even the free Classic unaffordable,
+        which trips the misconfiguration fallback and opens the FULL
+        roster - the opposite of what a broke round should show.
+        """
+        monkeypatch.setattr(config, "_data", {"roulette_pistol_reserved_creds": 5000})
+
+        assert roulette.spendable_creds(800) == 0
+        assert roulette.affordable_weapons(800) == ["classic"]
+
+    def test_no_prediction_still_opens_the_whole_roster(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+        assert roulette.spendable_creds(None) is None
+        assert roulette.affordable_weapons(None) == list(roulette.WEAPONS)
+
+    @pytest.mark.asyncio
+    async def test_the_started_broadcast_carries_both_numbers(self, monkeypatch):
+        """The raw reading is what the streamer sees in game; the spendable
+        figure is what the roster was actually measured against."""
+        monkeypatch.setattr(config, "_data", {})
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
+        monkeypatch.setattr(roulette.credit_ocr, "get_predicted_credits", lambda: 5000)
+        mock_broadcast = AsyncMock()
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", mock_broadcast)
+
+        await roulette.trigger_roulette("someviewer")
+
+        payload = mock_broadcast.call_args[0][0]
+        assert payload["predicted_credits"] == 5000
+        assert payload["spendable_credits"] == 3600

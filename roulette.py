@@ -39,7 +39,7 @@ import time
 import credit_ocr
 from config import config
 from logger import get_logger
-from points import UnknownUser, backend_name as points_backend_name, try_spend
+from points import UnknownUser, backend_name as points_backend_name, grant_points, try_spend
 from streamerbot_client import parse_chat_message, streamerbot
 from widget_hub import widget_hub
 
@@ -92,6 +92,19 @@ WEAPON_CREDS_COSTS = {
 # an unpriced weapon stays votable rather than silently disappearing from
 # the wheel, which matches how the rest of this filter fails open.
 DEFAULT_WEAPON_CREDS_COST = 0
+
+# Not all of a round's credits are available for a gun. Shields and
+# abilities come out of the same wallet and get bought every round, so a
+# roster built from the raw reading offers weapons that cannot actually
+# be bought alongside them - 5000 creds is an Odin OR a Vandal plus a
+# full kit, not both.
+DEFAULT_SHIELD_RESERVE_CREDS = 1000     # heavy shield
+DEFAULT_ABILITY_RESERVE_CREDS = 400     # rough, agent-independent - see reserved_creds()
+# A pistol round issues 800, and nobody buys heavy shield out of that.
+# Detected by the number rather than by round tracking, which does not
+# exist here: at or below this, the pistol reserve applies instead.
+DEFAULT_PISTOL_ROUND_MAX_CREDS = 800
+DEFAULT_PISTOL_RESERVE_CREDS = 400      # light shield, and little else
 
 DEFAULT_TRIGGER_COST = 500
 DEFAULT_VOTE_BASE_COST = 50
@@ -251,6 +264,31 @@ def _unknown_user_message() -> str:
     )
 
 
+async def _refund(username: str, amount: int, platform: str, why: str) -> None:
+    """
+    Gives back points taken for something that then didn't happen.
+
+    Points are spent BEFORE the session is set up, because a viewer who
+    can't pay must not be able to start one - which leaves a window where
+    the money is gone and the roulette isn't running yet. Anything that
+    fails in that window has to put it back, or the trigger cost bought
+    nothing and the viewer has no way to tell that from bad luck.
+
+    Best effort by design: this is already the error path, so a refund
+    that fails too must not replace the original error. It is logged at
+    error level with the amount, which is the one case here a human has
+    to fix by hand.
+    """
+    try:
+        await grant_points(username, amount, platform=platform)
+        log.info(f"Refunded {amount} points to {username} - {why}")
+    except Exception:
+        log.exception(
+            f"REFUND FAILED: {username} paid {amount} points and {why}, and the points "
+            f"could not be returned. Give them back by hand."
+        )
+
+
 def _too_poor(cost: int, balance: "int | None") -> str:
     """
     The refusal a viewer sees when they can't afford something.
@@ -290,9 +328,47 @@ def creds_cost_for(weapon: str) -> int:
     return WEAPON_CREDS_COSTS.get(weapon, DEFAULT_WEAPON_CREDS_COST)
 
 
+def reserved_creds(predicted_credits: int) -> int:
+    """
+    Credits that are spoken for before any gun is bought.
+
+    Shields and abilities come out of the same wallet every round, so the
+    votable roster has to be built from what is left rather than from the
+    whole reading - otherwise a 5000-cred round offers the Odin, and
+    buying it means going in with no shield and no kit.
+
+    The pistol-round case is separated by the number, because there is no
+    round tracking here to ask: 800 creds is the pistol-round issue and
+    nobody buys heavy shield out of it.
+    """
+    if predicted_credits <= config.get("roulette_pistol_round_max_creds", DEFAULT_PISTOL_ROUND_MAX_CREDS):
+        return config.get("roulette_pistol_reserved_creds", DEFAULT_PISTOL_RESERVE_CREDS)
+    shield = config.get("roulette_shield_reserve_creds", DEFAULT_SHIELD_RESERVE_CREDS)
+    abilities = config.get("roulette_ability_reserve_creds", DEFAULT_ABILITY_RESERVE_CREDS)
+    return shield + abilities
+
+
+def spendable_creds(predicted_credits: "int | None") -> "int | None":
+    """
+    What is actually available for a gun, or None when nothing is known.
+
+    Floored at zero rather than allowed to go negative: a negative budget
+    would make even the Classic unaffordable and trip
+    affordable_weapons()' misconfiguration fallback, which opens the FULL
+    roster - the opposite of what a viewer with no money should see.
+    """
+    if predicted_credits is None:
+        return None
+    return max(predicted_credits - reserved_creds(predicted_credits), 0)
+
+
 def affordable_weapons(predicted_credits: "int | None") -> list[str]:
     """
     The weapons buyable with predicted_credits, in WEAPONS' own order.
+
+    Buyable ALONGSIDE a shield and abilities - the roster is built from
+    spendable_creds(), not from the raw reading, since all three come out
+    of the same wallet in the same buy phase.
 
     Every failure path returns the full roster rather than a short one -
     losing the filter is a much smaller problem than a wheel that silently
@@ -307,7 +383,8 @@ def affordable_weapons(predicted_credits: "int | None") -> list[str]:
     if predicted_credits is None:
         return list(WEAPONS)
 
-    affordable = [w for w in WEAPONS if creds_cost_for(w) <= predicted_credits]
+    budget = spendable_creds(predicted_credits)
+    affordable = [w for w in WEAPONS if creds_cost_for(w) <= budget]
     if not affordable:
         log.warning(
             f"Predicted credits {predicted_credits} made every weapon unaffordable - that shouldn't be possible "
@@ -355,6 +432,25 @@ async def trigger_roulette(username: str, platform: str = "twitch") -> dict:
         if not paid:
             return {"ok": False, "reason": _too_poor(cost, balance)}
 
+    # Paid. Everything from here to the broadcast is setup, and if any of
+    # it fails the viewer is out the trigger cost with nothing running -
+    # so it is all inside one try, and the failure path gives the points
+    # back and leaves no half-started session behind.
+    try:
+        return await _open_session(username, platform, cost)
+    except Exception:
+        log.exception(f"{username} paid {cost} points but the roulette could not be opened")
+        _state.is_active = False
+        _state.weights = {}
+        await _refund(username, cost, platform, "the roulette could not be opened")
+        return {"ok": False, "reason": "Something went wrong opening the roulette - your points are back"}
+
+
+async def _open_session(username: str, platform: str, cost: int) -> dict:
+    """
+    Sets up a paid-for session. Split out of trigger_roulette purely so
+    the paid path has one boundary to catch at - see the call site.
+    """
     # Read the prediction once, here, and hold it for the session. The OCR
     # window is still filling in the background while voting runs, so
     # re-reading it per vote would let the votable set shift underneath
@@ -382,6 +478,11 @@ async def trigger_roulette(username: str, platform: str = "twitch") -> dict:
             # weight_updated events and ignores everything else on this
             # message, so no widget change is needed for it to keep working.
             "predicted_credits": predicted,
+            # What is left for a gun after shields and abilities, which is
+            # what the roster was actually built from - so the overlay can
+            # show the real budget rather than a number no weapon on the
+            # wheel was measured against.
+            "spendable_credits": spendable_creds(predicted),
             "weapon_creds_costs": {w: creds_cost_for(w) for w in votable},
             # What every weapon is worth on the wheel before any votes,
             # so the overlay draws the same odds the draw will use rather
@@ -462,6 +563,17 @@ async def vote(username: str, weapon: str, platform: str = "twitch") -> dict:
 
         if not paid:
             return {"ok": False, "reason": _too_poor(cost, balance)}
+
+        # The spend is a chat round trip - up to a couple of seconds - and
+        # the voting window can close inside it. Without this the viewer
+        # pays for a vote that lands on a session already drawn, or on a
+        # roster that has since been replaced.
+        if not _state.is_active or weapon not in _state.weights:
+            await _refund(username, cost, platform, "voting closed before the vote landed")
+            return {
+                "ok": False,
+                "reason": "Voting closed before your vote landed - your points are back",
+            }
 
         _state.weights[weapon] += 1
         new_weight = _state.weights[weapon]
