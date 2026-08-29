@@ -980,7 +980,7 @@ async def handle_chat_command(event: dict):
         # reading four more numbers multiplies every failure mode the
         # credit reader already has, for a value that changes this rarely.
         await _reply_in_chat(platform, _handle_agent_command(username, text))
-    elif command in ("help", "commands"):
+    elif command in ("help", "commands", "command"):
         # Answered regardless of whether a session is active - this is
         # the one command a viewer needs to be able to reach at any time,
         # since it's the only way they find out !roulette exists at all.

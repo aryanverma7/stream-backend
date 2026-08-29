@@ -504,3 +504,135 @@ class TestListenerDispatch:
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         assert client._listener_tasks == set()
+
+
+# ---------- Message length ----------
+#
+# YouTube caps a chat message at 200 characters and drops anything longer
+# SILENTLY - no error, no reply, nothing in any log on this side. The
+# !help text is 269 characters, so it arrived on Twitch (500) and
+# vanished on YouTube, while shorter replies from the same code path went
+# through fine.
+
+class TestSplitMessage:
+    def test_a_short_message_is_left_alone(self):
+        assert streamerbot_client.split_message("hello", 200) == ["hello"]
+
+    def test_a_message_exactly_at_the_limit_is_not_split(self):
+        text = "x" * 200
+        assert streamerbot_client.split_message(text, 200) == [text]
+
+    def test_a_long_message_is_split_on_spaces(self):
+        text = " ".join(["word"] * 100)  # 499 characters
+        parts = streamerbot_client.split_message(text, 200)
+
+        assert len(parts) > 1
+        for part in parts:
+            assert len(part) <= 200
+        assert " ".join(parts) == text
+
+    def test_words_are_never_broken_in_half(self):
+        parts = streamerbot_client.split_message("alpha bravo charlie delta", 12)
+        for part in parts:
+            for word in part.split():
+                assert word in ("alpha", "bravo", "charlie", "delta")
+
+    def test_a_single_word_longer_than_the_limit_is_still_sent(self):
+        """A URL, or a weapon list that lost its spaces, has to go somewhere."""
+        parts = streamerbot_client.split_message("x" * 50, 10)
+        assert parts
+        assert all(len(part) <= 10 for part in parts)
+
+    def test_it_stops_rather_than_flooding_the_channel(self):
+        """Chat is not a document - a bug that makes a long string must
+        not turn into the bot posting all day."""
+        text = " ".join(["word"] * 1000)
+        parts = streamerbot_client.split_message(text, 200)
+
+        assert len(parts) == streamerbot_client.MAX_MESSAGE_PARTS
+        assert parts[-1].endswith("…")
+
+    def test_the_truncation_marker_fits_inside_the_limit(self):
+        text = " ".join(["word"] * 1000)
+        parts = streamerbot_client.split_message(text, 200)
+        assert all(len(part) <= 200 for part in parts)
+
+    def test_the_real_help_message_fits_youtube_in_two_parts(self):
+        help_text = (
+            "Commands: !roulette (500 points) opens a vote for next round's forced buy - "
+            "vote with !<weapon> while it's open. Weapons: classic, shorty, frenzy, ghost, "
+            "sheriff, stinger, spectre, bucky, judge, bulldog, guardian, phantom, vandal, "
+            "marshal, outlaw, operator, ares, odin."
+        )
+        parts = streamerbot_client.split_message(help_text, 200)
+
+        assert all(len(part) <= 200 for part in parts)
+        assert not parts[-1].endswith("…")   # nothing lost
+
+
+class TestMessageLimit:
+    def test_twitch_and_youtube_differ(self):
+        assert streamerbot_client.message_limit("twitch") == 500
+        assert streamerbot_client.message_limit("youtube") == 200
+
+    def test_the_platform_name_is_case_insensitive(self):
+        """Streamer.bot's envelope says "Twitch" and "YouTube"."""
+        assert streamerbot_client.message_limit("YouTube") == 200
+
+    def test_an_unknown_platform_gets_the_lower_limit(self):
+        """A reply split in two is cosmetic; a reply silently dropped is the bug."""
+        assert streamerbot_client.message_limit("kick") == 200
+        assert streamerbot_client.message_limit("") == 200
+
+
+class TestSendingALongReply:
+    @pytest.mark.asyncio
+    async def test_a_long_reply_goes_out_as_several_messages(self):
+        client = streamerbot_client.StreamerBotClient()
+        sent = []
+
+        class FakeWS:
+            async def send_json(self, payload):
+                sent.append(payload)
+
+        client._ws = FakeWS()
+        await client.send_chat_message(" ".join(["word"] * 100), platform="youtube")
+
+        assert len(sent) > 1
+        assert all(len(p["message"]) <= 200 for p in sent)
+        assert all(p["platform"] == "youtube" for p in sent)
+
+    @pytest.mark.asyncio
+    async def test_the_same_reply_is_one_message_on_twitch(self):
+        """499 characters fits Twitch's 500 and not YouTube's 200."""
+        client = streamerbot_client.StreamerBotClient()
+        sent = []
+
+        class FakeWS:
+            async def send_json(self, payload):
+                sent.append(payload)
+
+        client._ws = FakeWS()
+        await client.send_chat_message(" ".join(["word"] * 100), platform="twitch")
+
+        assert len(sent) == 1
+
+    @pytest.mark.asyncio
+    async def test_every_part_is_remembered_for_the_echo_guard(self):
+        """
+        Each part comes back down the subscription as its own chat event,
+        and the guard matches whole messages - so remembering only the
+        original would let the parts through as if a viewer had typed them.
+        """
+        client = streamerbot_client.StreamerBotClient()
+        sent = []
+
+        class FakeWS:
+            async def send_json(self, payload):
+                sent.append(payload)
+
+        client._ws = FakeWS()
+        await client.send_chat_message(" ".join(["word"] * 100), platform="youtube")
+
+        for payload in sent:
+            assert client._is_our_own_message(payload["message"]) is True

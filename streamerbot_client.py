@@ -83,6 +83,22 @@ _request_ids = itertools.count(1)
 # Streamer.bot, into Twitch, and back down the subscription.
 SENT_MESSAGE_TTL_SECONDS = 30
 
+# How long one chat message may be, per platform. YouTube's 200 is the
+# one that bites: it is less than half Twitch's, and a message over it is
+# dropped silently - no error, no reply, nothing in any log here. The
+# !help text is 269 characters, which is why it worked on Twitch and
+# vanished on YouTube while shorter replies from the same code path
+# arrived fine.
+PLATFORM_MESSAGE_LIMITS = {"twitch": 500, "youtube": 200}
+# Used for a platform not listed above. The lower number, deliberately -
+# a reply split into two is a cosmetic problem, a reply silently dropped
+# is the bug this exists to stop.
+DEFAULT_MESSAGE_LIMIT = 200
+# A reply longer than this many parts is truncated rather than sent. Chat
+# is not a document, and a bug that generates a long string should not
+# turn into the bot flooding the channel.
+MAX_MESSAGE_PARTS = 3
+
 
 def _authentication_hash(password: str, salt: str, challenge: str) -> str:
     """
@@ -115,6 +131,48 @@ def _first_string(source: dict, *keys: str) -> str:
         if isinstance(value, str) and value:
             return value
     return ""
+
+
+def message_limit(platform: str) -> int:
+    return PLATFORM_MESSAGE_LIMITS.get((platform or "").lower(), DEFAULT_MESSAGE_LIMIT)
+
+
+def split_message(text: str, limit: int) -> "list[str]":
+    """
+    Splits a reply into messages the platform will actually accept.
+
+    Breaks on spaces so words stay whole, and hard-splits a single word
+    longer than the limit rather than dropping it - a URL, or a weapon
+    list with no spaces in it, still has to go somewhere.
+
+    Truncated past MAX_MESSAGE_PARTS with an ellipsis: chat is not a
+    document, and a bug that produces a very long string should not
+    become the bot flooding the channel.
+    """
+    if limit <= 0 or len(text) <= limit:
+        return [text]
+
+    parts: list[str] = []
+    remaining = text.strip()
+    while remaining and len(parts) < MAX_MESSAGE_PARTS:
+        if len(remaining) <= limit:
+            parts.append(remaining)
+            remaining = ""
+            break
+        cut = remaining.rfind(" ", 0, limit + 1)
+        if cut <= 0:
+            cut = limit  # one word longer than a whole message
+        parts.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip()
+
+    if remaining:
+        # Room for the marker has to come out of the last part, or the
+        # part that carries it is itself over the limit.
+        last = parts[-1]
+        if len(last) + 1 > limit:
+            last = last[: limit - 1].rstrip()
+        parts[-1] = last + "\u2026"
+    return parts
 
 
 def parse_chat_message(event: dict) -> "dict | None":
@@ -322,21 +380,31 @@ class StreamerBotClient:
         # that is a config edit rather than a deploy.
         as_bot = config.get("streamerbot_send_as_bot", True)
 
-        await ws.send_json({
-            "request": "SendMessage",
-            "id": _next_request_id("send"),
-            "platform": platform,
-            "bot": as_bot,
-            "internal": False,
-            "message": message,
-        })
-        # Logged on the way out, not just on failure. Before this, a
-        # successful send produced no log line anywhere, so "the bot
-        # replied and chat didn't show it" and "the bot never tried"
-        # looked identical in the log - which is exactly the question
-        # being asked whenever a chat reply goes missing.
-        log.info(f"Sent chat message to {platform} (bot={as_bot}): {message!r}")
-        self._recently_sent.append((time.monotonic(), message))
+        parts = split_message(message, message_limit(platform))
+        if len(parts) > 1:
+            log.info(
+                f"Reply is {len(message)} characters and {platform} allows "
+                f"{message_limit(platform)} - sending it as {len(parts)} messages"
+            )
+
+        for part in parts:
+            await ws.send_json({
+                "request": "SendMessage",
+                "id": _next_request_id("send"),
+                "platform": platform,
+                "bot": as_bot,
+                "internal": False,
+                "message": part,
+            })
+            # Logged on the way out, not just on failure. Before this, a
+            # successful send produced no log line anywhere, so "the bot
+            # replied and chat didn't show it" and "the bot never tried"
+            # looked identical in the log - which is exactly the question
+            # being asked whenever a chat reply goes missing.
+            log.info(f"Sent chat message to {platform} (bot={as_bot}): {part!r}")
+            # Each part separately, since the echo guard matches whole
+            # messages and each part comes back as its own chat event.
+            self._recently_sent.append((time.monotonic(), part))
         return True
 
     def _is_our_own_message(self, text: str) -> bool:

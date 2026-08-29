@@ -1692,3 +1692,44 @@ class TestAgentCommand:
         )
 
         assert "jett" in mock_send.await_args[0][0]
+
+
+class TestHelpCommand:
+    @pytest.mark.asyncio
+    async def test_help_answers(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+
+        await roulette.handle_chat_command(
+            {
+                "event": {"source": "Twitch", "type": "ChatMessage"},
+                "data": {"user": {"login": "someviewer"}, "text": "!help"},
+            }
+        )
+
+        assert "!roulette" in mock_send.await_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_the_singular_command_spelling_answers_too(self, monkeypatch):
+        """People type !command as readily as !commands."""
+        monkeypatch.setattr(config, "_data", {})
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", mock_send)
+
+        await roulette.handle_chat_command(
+            {
+                "event": {"source": "YouTube", "type": "Message"},
+                "data": {"user": {"login": "someviewer"}, "text": "!command"},
+            }
+        )
+
+        assert mock_send.await_count == 1
+
+    def test_the_reply_does_not_start_with_a_command(self):
+        """
+        It used to open with "!roulette", so the bot parsed its own answer
+        as a trigger and charged whoever asked for help. The echo guard in
+        streamerbot_client is the real fix; this is the second lock.
+        """
+        assert not roulette._help_message().startswith("!")
