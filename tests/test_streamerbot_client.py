@@ -376,3 +376,131 @@ async def test_a_rejected_authentication_subscribes_anyway_but_records_the_failu
     # false is what the dashboard warns on.
     assert client.is_authenticated is False
     assert _sent(ws) == ["Subscribe"]
+
+
+# ---------- Listener fan-out ----------
+#
+# These pin the fix for a deadlock that made every Cloudbot points spend
+# fail. Listeners used to be awaited one by one inside the socket read
+# loop, so a listener that needed to READ the socket to finish could never
+# finish: the cloudbot points backend charges a viewer by posting
+# `!removepoints` in chat and waiting for Cloudbot's answer, and that
+# answer arrives as the next chat event - on the loop that was blocked
+# awaiting the handler waiting for it. Chat showed Cloudbot confirming the
+# spend on time while the backend reported a timeout.
+
+class TestListenerDispatch:
+    @pytest.mark.asyncio
+    async def test_dispatch_returns_without_waiting_for_listeners(self):
+        import asyncio
+
+        client = streamerbot_client.StreamerBotClient()
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocks(event):
+            started.set()
+            await release.wait()
+
+        client.on_event(blocks)
+        client._dispatch({"event": {}})
+
+        await asyncio.wait_for(started.wait(), 1)  # it did run
+        release.set()
+
+    @pytest.mark.asyncio
+    async def test_a_listener_can_wait_for_an_event_that_arrives_later(self):
+        """
+        The exact shape the cloudbot bridge needs, and the exact shape the
+        old sequential fan-out made impossible.
+        """
+        import asyncio
+
+        client = streamerbot_client.StreamerBotClient()
+        answered = asyncio.get_running_loop().create_future()
+        seen = []
+
+        async def asks_then_waits(event):
+            if event.get("kind") == "question":
+                seen.append(await asyncio.wait_for(answered, 1))
+
+        async def answers(event):
+            if event.get("kind") == "reply" and not answered.done():
+                answered.set_result("confirmed")
+
+        client.on_event(asks_then_waits)
+        client.on_event(answers)
+
+        client._dispatch({"kind": "question"})
+        client._dispatch({"kind": "reply"})
+        await asyncio.wait_for(answered, 1)
+        await asyncio.sleep(0)
+
+        assert seen == ["confirmed"]
+
+    @pytest.mark.asyncio
+    async def test_a_slow_listener_does_not_delay_the_others(self):
+        import asyncio
+
+        client = streamerbot_client.StreamerBotClient()
+        release = asyncio.Event()
+        fast_ran = asyncio.Event()
+
+        async def slow(event):
+            await release.wait()
+
+        async def fast(event):
+            fast_ran.set()
+
+        client.on_event(slow)
+        client.on_event(fast)
+        client._dispatch({"event": {}})
+
+        await asyncio.wait_for(fast_ran.wait(), 1)
+        release.set()
+
+    @pytest.mark.asyncio
+    async def test_a_listener_that_raises_does_not_take_the_others_with_it(self):
+        """
+        An exception used to escape into the read loop and tear down the
+        connection, so one bad payload dropped chat, the roulette and the
+        widget relay together - and the reconnect looked like a network
+        fault.
+        """
+        import asyncio
+
+        client = streamerbot_client.StreamerBotClient()
+        survived = asyncio.Event()
+
+        async def explodes(event):
+            raise ValueError("bad payload")
+
+        async def survives(event):
+            survived.set()
+
+        client.on_event(explodes)
+        client.on_event(survives)
+        client._dispatch({"event": {}})
+
+        await asyncio.wait_for(survived.wait(), 1)
+
+    @pytest.mark.asyncio
+    async def test_in_flight_tasks_are_held_onto(self):
+        """asyncio keeps only a weak reference - an unheld task can be
+        collected mid-await."""
+        import asyncio
+
+        client = streamerbot_client.StreamerBotClient()
+        release = asyncio.Event()
+
+        async def blocks(event):
+            await release.wait()
+
+        client.on_event(blocks)
+        client._dispatch({"event": {}})
+
+        assert len(client._listener_tasks) == 1
+        release.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert client._listener_tasks == set()

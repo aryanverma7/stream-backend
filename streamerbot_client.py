@@ -185,11 +185,53 @@ class StreamerBotClient:
         # replies can be recognized when Streamer.bot relays them straight
         # back as chat events. See _is_our_own_message().
         self._recently_sent: deque = deque()
+        # Strong references to in-flight listener tasks. asyncio only keeps
+        # a weak one, so a task nobody holds can be collected mid-await.
+        self._listener_tasks: set = set()
         # Tri-state on purpose. None means the server never asked us to
         # authenticate (its Authentication toggle is off), which is a
         # different situation from an attempt that failed - and only the
         # failure is worth warning about.
         self._authenticated: "bool | None" = None
+
+    def _dispatch(self, payload: dict) -> None:
+        """
+        Hands an event to every listener WITHOUT waiting for them.
+
+        This used to await each listener in turn, right here in the socket
+        read loop, and that deadlocked the moment a listener needed to
+        read the socket to finish. The cloudbot points backend does
+        exactly that: charging a viewer posts `!removepoints` in chat and
+        waits for Cloudbot to answer, and Cloudbot's answer arrives as the
+        next chat event - on this loop, which was blocked awaiting the
+        handler that was waiting for it. Every spend failed after burning
+        the full reply timeout, while chat plainly showed Cloudbot had
+        confirmed it on time.
+
+        One task per listener, not one per event: a listener that blocks
+        for seconds must not delay the widget relay's view of the same
+        message, and each listener still sees events in arrival order
+        because their tasks are created in that order.
+        """
+        for callback in self._listeners:
+            task = asyncio.create_task(self._run_listener(callback, payload))
+            self._listener_tasks.add(task)
+            task.add_done_callback(self._listener_tasks.discard)
+
+    async def _run_listener(self, callback, payload: dict) -> None:
+        """
+        Runs one listener, swallowing whatever it raises.
+
+        Previously an exception here escaped into the read loop and tore
+        down the connection - so one bad chat payload took chat, the
+        roulette and the widget relay down together, and the reconnect
+        that followed looked like a network problem.
+        """
+        try:
+            await callback(payload)
+        except Exception:
+            name = getattr(callback, "__name__", repr(callback))
+            log.exception(f"Chat listener {name} failed on an event")
 
     def on_event(self, callback):
         """
@@ -449,8 +491,7 @@ class StreamerBotClient:
                         log.info(f"Ignoring our own chat message echoed back: {chat['text']!r}")
                         continue
 
-                    for callback in self._listeners:
-                        await callback(payload)
+                    self._dispatch(payload)
                 elif msg.type == aiohttp.WSMsgType.ERROR:
                     log.warning(f"Streamer.bot WS error: {ws.exception()}")
                     break
