@@ -1055,3 +1055,54 @@ class TestTooPoorMessage:
         assert result["ok"] is False
         assert result["reason"] == "Need 500 points"
         assert roulette._state.is_active is False
+
+
+class TestUnknownUserRefusal:
+    """
+    Cloudbot keeps a separate wallet per platform and can only be asked
+    about users on `cloudbot_platform`, so a viewer who only ever chats on
+    the other one comes back as unknown. That is the one failure here they
+    can fix themselves, so it must not read as a generic outage.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_trigger_says_where_the_points_live(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"cloudbot_platform": "twitch"})
+        monkeypatch.setattr(
+            roulette, "try_spend", AsyncMock(side_effect=roulette.UnknownUser("nope"))
+        )
+
+        result = await roulette.trigger_roulette("someviewer")
+
+        assert result["ok"] is False
+        assert "twitch chat" in result["reason"].lower()
+        assert roulette._state.is_active is False
+
+    @pytest.mark.asyncio
+    async def test_a_vote_says_the_same_thing(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"cloudbot_platform": "twitch"})
+        roulette._state.is_active = True
+        roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
+        monkeypatch.setattr(
+            roulette, "try_spend", AsyncMock(side_effect=roulette.UnknownUser("nope"))
+        )
+
+        result = await roulette.vote("someviewer", "vandal")
+
+        assert result["ok"] is False
+        assert "twitch chat" in result["reason"].lower()
+        assert roulette._state.weights["vandal"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_real_outage_still_reads_as_a_retry(self, monkeypatch):
+        """A timeout is not the viewer's fault and not theirs to fix."""
+        monkeypatch.setattr(config, "_data", {})
+        monkeypatch.setattr(
+            roulette, "try_spend", AsyncMock(side_effect=TimeoutError("no answer"))
+        )
+
+        result = await roulette.trigger_roulette("someviewer")
+
+        assert result["ok"] is False
+        assert "try again" in result["reason"].lower()
+        assert "no record" not in result["reason"].lower()

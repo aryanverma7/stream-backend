@@ -39,7 +39,7 @@ import time
 import credit_ocr
 from config import config
 from logger import get_logger
-from points import try_spend
+from points import UnknownUser, try_spend
 from streamerbot_client import parse_chat_message, streamerbot
 from widget_hub import widget_hub
 
@@ -155,6 +155,23 @@ def _now() -> float:
     return time.time()
 
 
+def _unknown_user_message() -> str:
+    """
+    What a viewer is told when the points ledger has never heard of them.
+
+    Worth its own message rather than folding into the generic failure,
+    because it is the one failure here the viewer can fix themselves, and
+    because it is the expected answer for anyone who only ever watches on
+    the other platform: Cloudbot keeps a separate wallet per platform and
+    can only be asked about users on `cloudbot_platform`.
+    """
+    platform = config.get("cloudbot_platform", "twitch")
+    return (
+        f"The points bot has no record of you - points are kept in {platform} chat, "
+        f"so say something there first and try again"
+    )
+
+
 def _too_poor(cost: int, balance: "int | None") -> str:
     """
     The refusal a viewer sees when they can't afford something.
@@ -245,9 +262,12 @@ async def trigger_roulette(username: str, platform: str = "twitch") -> dict:
         # spending, so a check here would have nothing to check.
         try:
             paid, balance = await try_spend(username, cost)
+        except UnknownUser:
+            log.warning(f"{username} tried to trigger roulette but the points ledger has no record of them")
+            return {"ok": False, "reason": _unknown_user_message()}
         except Exception as e:
             log.warning(f"{username} tried to trigger roulette but the points spend failed: {e}")
-            return {"ok": False, "reason": "Couldn't take your points right now"}
+            return {"ok": False, "reason": "Couldn't take your points right now - try again in a moment"}
 
         if not paid:
             return {"ok": False, "reason": _too_poor(cost, balance)}
@@ -342,9 +362,12 @@ async def vote(username: str, weapon: str) -> dict:
         cost = vote_cost_for(weapon)
         try:
             paid, balance = await try_spend(username, cost)
+        except UnknownUser:
+            log.warning(f"{username} tried to vote for {weapon} but the points ledger has no record of them")
+            return {"ok": False, "reason": _unknown_user_message()}
         except Exception as e:
             log.warning(f"{username} tried to vote for {weapon} but the points spend failed: {e}")
-            return {"ok": False, "reason": "Couldn't take your points right now"}
+            return {"ok": False, "reason": "Couldn't take your points right now - try again in a moment"}
 
         if not paid:
             return {"ok": False, "reason": _too_poor(cost, balance)}

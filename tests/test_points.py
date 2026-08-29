@@ -269,3 +269,34 @@ class TestTrySpend:
 
         assert await points.try_spend("viewer", 500) == (False, 100)
         assert calls == []
+
+
+class TestUnknownUserTranslation:
+    @pytest.mark.asyncio
+    async def test_a_cloudbot_not_found_becomes_a_backend_neutral_error(self, monkeypatch):
+        """
+        roulette.py catches points.UnknownUser, so it must not have to
+        import a backend module or know which one is live.
+        """
+        monkeypatch.setattr(config, "_data", {"points_backend": "cloudbot"})
+
+        async def fake_try_spend(username, amount):
+            raise points.points_cloudbot.CloudbotUserNotFound("someviewer")
+
+        monkeypatch.setattr(points.points_cloudbot, "try_spend", fake_try_spend)
+
+        with pytest.raises(points.UnknownUser):
+            await points.try_spend("someviewer", 500)
+
+    @pytest.mark.asyncio
+    async def test_other_cloudbot_failures_are_left_alone(self, monkeypatch):
+        """A timeout is an outage, not an unknown viewer."""
+        monkeypatch.setattr(config, "_data", {"points_backend": "cloudbot"})
+
+        async def fake_try_spend(username, amount):
+            raise TimeoutError("no answer")
+
+        monkeypatch.setattr(points.points_cloudbot, "try_spend", fake_try_spend)
+
+        with pytest.raises(TimeoutError):
+            await points.try_spend("someviewer", 500)

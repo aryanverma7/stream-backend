@@ -83,6 +83,18 @@ DEFAULT_BACKEND = "api"
 # are therefore racy in the same way. Only needed around grant, NOT around
 # subtract: Streamlabs applies that one server-side as a relative
 # decrement, and the local ledger's subtract never yields mid-update.
+class UnknownUser(Exception):
+    """
+    The live ledger has no record of this user at all - distinct from
+    having no points, and distinct from the ledger being unreachable.
+
+    Backend-neutral on purpose: the cloudbot backend raises its own
+    CloudbotUserNotFound, which try_spend() translates, so callers can
+    tell a viewer something useful without importing a backend module or
+    knowing which one is live.
+    """
+
+
 _grant_lock = asyncio.Lock()
 
 # The same protection for spends. The "api" and "local" backends implement
@@ -224,7 +236,10 @@ async def try_spend(username: str, amount: int) -> "tuple[bool, int | None]":
         if backend == "local":
             return await points_local.try_spend(username, amount)
         if backend == "cloudbot":
-            return await points_cloudbot.try_spend(username, amount)
+            try:
+                return await points_cloudbot.try_spend(username, amount)
+            except points_cloudbot.CloudbotUserNotFound as e:
+                raise UnknownUser(str(e)) from e
         return await _api_try_spend(username, amount)
 
 
