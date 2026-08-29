@@ -60,12 +60,26 @@ load-bearing, none of them documented anywhere:
     Twitch chat, where the handle does not exist, and the silence that
     came back was mistaken for Cloudbot refusing to serve YouTube at all.
 
-    Whether YouTube works once the command reaches YouTube chat is still
-    open. `!addpoints` typed there by the BOT account answered "Unable to
-    find" for every name tried - but it was never tried by the
-    broadcaster, and a mod-permission difference between the platforms
-    would look exactly like that. `cloudbot_platforms` in config can
-    switch a platform back off without a deploy if it proves unusable.
+  * YouTube executes mod commands and says NOTHING on success.
+    `!addpoints <name> 1000` there moved a balance from 560 to 1560 with
+    no reply at all, while the identical command on Twitch answers "<mod>
+    has successfully added ...". Failures still reply on YouTube ("Unable
+    to find <name>."), and that asymmetry is the only reason this is
+    workable: on such a platform silence IS the success signal, so
+    _await_write() waits only long enough to catch a rejection.
+
+    What that costs, stated rather than discovered: Cloudbot still clamps
+    on YouTube, and nothing reports it. A viewer short of the cost is
+    charged whatever they held and gets the thing anyway - the exact
+    failure try_spend() was built to prevent on Twitch, and here there is
+    no signal to prevent it with. A balance already in the cache is
+    checked first, which catches the obvious cases for free; beyond that
+    the loss is bounded by what the viewer had. Refusing every YouTube
+    spend instead was the alternative, and it is worse.
+
+    `cloudbot_silent_write_platforms` lists these; a confirmation that
+    does arrive inside the grace window is used normally, so a platform
+    that starts answering needs no config change.
 
   * Cloudbot lowercases the target and strips ONE leading "@" before
     looking it up. `!addpoints @DualBladeX 10` answered "successfully
@@ -96,6 +110,19 @@ DEFAULT_REPLY_TIMEOUT_SECONDS = 6.0
 # of what the viewer has - which refuses a purchase they could afford,
 # rather than granting one they couldn't. That is the cheap side.
 DEFAULT_CACHE_TTL_SECONDS = 60.0
+# How long to wait for a REJECTION on a platform that doesn't confirm
+# writes. Nothing arriving means it worked, so this is dead time on the
+# happy path and wants to be short - but it sits inside an 18-second
+# voting window, so it must not be so short that a slow "Unable to find"
+# is mistaken for success.
+DEFAULT_SILENT_WRITE_GRACE_SECONDS = 1.5
+# Platforms where !addpoints/!removepoints take effect but say nothing.
+# YouTube is the observed case: `!addpoints <name> 1000` moved a balance
+# from 560 to 1560 with no reply at all, while the same command in Twitch
+# chat answers "<mod> has successfully added ...". Failures still reply
+# on YouTube ("Unable to find <name>."), which is the only reason this
+# can work at all.
+DEFAULT_SILENT_WRITE_PLATFORMS = ("youtube",)
 
 # "@dualbladex, you have 19 Bunds."
 _POINTS_RE = re.compile(
@@ -176,6 +203,24 @@ def default_platform() -> str:
     knows which chat it came from.
     """
     return config.get("cloudbot_platform", "twitch")
+
+
+def writes_are_confirmed(platform: str) -> bool:
+    """
+    Whether Cloudbot answers a successful write in this chat.
+
+    Twitch confirms and reports the amount actually taken, which is what
+    lets try_spend() see a clamp. YouTube says nothing on success, so
+    there the amount is unknowable and only a rejection is visible.
+    """
+    silent = config.get("cloudbot_silent_write_platforms", DEFAULT_SILENT_WRITE_PLATFORMS)
+    return (platform or "").lower() not in {str(p).lower() for p in silent}
+
+
+def _silent_write_grace() -> float:
+    return float(
+        config.get("cloudbot_silent_write_grace_seconds", DEFAULT_SILENT_WRITE_GRACE_SECONDS)
+    )
 
 
 def _timeout() -> float:
@@ -327,6 +372,42 @@ async def _await_reply(waiters: dict, key: tuple, command: str):
             waiters.pop(key, None)
 
 
+async def _await_write(key: tuple, command: str):
+    """
+    Sends a write and returns Cloudbot's confirmation - (points,
+    direction) - or None on a platform that doesn't send one.
+
+    On a silent platform this waits only long enough to catch a
+    REJECTION. Nothing arriving is the success signal there, which is
+    weak but is the only signal offered: `!addpoints <name> 1000` in
+    YouTube chat moved a balance from 560 to 1560 and said nothing, while
+    `!addpoints <unknown> 1` there still answers "Unable to find <name>."
+
+    A confirmation that does turn up inside the grace window is returned
+    like any other, so a platform that starts answering is handled
+    correctly without a config change.
+    """
+    if writes_are_confirmed(key[0]):
+        return await _await_reply(_pending_writes, key, command)
+
+    future: asyncio.Future = asyncio.get_running_loop().create_future()
+    _pending_writes.setdefault(key, []).append(future)
+    try:
+        if not await streamerbot.send_chat_message(command, platform=key[0] or default_platform()):
+            raise RuntimeError("Not connected to Streamer.bot - cannot reach Cloudbot")
+        try:
+            return await asyncio.wait_for(future, timeout=_silent_write_grace())
+        except asyncio.TimeoutError:
+            # No rejection inside the window, so it went through.
+            return None
+    finally:
+        remaining = _pending_writes.get(key, [])
+        if future in remaining:
+            remaining.remove(future)
+        if not remaining:
+            _pending_writes.pop(key, None)
+
+
 # ---------- The operations points.py dispatches to ----------
 
 async def get_user_points(username: str, platform: str = "", use_cache: bool = True) -> int:
@@ -387,9 +468,39 @@ async def try_spend(username: str, amount: int, platform: str = "") -> "tuple[bo
     """
     key = _key(platform or default_platform(), username)
     async with _lock_for(key):
-        removed, _ = await _await_reply(
-            _pending_writes, key, f"!removepoints {username} {amount}"
-        )
+        # On a silent platform a clamp is invisible, so a balance we
+        # already hold is the only chance to refuse a viewer who plainly
+        # cannot pay - and it costs no chat line. Skipped where the
+        # confirmation will tell us the truth anyway.
+        if not writes_are_confirmed(key[0]):
+            cached = _cache.get(key)
+            if cached is not None and time.monotonic() - cached[0] < _cache_ttl():
+                if cached[1] < amount:
+                    log.info(
+                        f"{username} has {cached[1]} points and needs {amount} - refusing "
+                        f"without spending, since {key[0]} would not report the shortfall"
+                    )
+                    return False, cached[1]
+
+        confirmation = await _await_write(key, f"!removepoints {username} {amount}")
+
+        if confirmation is None:
+            # Unconfirmed. Cloudbot still clamps here, and nothing reports
+            # it, so a viewer short of the cost is charged whatever they
+            # had and gets the thing anyway. Deliberately accepted: the
+            # alternative is refusing every spend on this platform, and
+            # the loss is bounded by what they held. See the module
+            # docstring's note on silent platforms.
+            cached = _cache.get(key)
+            if cached is not None:
+                _cache[key] = (cached[0], max(cached[1] - amount, 0))
+            log.info(
+                f"Spent {amount} points from {username} via Cloudbot on {key[0]} "
+                f"(unconfirmed - this platform does not answer writes)"
+            )
+            return True, None
+
+        removed, _ = confirmation
         if removed >= amount:
             cached = _cache.get(key)
             if cached is not None:
@@ -405,9 +516,7 @@ async def try_spend(username: str, amount: int, platform: str = "") -> "tuple[bo
         )
         if removed > 0:
             try:
-                await _await_reply(
-                    _pending_writes, key, f"!addpoints {username} {removed}"
-                )
+                await _await_write(key, f"!addpoints {username} {removed}")
             except Exception:
                 log.error(
                     f"REFUND FAILED: took {removed} points from {username} for a spend "
@@ -429,7 +538,7 @@ async def subtract_points(username: str, amount: int, platform: str = "") -> Non
     """
     key = _key(platform or default_platform(), username)
     async with _lock_for(key):
-        await _await_reply(_pending_writes, key, f"!removepoints {username} {amount}")
+        await _await_write(key, f"!removepoints {username} {amount}")
         cached = _cache.get(key)
         if cached is not None:
             _cache[key] = (cached[0], max(cached[1] - amount, 0))
@@ -448,7 +557,7 @@ async def grant_points(username: str, amount: int, platform: str = "") -> "int |
     """
     key = _key(platform or default_platform(), username)
     async with _lock_for(key):
-        await _await_reply(_pending_writes, key, f"!addpoints {username} {amount}")
+        await _await_write(key, f"!addpoints {username} {amount}")
         cached = _cache.get(key)
         if cached is None:
             log.info(f"Added {amount} points to {username} via Cloudbot - new total unknown")

@@ -452,6 +452,7 @@ class TestPerPlatformWallets:
 
     @pytest.mark.asyncio
     async def test_the_command_goes_to_the_viewers_own_chat(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"cloudbot_silent_write_platforms": []})
         mock_send = AsyncMock(return_value=True)
         monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", mock_send)
 
@@ -469,7 +470,11 @@ class TestPerPlatformWallets:
     @pytest.mark.asyncio
     async def test_a_reply_in_the_other_chat_does_not_answer_this_spend(self, monkeypatch):
         """The same handle on two platforms is two different wallets."""
-        monkeypatch.setattr(config, "_data", {"cloudbot_reply_timeout_seconds": 0.05})
+        monkeypatch.setattr(
+            config,
+            "_data",
+            {"cloudbot_reply_timeout_seconds": 0.05, "cloudbot_silent_write_platforms": []},
+        )
         monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
 
         spender = asyncio.ensure_future(
@@ -497,7 +502,11 @@ class TestPerPlatformWallets:
 
     @pytest.mark.asyncio
     async def test_an_unknown_user_on_one_platform_is_not_unknown_on_the_other(self, monkeypatch):
-        monkeypatch.setattr(config, "_data", {"cloudbot_reply_timeout_seconds": 0.05})
+        monkeypatch.setattr(
+            config,
+            "_data",
+            {"cloudbot_reply_timeout_seconds": 0.05, "cloudbot_silent_write_platforms": []},
+        )
         monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
 
         spender = asyncio.ensure_future(
@@ -514,6 +523,7 @@ class TestPerPlatformWallets:
     @pytest.mark.asyncio
     async def test_two_platforms_can_be_charged_at_once(self, monkeypatch):
         """Locks are per (platform, user), so one does not queue behind the other."""
+        monkeypatch.setattr(config, "_data", {"cloudbot_silent_write_platforms": []})
         monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
 
         twitch = asyncio.ensure_future(
@@ -548,3 +558,133 @@ class TestPerPlatformWallets:
         await granter
 
         assert mock_send.await_args.kwargs["platform"] == "twitch"
+
+
+class TestSilentWritePlatforms:
+    """
+    On YouTube, Cloudbot's mod commands take effect and say nothing:
+    `!addpoints <name> 1000` moved a balance from 560 to 1560 with no
+    reply, while the same command on Twitch answers "<mod> has
+    successfully added ...". Failures still reply there ("Unable to find
+    <name>."), which is the only signal that makes this workable -
+    silence means it went through.
+    """
+
+    @pytest.mark.asyncio
+    async def test_silence_on_youtube_counts_as_a_successful_spend(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"cloudbot_silent_write_grace_seconds": 0.05})
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", mock_send)
+
+        assert await points_cloudbot.try_spend("someviewer", 350, platform="youtube") == (True, None)
+        assert mock_send.await_args[0][0] == "!removepoints someviewer 350"
+        assert mock_send.await_args.kwargs["platform"] == "youtube"
+
+    @pytest.mark.asyncio
+    async def test_silence_on_twitch_is_still_a_failure(self, monkeypatch):
+        """Twitch does confirm, so nothing arriving there means something is wrong."""
+        monkeypatch.setattr(config, "_data", {"cloudbot_reply_timeout_seconds": 0.05})
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+
+        with pytest.raises(TimeoutError):
+            await points_cloudbot.try_spend("someviewer", 350, platform="twitch")
+
+    @pytest.mark.asyncio
+    async def test_a_rejection_inside_the_grace_window_still_raises(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"cloudbot_silent_write_grace_seconds": 1})
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+
+        spender = asyncio.ensure_future(
+            points_cloudbot.try_spend("someviewer", 350, platform="youtube")
+        )
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event(
+            {"platform": "youtube", "text": "Unable to find someviewer."}
+        )
+
+        with pytest.raises(points_cloudbot.CloudbotUserNotFound):
+            await spender
+
+    @pytest.mark.asyncio
+    async def test_a_confirmation_that_does_arrive_is_used(self, monkeypatch):
+        """
+        So a platform that starts answering is handled correctly without
+        a config change - including its clamp.
+        """
+        monkeypatch.setattr(config, "_data", {"cloudbot_silent_write_grace_seconds": 1})
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+
+        spender = asyncio.ensure_future(
+            points_cloudbot.try_spend("someviewer", 350, platform="youtube")
+        )
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event(
+            {"platform": "youtube", "text": "mod has successfully removed 120 Bunds from someviewer."}
+        )
+        await asyncio.sleep(0)
+        await points_cloudbot.handle_chat_event(
+            {"platform": "youtube", "text": "mod has successfully added 120 Bunds to someviewer"}
+        )
+
+        assert await spender == (False, 120)
+
+    @pytest.mark.asyncio
+    async def test_a_held_balance_refuses_a_broke_viewer_without_spending(self, monkeypatch):
+        """
+        A clamp is invisible here, so a balance we already hold is the
+        only chance to catch someone who plainly cannot pay - and it
+        costs no chat line.
+        """
+        monkeypatch.setattr(config, "_data", {"cloudbot_silent_write_grace_seconds": 0.05})
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", mock_send)
+        _cache_now("someviewer", 100, platform="youtube")
+
+        assert await points_cloudbot.try_spend("someviewer", 350, platform="youtube") == (False, 100)
+        mock_send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_held_balance_that_covers_it_still_spends(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"cloudbot_silent_write_grace_seconds": 0.05})
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+        _cache_now("someviewer", 1000, platform="youtube")
+
+        assert await points_cloudbot.try_spend("someviewer", 350, platform="youtube") == (True, None)
+        assert await points_cloudbot.get_user_points("someviewer", "youtube") == 650
+
+    @pytest.mark.asyncio
+    async def test_a_stale_balance_is_not_used_to_refuse(self, monkeypatch):
+        """Cloudbot keeps accruing while we hold it - an old number is not a reason to refuse."""
+        monkeypatch.setattr(
+            config,
+            "_data",
+            {"cloudbot_silent_write_grace_seconds": 0.05, "cloudbot_cache_ttl_seconds": 0},
+        )
+        mock_send = AsyncMock(return_value=True)
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", mock_send)
+        _cache_now("someviewer", 100, platform="youtube")
+
+        assert await points_cloudbot.try_spend("someviewer", 350, platform="youtube") == (True, None)
+        assert mock_send.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_grant_on_a_silent_platform_confirms_without_a_reply(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"cloudbot_silent_write_grace_seconds": 0.05})
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+        _cache_now("someviewer", 500, platform="youtube")
+
+        assert await points_cloudbot.grant_points("someviewer", 100, platform="youtube") == 600
+
+    @pytest.mark.asyncio
+    async def test_a_disconnected_streamerbot_still_fails_immediately(self, monkeypatch):
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=False))
+
+        with pytest.raises(RuntimeError):
+            await points_cloudbot.try_spend("someviewer", 350, platform="youtube")
+
+    @pytest.mark.asyncio
+    async def test_the_silent_platform_list_is_configurable(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"cloudbot_silent_write_platforms": ["twitch"]})
+
+        assert points_cloudbot.writes_are_confirmed("youtube") is True
+        assert points_cloudbot.writes_are_confirmed("Twitch") is False
