@@ -33,6 +33,10 @@
   "roulette_weapon_base_costs": {},
   "roulette_base_wheel_share": 1,
 
+  "roulette_hide_pistols_off_pistol_rounds": true,
+  "roulette_pistol_weapons": ["classic", "shorty", "frenzy", "ghost", "sheriff"],
+  "roulette_always_votable_pistols": ["sheriff"],
+
   "roulette_shield_reserve_creds": 1000,
   "roulette_ability_reserve_creds": 400,
   "roulette_pistol_round_max_creds": 800,
@@ -63,6 +67,8 @@
   "forced_buy_active_duration_seconds": 100,
 
   "ocr_agent_secret": "",
+  "ocr_workers": 2,
+  "ocr_reading_max_age_seconds": 300,
 
   "github_client_id": "",
   "github_client_secret": "",

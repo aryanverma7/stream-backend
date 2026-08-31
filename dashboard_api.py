@@ -165,6 +165,11 @@ def _credit_prediction() -> dict:
         # makes the roster look wrong.
         "spendable_credits": roulette.spendable_creds(predicted),
         "reserved_credits": None if predicted is None else roulette.reserved_creds(predicted),
+        # Which kind of round the roster was built for. Worth its own field
+        # because it changes the roster in two ways at once - a smaller
+        # reserve, and the sidearms staying on the wheel - and without it a
+        # pistol-round roster looks like the filter misbehaving.
+        "pistol_round": roulette.is_pistol_round(predicted),
         "agent": agent,
         # None means this agent has no ability prices on file and the flat
         # fallback is in use - worth surfacing, since that is the state
@@ -205,6 +210,12 @@ async def get_status(request: web.Request) -> web.Response:
         # Streamer.bot requires authentication for, so chat replies die.
         "streamerbot_authenticated": streamerbot.is_authenticated,
         "credit_prediction": _credit_prediction(),
+        # What the wheel is doing, and what it last landed on. The last
+        # result outlives its session on purpose: the question "which gun
+        # am I being forced into" gets asked during the buy phase, by
+        # which point the overlay has finished its spin - and answering it
+        # meant opening the stream on another screen to watch a widget.
+        "roulette": roulette.status(),
         # Which points ledger is live. "local" means the flat-file
         # stand-in, not the balance viewers see with !points in chat -
         # a distinction that is invisible from the numbers alone, so the

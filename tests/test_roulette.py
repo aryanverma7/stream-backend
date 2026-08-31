@@ -96,6 +96,12 @@ NO_RESERVE = {
     "roulette_shield_reserve_creds": 0,
     "roulette_ability_reserve_creds": 0,
     "roulette_pistol_reserved_creds": 0,
+    # The sidearm trim is off here too, so these tests exercise the price
+    # filter and nothing else. It is a taste rule rather than an
+    # affordability one and it has its own class below; leaving it on would
+    # make a test about whether 1000 creds covers the Ghost fail for a
+    # reason that has nothing to do with 1000 creds.
+    "roulette_hide_pistols_off_pistol_rounds": False,
 }
 
 
@@ -183,6 +189,100 @@ class TestAffordableWeapons:
         be silently votable on an eco round.
         """
         assert set(roulette.WEAPON_CREDS_COSTS) == set(roulette.WEAPONS)
+
+
+class TestPistolsOffTheWheelOffPistolRounds:
+    """
+    Eighteen weapons is more than a chat can read off an overlay in
+    eighteen seconds, and on a full-buy round four of them are sidearms
+    nobody would choose to be forced into. They come off - except the
+    Sheriff, which people buy on purpose at any economy.
+    """
+
+    def test_the_cheap_sidearms_come_off_a_full_buy_roster(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+        votable = roulette.affordable_weapons(5000)
+        for pistol in ("classic", "shorty", "frenzy", "ghost"):
+            assert pistol not in votable
+        assert "vandal" in votable
+
+    def test_the_sheriff_stays(self, monkeypatch):
+        """The one exception, and the reason this is a list rather than a flag."""
+        monkeypatch.setattr(config, "_data", {})
+        assert "sheriff" in roulette.affordable_weapons(5000)
+
+    def test_a_pistol_round_keeps_every_sidearm(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {**NO_RESERVE, "roulette_hide_pistols_off_pistol_rounds": True})
+        votable = roulette.affordable_weapons(800)
+        for pistol in roulette.PISTOL_WEAPONS:
+            assert pistol in votable
+
+    def test_a_save_round_keeps_the_pistols_it_can_actually_afford(self, monkeypatch):
+        """
+        The case the ordering exists for. At 1200 creds this is not a pistol
+        round, so the trim applies - but after the price filter the only
+        affordable weapons ARE the cheap sidearms, and trimming them would
+        leave nothing and fall through to the misconfiguration fallback,
+        opening all eighteen. On a save round the pistols genuinely are the
+        roster.
+        """
+        monkeypatch.setattr(config, "_data", {})  # 1000 shield + 400 abilities reserved
+        votable = roulette.affordable_weapons(1200)
+        assert votable
+        assert "operator" not in votable
+        assert "classic" in votable
+
+    def test_the_trim_never_produces_an_empty_roster(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+        for predicted in range(0, 9001, 100):
+            assert roulette.affordable_weapons(predicted), f"empty roster at {predicted}"
+
+    def test_an_unknown_prediction_is_not_treated_as_a_pistol_round(self, monkeypatch):
+        """
+        Every other unknown here opens the full roster. Answering "pistol
+        round" to a missing reading would instead trim the wheel on the
+        strength of a number that does not exist.
+        """
+        monkeypatch.setattr(config, "_data", {})
+        assert roulette.is_pistol_round(None) is False
+        assert roulette.affordable_weapons(None) == list(roulette.WEAPONS)
+
+    def test_the_trim_can_be_switched_off(self, monkeypatch):
+        monkeypatch.setattr(
+            config,
+            "_data",
+            {**NO_RESERVE, "roulette_hide_pistols_off_pistol_rounds": False},
+        )
+        assert "ghost" in roulette.affordable_weapons(5000)
+
+    def test_which_pistols_are_hidden_is_config_overridable(self, monkeypatch):
+        """Riot has shipped new sidearms before; this must not need a deploy."""
+        monkeypatch.setattr(
+            config,
+            "_data",
+            {
+                **NO_RESERVE,
+                "roulette_hide_pistols_off_pistol_rounds": True,
+                "roulette_pistol_weapons": ["classic", "ghost"],
+                "roulette_always_votable_pistols": ["ghost"],
+            },
+        )
+        votable = roulette.affordable_weapons(5000)
+        assert "classic" not in votable
+        assert "ghost" in votable
+        assert "shorty" in votable  # no longer counted as a pistol at all
+
+    def test_the_pistol_round_threshold_is_the_same_one_the_reserve_uses(self, monkeypatch):
+        """
+        Two different questions - how much to hold back, and whether to keep
+        the sidearms - answered off one config key on purpose. A roster
+        built for a pistol round out of a full-buy reserve would be wrong in
+        both directions at once.
+        """
+        monkeypatch.setattr(config, "_data", {"roulette_pistol_round_max_creds": 1500})
+        assert roulette.is_pistol_round(1500) is True
+        assert roulette.is_pistol_round(1510) is False
+        assert roulette.reserved_creds(1500) == roulette.DEFAULT_PISTOL_RESERVE_CREDS
 
 
 class TestAffordabilityDuringASession:
@@ -411,6 +511,103 @@ class TestVote:
         assert result["ok"] is False
         assert "10" in result["reason"]
         assert roulette._state.weights["operator"] == 0
+
+
+class TestStatusForTheDashboard:
+    """
+    The question this answers is "which gun am I being forced into", and it
+    gets asked during the buy phase - by which point the overlay has spun
+    and gone. Before this, the only way to find out was to open the stream
+    on a second screen and wait for the badge.
+    """
+
+    def test_nothing_has_happened_yet(self):
+        status = roulette.status()
+        assert status["active"] is None
+        assert status["last_result"] is None
+        assert status["forced_buy"]["weapon"] is None
+
+    @pytest.mark.asyncio
+    async def test_the_winner_survives_the_session_that_produced_it(self, monkeypatch):
+        roulette._state.is_active = True
+        roulette._state.weights = {"vandal": 3, "phantom": 0}
+        roulette._state.predicted_credits = 4500
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        monkeypatch.setattr(roulette, "_start_forced_buy", AsyncMock())
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+
+        winner = await roulette.end_roulette()
+
+        status = roulette.status()
+        assert status["active"] is None            # the session is over...
+        assert status["last_result"]["winner"] == winner   # ...and its answer is not
+        assert status["last_result"]["predicted_credits"] == 4500
+        assert status["last_result"]["total_votes"] == 3
+        assert status["last_result"]["age_seconds"] >= 0
+
+    @pytest.mark.asyncio
+    async def test_the_reported_odds_match_the_ones_announced_in_chat(self, monkeypatch):
+        """
+        Two renderings of one number. A panel quoting 60% beside a chat
+        message quoting 57% is a bug report waiting to happen.
+        """
+        roulette._state.is_active = True
+        roulette._state.weights = {"vandal": 3, "phantom": 0}
+        monkeypatch.setattr(config, "_data", {"roulette_base_wheel_share": 1})
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        monkeypatch.setattr(roulette, "_start_forced_buy", AsyncMock())
+        monkeypatch.setattr(roulette, "draw_winner", lambda shares: "vandal")
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+
+        await roulette.end_roulette()
+
+        result = roulette.status()["last_result"]
+        assert result["winner_share_percent"] == 80  # 4 of 5 shares
+        assert "80% of the wheel" in roulette._odds_text(result["wheel_shares"], "vandal")
+
+    @pytest.mark.asyncio
+    async def test_a_voteless_session_says_so(self, monkeypatch):
+        roulette._state.is_active = True
+        roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        monkeypatch.setattr(roulette, "_start_forced_buy", AsyncMock())
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+
+        await roulette.end_roulette()
+
+        result = roulette.status()["last_result"]
+        assert result["randomly_picked"] is True
+        assert result["total_votes"] == 0
+
+    def test_a_live_session_reports_its_running_weights(self):
+        roulette._state.is_active = True
+        roulette._state.weights = {"vandal": 2, "phantom": 0}
+        roulette._state.last_triggered_at = roulette._now()
+
+        active = roulette.status()["active"]
+        assert active["weights"] == {"vandal": 2, "phantom": 0}
+        assert active["wheel_shares"]["vandal"] > active["wheel_shares"]["phantom"]
+        assert active["seconds_elapsed"] >= 0
+
+    @pytest.mark.asyncio
+    async def test_the_badge_state_is_reported_separately_from_the_result(self, monkeypatch):
+        """
+        Three different clocks: the session, the result, and the badge. The
+        badge is cleared two buy phases after the win; the result is not,
+        because it is still the answer to what to buy.
+        """
+        roulette._state.is_active = True
+        roulette._state.weights = {"odin": 1}
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        monkeypatch.setattr(roulette, "_start_forced_buy", AsyncMock())
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+        await roulette.end_roulette()
+
+        await roulette.clear_forced_buy()
+
+        status = roulette.status()
+        assert status["forced_buy"]["weapon"] is None
+        assert status["last_result"]["winner"] == "odin"
 
 
 class TestEndRoulette:

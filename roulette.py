@@ -93,6 +93,19 @@ WEAPON_CREDS_COSTS = {
 # the wheel, which matches how the rest of this filter fails open.
 DEFAULT_WEAPON_CREDS_COST = 0
 
+# Valorant's five sidearms. On a round with real money they are not picks,
+# they are noise: eighteen options is already more than a chat can read off
+# an overlay in eighteen seconds, and four of those options are guns nobody
+# would choose to be forced into with 4000 creds in the bank. They are
+# dropped from the roster off pistol rounds - see affordable_weapons().
+PISTOL_WEAPONS = ["classic", "shorty", "frenzy", "ghost", "sheriff"]
+
+# ...with one exception, which is why this is a list and not a flag. The
+# Sheriff is a genuine pick at any economy - it is a one-tap sidearm people
+# buy deliberately on full-buy rounds - so it stays on the wheel while the
+# other four come off.
+ALWAYS_VOTABLE_PISTOLS = ["sheriff"]
+
 # Not all of a round's credits are available for a gun. Shields and
 # abilities come out of the same wallet and get bought every round, so a
 # roster built from the raw reading offers weapons that cannot actually
@@ -200,6 +213,13 @@ class RouletteState:
         # it: an "active" badge could be one whose buy phase has arrived,
         # or one the timer promoted while nothing was happening.
         self.forced_buy_phases_seen: int = 0
+        # What the last completed session produced, kept after the session
+        # itself is over so the dashboard can answer "which gun am I being
+        # forced into" without the streamer having to alt-tab to their own
+        # overlay to find out. Not the same thing as forced_buy_weapon
+        # above, which is the badge's state and is cleared two buy phases
+        # later - this survives until the next roulette replaces it.
+        self.last_result: dict | None = None
 
 
 _state = RouletteState()
@@ -488,6 +508,36 @@ def reserved_creds(predicted_credits: int) -> int:
     return shield + ability_reserve_creds()
 
 
+def is_pistol_round(predicted_credits: "int | None") -> bool:
+    """
+    Whether this looks like a pistol round, decided by the size of the
+    budget because there is no round tracking here to ask.
+
+    The same threshold reserved_creds() uses, read from the same config
+    key, so the two can never disagree about which kind of round this is -
+    a roster built for a pistol round out of a full-buy reserve would be
+    wrong in both directions at once.
+
+    Unknown credits are NOT a pistol round: every other unknown here opens
+    the full roster, and answering True would do the opposite, quietly
+    trimming the wheel on the strength of a reading that does not exist.
+    """
+    if predicted_credits is None:
+        return False
+    return predicted_credits <= config.get("roulette_pistol_round_max_creds", DEFAULT_PISTOL_ROUND_MAX_CREDS)
+
+
+def _pistols_to_hide() -> set:
+    """
+    The sidearms that come off the wheel on a non-pistol round. Both
+    halves are config-overridable: which weapons count as pistols, and
+    which of them survive anyway.
+    """
+    pistols = config.get("roulette_pistol_weapons", PISTOL_WEAPONS) or []
+    keep = config.get("roulette_always_votable_pistols", ALWAYS_VOTABLE_PISTOLS) or []
+    return {str(w).lower() for w in pistols} - {str(w).lower() for w in keep}
+
+
 def spendable_creds(predicted_credits: "int | None") -> "int | None":
     """
     What is actually available for a gun, or None when nothing is known.
@@ -510,6 +560,11 @@ def affordable_weapons(predicted_credits: "int | None") -> list[str]:
     spendable_creds(), not from the raw reading, since all three come out
     of the same wallet in the same buy phase.
 
+    Off a pistol round the sidearms are dropped as well, Sheriff aside -
+    see _pistols_to_hide(). That is a taste filter rather than an
+    affordability one, and it is the only trim here that can be switched
+    off on its own (`roulette_hide_pistols_off_pistol_rounds`).
+
     Every failure path returns the full roster rather than a short one -
     losing the filter is a much smaller problem than a wheel that silently
     drops most of its options because OCR happened to be down:
@@ -525,6 +580,21 @@ def affordable_weapons(predicted_credits: "int | None") -> list[str]:
 
     budget = spendable_creds(predicted_credits)
     affordable = [w for w in WEAPONS if creds_cost_for(w) <= budget]
+
+    # Off a pistol round the sidearms come off the wheel (bar the Sheriff),
+    # because with real money in the bank they are not choices anyone wants
+    # to be forced into and they crowd out the ones that are.
+    #
+    # Applied AFTER the price filter and only when something survives it,
+    # which is what keeps a save round sane: at 500 spendable the only
+    # affordable weapons ARE pistols, and trimming them would leave nothing
+    # and fall through to the misconfiguration path below, opening all
+    # eighteen. On that round pistols are genuinely the roster.
+    if config.get("roulette_hide_pistols_off_pistol_rounds", True) and not is_pistol_round(predicted_credits):
+        trimmed = [w for w in affordable if w not in _pistols_to_hide()]
+        if trimmed:
+            affordable = trimmed
+
     if not affordable:
         log.warning(
             f"Predicted credits {predicted_credits} made every weapon unaffordable - that shouldn't be possible "
@@ -770,6 +840,15 @@ async def end_roulette() -> "str | None":
         },
         tag="roulette",
     )
+    _state.last_result = {
+        "winner": winner,
+        "randomly_picked": randomly_picked,
+        "final_weights": dict(_state.weights),
+        "wheel_shares": shares,
+        "predicted_credits": _state.predicted_credits,
+        "platform": _state.platform,
+        "ended_at": _now(),
+    }
     log.info(
         f"Roulette ended - winner: {winner or 'none'}"
         f"{' (no votes - picked at random)' if randomly_picked else ''}"
@@ -908,6 +987,61 @@ async def clear_forced_buy() -> None:
     _state.forced_buy_weapon = None
     _state.forced_buy_phase = None
     _state.forced_buy_phases_seen = 0
+
+
+def status() -> dict:
+    """
+    Everything the admin dashboard needs to answer "what is the roulette
+    doing" without opening the stream.
+
+    Three separate things, deliberately not collapsed into one:
+
+      `active` is the session that is open for votes right now, with the
+      live weights, so the panel shows the wheel filling up.
+
+      `last_result` is what the previous session landed on. It outlives
+      the session AND the badge, because the question it answers - which
+      gun am I supposed to be buying - is asked during the buy phase,
+      after the overlay has finished its spin and gone.
+
+      `forced_buy` is the badge's own state machine, which is a different
+      clock again: queued, then active for the round, then cleared.
+
+    `winner_share` is computed here rather than sent as a fraction so the
+    panel and the chat announcement quote the same number - _odds_text()
+    rounds the same way.
+    """
+    result = None
+    if _state.last_result is not None:
+        result = dict(_state.last_result)
+        result["age_seconds"] = round(_now() - result.pop("ended_at"), 1)
+        shares = result.get("wheel_shares") or {}
+        total = sum(shares.values())
+        winner = result.get("winner")
+        result["winner_share_percent"] = (
+            round(100 * shares[winner] / total) if winner and total > 0 and winner in shares else None
+        )
+        result["total_votes"] = sum((result.get("final_weights") or {}).values())
+
+    active = None
+    if _state.is_active:
+        active = {
+            "weights": dict(_state.weights),
+            "wheel_shares": wheel_shares(),
+            "predicted_credits": _state.predicted_credits,
+            "platform": _state.platform,
+            "seconds_elapsed": round(_now() - _state.last_triggered_at, 1),
+        }
+
+    return {
+        "active": active,
+        "last_result": result,
+        "forced_buy": {
+            "weapon": _state.forced_buy_weapon,
+            "phase": _state.forced_buy_phase,
+        },
+        "on_cooldown": is_on_cooldown(),
+    }
 
 
 async def _reply_in_chat(platform: str, text: str) -> None:

@@ -184,11 +184,31 @@ digit deleted) each reject real buys too - 4000 credits spent down to 400
 is an Odin and light shields - and rejecting a real buy reproduces the
 bug above, so no guard is worth its false positives here.
 
-Two looks at one buy phase is not the same as two rounds, and the
-difference is time. Readings older than _READING_MAX_AGE_SECONDS are
-dropped from the consensus here, mirroring the gap the agent uses to
-decide when to reset at all, so a reset POST that never arrives cannot
-leave a previous round's budget standing.
+Real-world finding #9: two looks at one buy phase is not the same as two
+rounds, and the difference was originally taken to be time - readings
+older than twenty seconds were dropped, mirroring the gap the agent uses
+to decide when to reset. That number came from the gap between two
+PRESSES of B, and it does not transfer to the age of a reading. A buy
+phase is read in about two seconds; the round that follows it runs for
+well over a minute. So from about twenty seconds after the menu closed
+until the next buy phase opened - most of every round - the dashboard
+said "No reading yet" and the roulette opened the full roster, having
+read the budget perfectly well.
+
+A round does not end because time passed; it ends when the next buy phase
+begins, and only the gaming PC can see that. Every capture now carries an
+X-Buy-Phase header holding the id of the buy phase it was taken in, and a
+value different from the one in progress ends the old phase here on the
+spot (_begin_buy_phase). The explicit /api/ocr/reset POST still arrives
+and still does the same job; the header is what makes a dropped one
+harmless, which is what allows readings to live for a whole round rather
+than twenty seconds.
+
+Two backstops remain under that, for the cases a header cannot cover. If
+the agent has been heard from and has since gone quiet (_agent_is_gone),
+no phase will ever be declared again and the window expires with the
+heartbeat. And _READING_MAX_AGE_SECONDS caps the whole thing at five
+minutes, longer than any single round including overtime.
 
 Requires the native `tesseract` binary installed on the Mac Mini - not a
 pure-Python dependency. On this project's specific Mac Mini (2012,
@@ -300,15 +320,16 @@ _MAX_CREDITS = 9000
 # it takes to make a purchase, so the answer follows what the menu shows
 # rather than lagging it.
 #
-# It was 4 when the agent captured 4 images a second, and is 10 now that
-# it captures 10 (agent.py's fix #9). Same second of history, same
-# behaviour; changing agent.CAPTURE_INTERVAL_WITHIN_BURST without changing
-# this silently changes how far back the consensus reaches.
+# It was 4 when the agent captured 4 images a second, 10 when it captured
+# 10 (agent.py's fix #9), and is 20 now that it captures 20 (its fix #12).
+# Same second of history each time, same behaviour; changing
+# agent.CAPTURE_INTERVAL_WITHIN_BURST without changing this silently
+# changes how far back the consensus reaches.
 #
 # Note that 422s ("no number found") are never appended, so the window
-# always holds the last 10 VALID readings no matter how many blank frames
+# always holds the last 20 VALID readings no matter how many blank frames
 # follow them - closing the buy menu can't flush the real answer out.
-_READING_HISTORY_SIZE = 10
+_READING_HISTORY_SIZE = 20
 _recent_readings: deque = deque(maxlen=_READING_HISTORY_SIZE)
 
 # How many times a value has to be seen, scanning back from the newest
@@ -323,19 +344,31 @@ _recent_readings: deque = deque(maxlen=_READING_HISTORY_SIZE)
 # least likely to ever be read twice.
 _CORROBORATING_READINGS = 2
 
-# When the newest reading in the window is older than this, the window is
-# treated as empty rather than as an answer. The agent already resets the
-# history at the start of a new buy phase, so this never fires in normal
-# operation - it exists for when that reset does NOT arrive: a dropped
-# POST, an agent restarted mid-match, a gaming PC that went to sleep. The
-# failure it prevents is the expensive one, a previous round's budget
-# quietly deciding what viewers may vote for.
+# Real-world finding #9: this used to be 20 seconds, matched to
+# burst_timer.NEW_ROUND_GAP_SECONDS on the gaming PC on the reasoning that
+# readings more than twenty seconds apart belong to different rounds. That
+# reasoning was about two PRESSES of B, and applying it to the reading's
+# own age was wrong: a buy phase is read in about two seconds and the
+# round that follows it runs for well over a minute, so from roughly
+# twenty seconds after the menu closed until the next buy phase, the
+# dashboard reported "No reading yet" and the roulette opened the full
+# roster - for most of every round, having read the budget correctly.
 #
-# The same number as burst_timer.NEW_ROUND_GAP_SECONDS on the gaming PC,
-# because it is the same fact stated from the other side: readings more
-# than twenty seconds apart belong to different rounds. Change one and
-# change the other.
-_READING_MAX_AGE_SECONDS = 20
+# A round does not end because time passed. It ends when the next buy
+# phase starts, which is a thing the agent observes directly and now says
+# out loud: every capture carries an X-Buy-Phase header, and a value
+# different from the one in progress clears the window on the spot (see
+# _begin_buy_phase). That signal, not the clock, is what ends a round
+# here.
+#
+# What is left for this constant is the case the header cannot cover -
+# the agent going away entirely, mid-round, without ever declaring the
+# next phase. _agent_is_gone() catches that within the heartbeat cutoff,
+# so this is only the last backstop under both of them: a gaming PC that
+# kept heartbeating while its agent silently stopped sending a phase id
+# at all. Five minutes is longer than any single Valorant round including
+# overtime, so it never fires while a real round is in progress.
+_READING_MAX_AGE_SECONDS = 300
 
 # When the newest entry in the window arrived. One timestamp for the whole
 # window rather than one per reading, because the window only ever spans
@@ -357,7 +390,17 @@ _last_reading_at: "float | None" = None
 # loop. Two workers, not more: the work is CPU-bound and the machine is a
 # 2012 Mac Mini, where extra workers buy contention rather than
 # throughput.
-_OCR_WORKERS = 2
+#
+# Overridable from config.json (`ocr_workers`) because it is the ceiling
+# on the whole pipeline and the right number is a property of this
+# specific machine, not of this code: the gaming PC now captures 20
+# images a second, and if Tesseract here cannot retire them the agent's
+# own backpressure quietly drops the rate back down. Raising this is the
+# first thing to try if the agent starts reporting that the backend is
+# behind - but only up to the core count, past which extra workers buy
+# contention rather than throughput. Read once, at import: the pool is
+# built here and a live edit would not resize it.
+_OCR_WORKERS = max(1, int(config.get("ocr_workers", 2) or 2))
 _ocr_executor = ThreadPoolExecutor(max_workers=_OCR_WORKERS, thread_name_prefix="ocr")
 
 
@@ -449,15 +492,57 @@ def extract_credits(image_bytes: bytes) -> "int | None":
     return value
 
 
+def _reading_max_age_seconds() -> float:
+    """
+    The backstop age, overridable from config so it can be shortened
+    without a deploy if a round ever manages to outlive it.
+    """
+    try:
+        return float(config.get("ocr_reading_max_age_seconds", _READING_MAX_AGE_SECONDS))
+    except (TypeError, ValueError):
+        return float(_READING_MAX_AGE_SECONDS)
+
+
+def _agent_is_gone() -> bool:
+    """
+    Whether the gaming PC's agent HAS been heard from and has since gone
+    quiet - the one case where waiting for the next X-Buy-Phase header
+    would mean waiting forever.
+
+    Never heard from at all is deliberately NOT "gone". An agent build
+    older than the heartbeat route, and a test that records readings
+    directly, both look like that, and neither is a reason to throw away
+    a reading that is otherwise good.
+    """
+    agent_status = ocr_agent.status()
+    if agent_status["last_heartbeat_age_seconds"] is None and agent_status["last_capture_age_seconds"] is None:
+        return False
+    return not agent_status["connected"]
+
+
 def _window_is_stale() -> bool:
     """
-    Whether the newest reading in the window is old enough to belong to a
-    different round - see _READING_MAX_AGE_SECONDS. A stale window is
-    reported as no window at all rather than as an old answer.
+    Whether the window has stopped describing the round in progress.
+
+    Three ways that happens, in order of how often they actually fire:
+      1. The agent declared a new buy phase, which empties the window
+         outright rather than ageing it - see _begin_buy_phase(). That is
+         the normal path and it is not a timeout at all.
+      2. The agent went away mid-round (finding #9). No new phase will
+         ever be declared, so the reading has to expire on its own, and
+         the heartbeat cutoff is how quickly that is noticed.
+      3. The backstop age, for the case neither of the above covers.
+
+    A stale window is reported as no window at all rather than as an old
+    answer: the roulette's fallback for "no reading" is the full roster,
+    and offering too many weapons is a far cheaper mistake than building a
+    roster from a previous round's budget.
     """
     if _window_last_append_at is None:
         return True
-    return (time.time() - _window_last_append_at) > _READING_MAX_AGE_SECONDS
+    if _agent_is_gone():
+        return True
+    return (time.time() - _window_last_append_at) > _reading_max_age_seconds()
 
 
 def _corroborated_value() -> "int | None":
@@ -625,6 +710,16 @@ async def handle_credit_report(request: web.Request) -> web.Response:
     if not image_bytes:
         return web.json_response({"error": "No image data in request body"}, status=400)
 
+    # Finding #9. The agent stamps every capture with the buy phase it was
+    # taken in, and a phase this window has not seen means the previous
+    # round is over - whether or not its /api/ocr/reset ever arrived. Done
+    # BEFORE the OCR, so the reading this request carries lands in the new
+    # phase's window rather than in the one it just ended.
+    phase = request.headers.get("X-Buy-Phase")
+    if phase is not None and phase != _current_buy_phase:
+        log.info(f"Capture from buy phase {phase} - the previous phase is over, clearing its readings")
+        await _begin_buy_phase(phase, force=False)
+
     # Off the event loop, not on it (finding #5). Tesseract blocks for as
     # long as it takes, and everything else this process does - the
     # dashboard, the widget sockets, the chat handlers - shares that loop.
@@ -645,6 +740,64 @@ async def handle_credit_report(request: web.Request) -> web.Response:
     consensus = get_predicted_credits()
     log.info(f"Detected {detected} (this reading) - current consensus: {consensus}")
     return web.json_response({"credits": detected, "consensus": consensus})
+
+
+# The buy phase the readings in the window belong to, as the agent
+# numbers them. None until an agent that sends the header has been heard
+# from - an older build sends none, and then this stays None and the
+# explicit reset POST is the only phase signal, exactly as before.
+_current_buy_phase: "str | None" = None
+
+
+def current_buy_phase() -> "str | None":
+    """The buy phase id the window belongs to. Read by the tests and the dashboard."""
+    return _current_buy_phase
+
+
+async def _begin_buy_phase(phase: "str | None", *, force: bool) -> bool:
+    """
+    Ends whatever phase was in progress and starts `phase`: empties the
+    rolling window and notifies the new-buy-phase listeners. Returns
+    whether it actually did anything.
+
+    Called from two places that must not double-fire. The agent sends both
+    an explicit /api/ocr/reset AND a phase id on every capture, so
+    whichever arrives first begins the phase and the other one recognises
+    it as already begun. Skipping the second is not just tidiness: a
+    second clear would throw away the readings the first captures of this
+    phase have already produced.
+
+    The check and the assignment are deliberately synchronous with no
+    await between them, so two captures from the same new phase arriving
+    together cannot both pass the check.
+
+    `force` is for a reset POST carrying no phase id at all - an agent
+    build older than the header, where there is nothing to compare and the
+    POST itself is the only signal there is.
+    """
+    global _current_buy_phase
+    if not force and phase is not None and phase == _current_buy_phase:
+        return False
+    _current_buy_phase = phase
+    _clear_window()
+    # _last_reading is deliberately left alone - it is the dashboard's only
+    # way to distinguish this from a pipeline that has never worked. See
+    # last_reading() and finding #6.
+    for callback in _new_buy_phase_listeners:
+        try:
+            await callback()
+        except Exception:
+            # A listener must never turn the agent's reset into a failure.
+            # From the gaming PC a 500 here is indistinguishable from the
+            # reset not landing, and the agent has no way to retry it.
+            log.exception("A new-buy-phase listener raised - the reset itself still succeeded")
+    return True
+
+
+def forget_buy_phase() -> None:
+    """Drops the tracked phase id. Exists for the tests."""
+    global _current_buy_phase
+    _current_buy_phase = None
 
 
 _new_buy_phase_listeners: list = []
@@ -680,25 +833,19 @@ async def handle_reset(request: web.Request) -> web.Response:
     if not _agent_secret_ok(request):
         return web.json_response({"error": "Invalid or missing agent secret"}, status=401)
 
-    _clear_window()
-    # _last_reading is deliberately left alone - it is the dashboard's only
-    # way to distinguish this from a pipeline that has never worked. See
-    # last_reading() and finding #6.
-    log.info("Reading history cleared - a new buy phase has started")
-
-    # This request is the only real "a new round has begun" signal this
-    # backend receives, and the reading window is not the only thing that
-    # cares. Listeners are notified rather than called directly, for the
-    # same reason streamerbot_client fans out events: this module has no
-    # business importing the roulette, and the roulette already imports
-    # this one.
-    for callback in _new_buy_phase_listeners:
-        try:
-            await callback()
-        except Exception:
-            # A listener must never turn the agent's reset into a failure.
-            # From the gaming PC a 500 here is indistinguishable from the
-            # reset not landing, and the agent has no way to retry it.
-            log.exception("A new-buy-phase listener raised - the reset itself still succeeded")
+    # The reading window is not the only thing that cares that a round
+    # began - listeners are notified too, rather than called directly, for
+    # the same reason streamerbot_client fans out events: this module has
+    # no business importing the roulette, and the roulette already imports
+    # this one. Both live in _begin_buy_phase, which the capture route
+    # shares so a dropped reset costs nothing (finding #9).
+    #
+    # force when the agent sends no phase id: an older build has nothing
+    # to compare, and this POST is then the only signal there is.
+    phase = request.headers.get("X-Buy-Phase")
+    if await _begin_buy_phase(phase, force=phase is None):
+        log.info("Reading history cleared - a new buy phase has started")
+    else:
+        log.info(f"Reset for buy phase {phase}, which a capture already started - keeping its readings")
 
     return web.json_response({"status": "ok"})

@@ -8,6 +8,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 import credit_ocr
+import ocr_agent
 from config import config
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -20,9 +21,17 @@ def reset_reading_history():
     requests), which means tests must reset it between runs."""
     credit_ocr._clear_window()
     credit_ocr.forget_last_reading()
+    credit_ocr.forget_buy_phase()
+    # Liveness is shared module state too, and since finding #9 the
+    # consensus reads it: an agent that has been heard from and then gone
+    # quiet expires the window. A leftover timestamp from another test
+    # would decide that here.
+    ocr_agent.reset()
     yield
     credit_ocr._clear_window()
     credit_ocr.forget_last_reading()
+    credit_ocr.forget_buy_phase()
+    ocr_agent.reset()
 
 
 class TestExtractCredits:
@@ -334,7 +343,10 @@ class TestCorroboratedLatestConsensus:
 
     def test_older_readings_roll_off_once_the_window_is_full(self):
         oldest = [1110, 2220, 3330]
-        newest = [4440, 4440, 5300, 4900, 4900, 4900, 4900, 4900, 4900, 4900]  # exactly a full window
+        # Exactly a full window, built from the size rather than written out,
+        # so retuning the capture rate doesn't leave this asserting a shape
+        # the deque no longer has.
+        newest = [4440, 4440, 5300] + [4900] * (credit_ocr._READING_HISTORY_SIZE - 3)
         for value in oldest + newest:
             credit_ocr._record_reading(value)
         # The window is bounded, not an ever-growing history: only the last
@@ -363,13 +375,13 @@ class TestCorroboratedLatestConsensus:
         Pinned deliberately rather than left implicit. The size is in
         READINGS, so the count on its own means nothing - what was chosen
         is ~1 second of history, and the count is only how that gets
-        expressed at a particular capture rate. The agent captures 10
-        images a second (agent.CAPTURE_INTERVAL_WITHIN_BURST, 0.1s, in the
-        pc-ocr repo), so 10 readings is that second. Change the rate there
-        and this has to move with it - test_agent.py pins the same pairing
-        from the other side.
+        expressed at a particular capture rate. The agent captures 20
+        images a second (agent.CAPTURE_INTERVAL_WITHIN_BURST, 0.05s, in
+        the pc-ocr repo), so 20 readings is that second. Change the rate
+        there and this has to move with it - test_agent.py pins the same
+        pairing from the other side.
         """
-        agent_capture_interval_seconds = 0.1
+        agent_capture_interval_seconds = 0.05
         assert credit_ocr._recent_readings.maxlen == credit_ocr._READING_HISTORY_SIZE
         seconds_of_history = credit_ocr._READING_HISTORY_SIZE * agent_capture_interval_seconds
         assert round(seconds_of_history, 3) == 1.0
@@ -430,15 +442,75 @@ class TestTheWindowExpiresOnItsOwn:
         # as a whole is live again and the newest reading is the answer.
         assert credit_ocr.get_predicted_credits() == 2400
 
-    def test_the_cutoff_matches_the_agents_new_round_gap(self):
+    def test_the_backstop_outlasts_a_whole_round(self):
         """
-        The pairing that spans both repos, pinned from this side.
-        burst_timer.NEW_ROUND_GAP_SECONDS in the pc-ocr repo is 20, and it
-        is the same fact: readings more than twenty seconds apart belong to
-        different rounds. test_agent.py pins it from the other side.
+        Finding #9, pinned so the old twenty seconds cannot come back by
+        accident. This used to be matched to burst_timer.NEW_ROUND_GAP_SECONDS
+        on the gaming PC, which is the gap between two PRESSES of B - a
+        completely different duration from the age of a reading. A buy phase
+        is read in about two seconds and the round after it runs well over a
+        minute, so a twenty-second cutoff threw away a correct reading for
+        most of every round.
+
+        The buy-phase header is what ends a round now. This is only the
+        backstop under it, and it has to outlast any single round including
+        overtime.
         """
-        agent_new_round_gap_seconds = 20  # burst_timer.NEW_ROUND_GAP_SECONDS
-        assert credit_ocr._READING_MAX_AGE_SECONDS == agent_new_round_gap_seconds
+        longest_plausible_round_seconds = 100 + 40  # a round plus its buy phase
+        assert credit_ocr._READING_MAX_AGE_SECONDS > longest_plausible_round_seconds
+
+    def test_the_backstop_is_overridable_from_config(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"ocr_reading_max_age_seconds": 5})
+        credit_ocr._record_reading(4900)
+        monkeypatch.setattr(credit_ocr, "_window_last_append_at", credit_ocr._window_last_append_at - 6)
+        assert credit_ocr.get_predicted_credits() is None
+
+    def test_a_nonsense_config_value_falls_back_rather_than_raising(self, monkeypatch):
+        """
+        The config editor is a free-text JSON field on a web page. A typo
+        here must not take the prediction down with it.
+        """
+        monkeypatch.setattr(config, "_data", {"ocr_reading_max_age_seconds": "soon"})
+        credit_ocr._record_reading(4900)
+        assert credit_ocr.get_predicted_credits() == 4900
+
+
+class TestAnAgentThatWentAway:
+    """
+    Finding #9's second backstop. The buy-phase header is what ends a
+    round, which only works while there is an agent to send it - so an
+    agent that has been heard from and then goes quiet has to expire the
+    window on its own, or a budget from before the gaming PC crashed would
+    stand until the five-minute cap.
+    """
+
+    def test_a_window_from_an_agent_that_stopped_reporting_is_dropped(self, monkeypatch):
+        ocr_agent.record_heartbeat()
+        credit_ocr._record_reading(4900)
+        # Age the heartbeat past the cutoff without waiting it out.
+        monkeypatch.setattr(
+            ocr_agent,
+            "_last_heartbeat_at",
+            ocr_agent._last_heartbeat_at - (ocr_agent.HEARTBEAT_TIMEOUT_SECONDS + 1),
+        )
+        assert credit_ocr.get_predicted_credits() is None
+        assert credit_ocr.recent_readings() == []
+
+    def test_a_live_agent_keeps_its_window(self):
+        ocr_agent.record_heartbeat()
+        credit_ocr._record_reading(4900)
+        assert credit_ocr.get_predicted_credits() == 4900
+
+    def test_never_having_heard_from_an_agent_is_not_the_same_as_it_going_away(self):
+        """
+        An agent build older than the heartbeat route sends captures and no
+        pings. Reading that as "gone" would discard every reading it ever
+        produced, which is the opposite of what this guard is for.
+        """
+        ocr_agent.reset()
+        credit_ocr._record_reading(4900)
+        assert credit_ocr._agent_is_gone() is False
+        assert credit_ocr.get_predicted_credits() == 4900
 
     def test_an_untouched_window_is_stale_rather_than_fresh(self):
         """A window nothing has ever been written to must not read as live - _window_last_append_at starts at None precisely so it cannot."""
@@ -586,6 +658,134 @@ class TestHandleCreditReport:
             body = await resp.json()
             assert body["consensus"] == 4900
 
+        await client.close()
+
+
+class TestTheBuyPhaseHeader:
+    """
+    Finding #9's real mechanism. A round ends when the next buy phase
+    starts, and the gaming PC is the only thing that can see that happen -
+    so every capture and every reset carries the id of the phase it
+    belongs to, and a change of id is what empties the window.
+
+    That is what lets a reading live for a whole round instead of twenty
+    seconds: the age cutoff only existed because a reset POST can go
+    missing, and with the id on every capture a missing reset costs
+    nothing at all.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_new_phase_id_clears_the_window(self):
+        credit_ocr._record_reading(4900)
+        credit_ocr._record_reading(4900)
+        assert await credit_ocr._begin_buy_phase("7", force=False) is True
+        assert credit_ocr.recent_readings() == []
+        assert credit_ocr.current_buy_phase() == "7"
+
+    @pytest.mark.asyncio
+    async def test_the_same_phase_id_arriving_again_changes_nothing(self):
+        """
+        The reset POST and the first capture of a phase both declare it,
+        and they race. Whichever wins does the clearing; the other must
+        not clear a second time, because by then this phase's own first
+        readings are in the window.
+        """
+        await credit_ocr._begin_buy_phase("7", force=False)
+        credit_ocr._record_reading(3300)
+        assert await credit_ocr._begin_buy_phase("7", force=False) is False
+        assert credit_ocr.recent_readings() == [3300]
+
+    @pytest.mark.asyncio
+    async def test_a_reset_with_no_id_at_all_still_clears(self):
+        """An agent build older than the header has nothing to compare, and its POST is the only signal there is."""
+        credit_ocr._record_reading(4900)
+        assert await credit_ocr._begin_buy_phase(None, force=True) is True
+        assert credit_ocr.recent_readings() == []
+
+    @pytest.mark.asyncio
+    async def test_listeners_run_once_per_phase_however_it_was_declared(self):
+        """
+        The forced-buy badge counts buy phases, so a phase announced twice
+        would age the badge twice as fast.
+        """
+        seen = []
+
+        async def listener():
+            seen.append(credit_ocr.current_buy_phase())
+
+        credit_ocr.on_new_buy_phase(listener)
+        try:
+            await credit_ocr._begin_buy_phase("1", force=False)
+            await credit_ocr._begin_buy_phase("1", force=False)
+            await credit_ocr._begin_buy_phase("2", force=False)
+            assert seen == ["1", "2"]
+        finally:
+            credit_ocr._new_buy_phase_listeners.remove(listener)
+
+    @pytest.mark.asyncio
+    async def test_a_reset_that_never_arrives_costs_nothing(self, monkeypatch):
+        """
+        The failure the old twenty-second cutoff existed to contain, now
+        contained by the header instead: round 1's reading is replaced the
+        moment a capture from round 2 shows up, with no reset in between.
+        """
+        monkeypatch.setattr(config, "_data", {"ocr_agent_secret": "s"})
+        await credit_ocr._begin_buy_phase("1", force=False)
+        credit_ocr._record_reading(6200)
+        assert credit_ocr.get_predicted_credits() == 6200
+
+        await credit_ocr._begin_buy_phase("2", force=False)  # a capture from the next round
+        assert credit_ocr.get_predicted_credits() is None
+
+    @pytest.mark.asyncio
+    async def test_the_reset_route_reads_the_header(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"ocr_agent_secret": "test-secret-123"})
+        credit_ocr._record_reading(4900)
+
+        app = web.Application()
+        app.router.add_post("/api/ocr/reset", credit_ocr.handle_reset)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+
+        resp = await client.post(
+            "/api/ocr/reset", headers={"X-Agent-Secret": "test-secret-123", "X-Buy-Phase": "12"}
+        )
+        assert resp.status == 200
+        assert credit_ocr.current_buy_phase() == "12"
+        assert credit_ocr.recent_readings() == []
+
+        # ...and the same phase again is a no-op, so a reset arriving after
+        # the phase's first capture cannot wipe it.
+        credit_ocr._record_reading(3300)
+        resp = await client.post(
+            "/api/ocr/reset", headers={"X-Agent-Secret": "test-secret-123", "X-Buy-Phase": "12"}
+        )
+        assert resp.status == 200
+        assert credit_ocr.recent_readings() == [3300]
+
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_a_second_look_at_the_same_buy_phase_keeps_its_readings(self, monkeypatch):
+        """
+        Fix #10 from the other side. Re-opening the menu inside one buy
+        phase does not bump the id on the gaming PC, so nothing here clears
+        - which is the whole reason the id is bumped by the round gap
+        rather than by the keypress.
+        """
+        monkeypatch.setattr(config, "_data", {"ocr_agent_secret": "test-secret-123"})
+        await credit_ocr._begin_buy_phase("4", force=False)
+        credit_ocr._record_reading(6200)
+
+        app = web.Application()
+        app.router.add_post("/api/ocr/reset", credit_ocr.handle_reset)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        resp = await client.post(
+            "/api/ocr/reset", headers={"X-Agent-Secret": "test-secret-123", "X-Buy-Phase": "4"}
+        )
+        assert resp.status == 200
+        assert credit_ocr.recent_readings() == [6200]
         await client.close()
 
 
