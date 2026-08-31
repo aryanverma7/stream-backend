@@ -213,6 +213,10 @@ class RouletteState:
         # it: an "active" badge could be one whose buy phase has arrived,
         # or one the timer promoted while nothing was happening.
         self.forced_buy_phases_seen: int = 0
+        # When the last buy-phase signal was accepted, for the debounce in
+        # on_new_buy_phase(). Two sources report the same phase, so this is
+        # what keeps one round from counting as two.
+        self.last_buy_phase_at: float = 0.0
         # What the last completed session produced, kept after the session
         # itself is over so the dashboard can answer "which gun am I being
         # forced into" without the streamer having to alt-tab to their own
@@ -888,6 +892,11 @@ async def _start_forced_buy(weapon: str) -> None:
     _state.forced_buy_weapon = weapon
     _state.forced_buy_phase = "queued"
     _state.forced_buy_phases_seen = 0
+    # Cleared with the counter it guards. A roulette ends mid-round, which
+    # can be seconds after a buy-phase signal that has nothing to do with
+    # this badge - and if that timestamp survived, the NEXT phase, the one
+    # the weapon actually gets bought in, would be debounced away.
+    _state.last_buy_phase_at = 0.0
 
     await widget_hub.broadcast(
         {"type": "forced_buy_queued", "weapon": weapon},
@@ -947,23 +956,52 @@ def _cancel_forced_buy_task() -> None:
     _state._forced_buy_task = None
 
 
+# Two buy-phase signals closer together than this are one buy phase being
+# reported twice, not two rounds. There are now two independent sources -
+# the OCR agent's /api/ocr/reset, driven by a B press, and the Overwolf
+# app's round_phase going "shopping" - and on a stream where both are
+# running EVERY phase arrives twice. Without this the badge would count
+# two phases per round and vanish a round early, which is the one job it
+# has.
+#
+# The number is the same fact burst_timer.NEW_ROUND_GAP_SECONDS states
+# from the gaming PC: a Valorant round cannot be won, ended and followed
+# by a fresh buy phase inside twenty seconds, so anything arriving inside
+# that window is the phase already in progress.
+NEW_BUY_PHASE_DEBOUNCE_SECONDS = 20
+
+
 async def on_new_buy_phase() -> None:
     """
-    Registered against credit_ocr.on_new_buy_phase() from main.py - the
-    agent's /api/ocr/reset is the only real "a new round has begun"
-    signal this backend gets, and the forced-buy badge is the other thing
-    that depends on knowing.
+    Registered from main.py against BOTH credit_ocr.on_new_buy_phase() and
+    game_events.on_buy_phase() - the two things that can tell this backend
+    a round has begun, and the forced-buy badge is what depends on knowing.
+
+    Deliberately registered against both rather than whichever looks
+    better. They fail in completely different ways: the OCR agent's signal
+    needs the streamer to actually press B, so a round where they never
+    open the buy menu produces nothing at all, while the Overwolf app's
+    needs Overwolf to be installed, running, and not broken by today's
+    Valorant patch. Either one alone advances the badge; the debounce above
+    is what stops both of them advancing it twice.
 
     The badge's life is exactly two buy phases: the first is the one the
     forced weapon actually gets bought in, so the badge becomes "active";
     by the second, the round it belonged to is over and it goes. The
     timers in _start_forced_buy/_activate_forced_buy stay as the fallback
-    for a stream where the agent is not running - they are approximations
+    for a stream where neither source is running - they are approximations
     of this event, so this supersedes whichever one is pending rather
     than racing it.
     """
     if _state.forced_buy_weapon is None:
         return
+
+    now = _now()
+    since_last = now - _state.last_buy_phase_at
+    if _state.last_buy_phase_at and since_last < NEW_BUY_PHASE_DEBOUNCE_SECONDS:
+        log.debug(f"Second buy-phase signal {since_last:.1f}s after the first - same phase, ignoring")
+        return
+    _state.last_buy_phase_at = now
 
     _state.forced_buy_phases_seen += 1
     _cancel_forced_buy_task()

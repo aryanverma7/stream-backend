@@ -200,6 +200,9 @@ async def auth_middleware(request: web.Request, handler):
                                     # be reached at all.
         "/api/ocr/reset",  # same reasoning as above - also called by the agent, no GitHub session
         "/api/ocr/heartbeat",  # and again - the agent's liveness ping, same X-Agent-Secret check
+        "/api/game/state",  # the Overwolf app on the gaming PC, same X-Agent-Secret
+                            # check and the same reason: it has no GitHub session
+                            # either, so without this line its own auth never runs.
         "/",
     )
     if request.path in open_paths or any(

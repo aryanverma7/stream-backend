@@ -22,6 +22,7 @@ from aiohttp import web
 import auth
 import credit_ocr
 import dashboard_api
+import game_events
 import health_checks
 import public_api
 import site_server
@@ -65,6 +66,10 @@ def build_app() -> web.Application:
     app.router.add_post("/api/ocr/credit-report", credit_ocr.handle_credit_report)
     app.router.add_post("/api/ocr/reset", credit_ocr.handle_reset)
     app.router.add_post("/api/ocr/heartbeat", credit_ocr.handle_heartbeat)
+    # Live game state from the Overwolf app on the gaming PC - same
+    # machine, same shared secret, same open_paths exemption as the three
+    # OCR routes above.
+    game_events.register_routes(app)
     public_api.register_public_routes(app)
     dashboard_api.register_routes(app)
 

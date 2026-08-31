@@ -15,6 +15,7 @@ import asyncio
 import signal
 
 import credit_ocr
+import game_events
 import health_checks
 import points
 import points_cloudbot
@@ -72,6 +73,16 @@ async def main():
     # OCR reading window does - without it the badge only knows how much
     # time has passed, which is a guess about rounds, not a reading of one.
     credit_ocr.on_new_buy_phase(roulette.on_new_buy_phase)
+
+    # The same signal from a source that can actually see the game, rather
+    # than inferring it from a keypress. Registered ALONGSIDE the OCR one
+    # rather than instead of it, because the two fail differently: the OCR
+    # signal needs the streamer to press B, so a round where they never
+    # open the menu produces nothing, while this one needs Overwolf to be
+    # running and unbroken by today's patch. With both live every phase is
+    # reported twice, which roulette.NEW_BUY_PHASE_DEBOUNCE_SECONDS exists
+    # to collapse back into one.
+    game_events.on_buy_phase(roulette.on_new_buy_phase)
     await streamerbot.start()
 
     # Streamlabs tips -> points (Task #6) - genuinely optional at startup:

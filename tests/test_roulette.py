@@ -838,10 +838,91 @@ class TestForcedBuyBadge:
         roulette._state.forced_buy_phase = "queued"
 
         await roulette.on_new_buy_phase()
+        # A round apart, not back to back - two signals inside the debounce
+        # window are one buy phase reported twice, which is what the next
+        # class covers.
+        roulette._state.last_buy_phase_at -= roulette.NEW_BUY_PHASE_DEBOUNCE_SECONDS + 1
         await roulette.on_new_buy_phase()
 
         assert roulette._state.forced_buy_weapon is None
         assert roulette._state.forced_buy_phase is None
+
+
+class TestTwoSourcesReportOneBuyPhase:
+    """
+    There are two independent things that can say a round began - the OCR
+    agent's /api/ocr/reset, driven by a B press, and the Overwolf app's
+    round_phase going "shopping" - and on a stream where both are running
+    EVERY phase arrives twice. The badge's whole life is a count of two
+    phases, so without a debounce it would vanish a round early: exactly
+    the one job it has, broken by turning on a second source of good news.
+    """
+
+    @pytest.mark.asyncio
+    async def test_two_signals_for_one_phase_count_once(self, monkeypatch):
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        roulette._state.forced_buy_weapon = "vandal"
+        roulette._state.forced_buy_phase = "queued"
+
+        await roulette.on_new_buy_phase()   # Overwolf
+        await roulette.on_new_buy_phase()   # the OCR agent, a moment later
+
+        assert roulette._state.forced_buy_phases_seen == 1
+        assert roulette._state.forced_buy_phase == "active"
+        assert roulette._state.forced_buy_weapon == "vandal"
+
+    @pytest.mark.asyncio
+    async def test_the_debounce_does_not_swallow_a_genuinely_later_phase(self, monkeypatch):
+        """
+        The other half of the guard. Collapsing two reports of one phase is
+        only correct if a real next phase still gets through - a debounce
+        that ate both would leave the badge on screen forever.
+        """
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        roulette._state.forced_buy_weapon = "vandal"
+        roulette._state.forced_buy_phase = "queued"
+
+        await roulette.on_new_buy_phase()
+        assert roulette._state.forced_buy_phase == "active"
+
+        roulette._state.last_buy_phase_at -= roulette.NEW_BUY_PHASE_DEBOUNCE_SECONDS + 1
+        await roulette.on_new_buy_phase()
+
+        # The second phase is the badge's last - clear_forced_buy() resets
+        # the counter along with the weapon, so the badge going is the
+        # evidence that the signal was accepted rather than debounced.
+        assert roulette._state.forced_buy_weapon is None
+
+    @pytest.mark.asyncio
+    async def test_a_win_resets_the_debounce_clock(self, monkeypatch):
+        """
+        The case that would silently eat the badge's first phase. A
+        roulette ends mid-round, which can be seconds after a buy-phase
+        signal that had nothing to do with this weapon - and a stale
+        timestamp would debounce away the NEXT phase, the one the weapon
+        actually gets bought in.
+        """
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        monkeypatch.setattr(roulette, "_reply_in_chat", AsyncMock())
+        roulette._state.forced_buy_weapon = "odin"
+        roulette._state.forced_buy_phase = "queued"
+        await roulette.on_new_buy_phase()          # a phase, moments before the win
+
+        await roulette._start_forced_buy("vandal")  # the roulette lands
+        await roulette.on_new_buy_phase()           # the buy phase for it
+
+        assert roulette._state.forced_buy_phases_seen == 1
+        assert roulette._state.forced_buy_phase == "active"
+
+    def test_the_window_is_the_same_fact_the_gaming_pc_states(self):
+        """
+        burst_timer.NEW_ROUND_GAP_SECONDS is 20 on the gaming PC and means
+        the same thing from the other side: a Valorant round cannot be won,
+        ended and followed by a fresh buy phase inside twenty seconds, so
+        anything closer together is one phase.
+        """
+        agent_new_round_gap_seconds = 20  # burst_timer.NEW_ROUND_GAP_SECONDS
+        assert roulette.NEW_BUY_PHASE_DEBOUNCE_SECONDS == agent_new_round_gap_seconds
 
     @pytest.mark.asyncio
     async def test_a_timer_that_already_promoted_the_badge_cannot_shift_the_count(self, monkeypatch):
