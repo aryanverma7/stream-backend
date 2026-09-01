@@ -30,6 +30,11 @@ every real viewer. Writing a username that existed nowhere
 not "twitch", not "youtube" - and that row is visible to the REST API and
 absent from the Cloudbot list. Two stores.
 
+Passing `platform` explicitly does not help and is the last thing worth
+trying before concluding this: a write sent with `"platform": "twitch"`
+comes back with `"platform": "points"` anyway. The field is not an input.
+There is no way from these endpoints to address a Cloudbot row.
+
 So the approval this file spent months waiting for does not deliver what
 it was waiting for. "api" is `local` with extra steps and a network hop:
 persistent and hosted, but holding nothing a viewer earned and nothing
