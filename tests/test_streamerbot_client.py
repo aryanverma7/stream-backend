@@ -88,6 +88,11 @@ async def test_forward_chat_broadcasts_twitch_message():
                 "type": "chat_message",
                 "platform": "twitch",
                 "username": "someviewer",
+                # The cased name, for anything that puts chat on screen -
+                # the login stays too, because that is what the points and
+                # roulette paths key on and the overlay is not the only
+                # consumer.
+                "display_name": "SomeViewer",
                 "message": "hey chat",
             },
             tag="chat",

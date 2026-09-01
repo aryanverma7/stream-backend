@@ -593,6 +593,12 @@ async def forward_chat_to_widgets(event: dict):
             "type": "chat_message",
             "platform": chat["platform"],
             "username": chat["username"],
+            # The cased name, which is the one worth putting on screen -
+            # "DualBladeX" rather than the "dualbladex" login that
+            # everything else here keys on. parse_chat_message already
+            # falls back to the login when a platform sends no display
+            # name, so this is never empty when username isn't.
+            "display_name": chat["display_name"],
             "message": chat["text"],
         },
         tag="chat",
