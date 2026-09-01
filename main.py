@@ -91,19 +91,22 @@ async def main():
     # and the rest of the backend - the site, the admin dashboard, chat -
     # must keep working regardless of whether this specific integration is
     # connected yet.
-    # Off by default, full stop. This used to be keyed on the points
-    # backend - on the reasoning that Cloudbot pays out on donations
-    # itself, so we must not also - and that reasoning was right while the
-    # conclusion was wrong: Streamlabs Loyalty Points IS Cloudbot's wallet.
-    # The backend name says how this process READS and WRITES that wallet,
-    # not who else is writing to it, so switching to the REST API does not
-    # stop Cloudbot granting on a donation. Defaulting to on for the "api"
-    # backend would have double-granted every tip the moment the Loyalty
-    # approval landed.
+    # Off by default, full stop. It used to be keyed on the points backend,
+    # defaulting to ON for anything that was not "cloudbot", and both
+    # backends make that wrong in different ways.
     #
-    # Turn it on with streamlabs_tips_listener_enabled only after checking
-    # that Cloudbot's own donation payout is set to zero - one of the two
-    # has to do it, never both.
+    # Under "cloudbot" it grants by posting !addpoints into chat, and
+    # Cloudbot already pays out on donations natively - so the donor is
+    # granted twice, and every tip becomes a visible bot line in chat.
+    #
+    # Under "api" it grants into the REST ledger, which is a DIFFERENT
+    # store from the wallet Cloudbot pays into (see points.py) - so the
+    # grant lands somewhere no viewer can see, which is not a double-grant
+    # but is not a payout either.
+    #
+    # Turn it on with streamlabs_tips_listener_enabled only after deciding
+    # deliberately which system pays donors - one of them has to, and
+    # never both.
     if not config.get("streamlabs_tips_listener_enabled", False):
         log.info("Streamlabs tips listener is disabled - donations are expected to pay out elsewhere")
     elif config.get("streamlabs_access_token", ""):

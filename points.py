@@ -3,34 +3,51 @@ Points ledger, with two interchangeable backends behind one API.
 
 `points_backend` in config.json selects between them:
 
-  "api"    (default) - Streamlabs' Loyalty Points REST API. The real
-                       thing: the same balance viewers see when they type
-                       !points in chat, accruing on its own with watch
-                       time.
-  "cloudbot"         - the SAME wallet as "api", reached by asking
-                       Streamlabs Cloudbot in chat instead of over REST
-                       (points_cloudbot.py). Needs no approval, because
-                       Cloudbot is already in the channel.
+  "cloudbot" (use this) - the wallet viewers actually have: the balance
+                       they see when they type !points, accruing on its own
+                       with watch time. Reached by asking Streamlabs
+                       Cloudbot in chat, because Cloudbot has no API
+                       (points_cloudbot.py).
+  "api"              - Streamlabs' Loyalty Points REST API. **This is NOT
+                       the wallet above**, which was assumed for a long
+                       time and is false; see the section below. It is a
+                       separate, initially empty ledger that no viewer can
+                       see and nothing pays into.
   "local"            - a flat JSON file on this machine (points_local.py).
                        Offline testing only: it holds nothing a viewer
                        earned by watching, so `!points` and the roulette
                        disagree about what anyone has.
 
-The switch exists because Streamlabs gates the Loyalty Points API behind
-a manual approval step that is separate from OAuth scopes entirely. A
-token issued with points.read and points.write, for the app owner's own
-channel, still answers every call with:
+**"api" and "cloudbot" are different wallets, confirmed by experiment.**
+This was assumed to be one wallet reached two ways for the whole time the
+REST API was returning 401, and the assumption survived into comments,
+into the tips-listener default, and onto the dashboard. It is wrong.
+
+With Loyalty access finally granted, a read of the channel's whole loyalty
+list over REST returned `total: 0` while the Cloudbot dashboard showed
+every real viewer. Writing a username that existed nowhere
+(`user_point_edit`, 42 points) came back with `"platform": "points"` -
+not "twitch", not "youtube" - and that row is visible to the REST API and
+absent from the Cloudbot list. Two stores.
+
+So the approval this file spent months waiting for does not deliver what
+it was waiting for. "api" is `local` with extra steps and a network hop:
+persistent and hosted, but holding nothing a viewer earned and nothing
+`!points` will ever report. Leave `points_backend` on "cloudbot".
+
+The switch originally existed because Streamlabs gates the Loyalty Points
+API behind a manual approval step that is separate from OAuth scopes
+entirely. Before that approval, a token issued with points.read and
+points.write, for the app owner's own channel, answered every call with:
 
     401 "Access to Loyalty points API, requires special approval. Please
     request for loyalty access from third party app (OAuth Clients)
     dashboard. We will review and get back to you."
 
-That approval is requested from the Streamlabs developer dashboard and
-granted on their schedule, not ours. Rather than leave the roulette
-untestable until it lands, the local backend stands in - see
-points_local.py's own docstring for what it does and does not give you.
-Flipping back is a config edit and takes effect immediately; no code
-here changes.
+That approval has since been granted, which is how the paragraph above
+came to be written: it turned out to unlock the wrong ledger. The switch
+stays useful anyway - flipping between backends is a config edit that
+takes effect immediately, with no code change here.
 
 ---
 
