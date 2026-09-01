@@ -1233,7 +1233,7 @@ def _help_message() -> str:
 
     songs = ""
     if spotify.is_configured() and spotify.requests_enabled():
-        songs = f" !sr <song> ({spotify.request_cost()} points) queues a track; !song says what's playing."
+        songs = f" !song <name or link> ({spotify.request_cost()} points) queues a track on Spotify."
     # Deliberately does NOT start with "!". Chat replies come back down
     # the subscription as ordinary chat events, and this one used to open
     # with "!roulette", so the bot answered its own !help by parsing it as

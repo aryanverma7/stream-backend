@@ -112,6 +112,12 @@ async def main():
     else:
         log.info("No streamlabs_access_token configured yet - skipping tips listener (connect via /auth/streamlabs/login)")
 
+    # Feeds the now-playing overlay. Started unconditionally: it does
+    # nothing at all while no overlay is connected, and starting it only
+    # when Spotify happens to be configured would leave it dead until a
+    # restart if the streamer connects Spotify mid-session.
+    await spotify.start_now_playing_poller()
+
     log.info("Backend is up. Waiting for events / connections.")
 
     # Keep the process alive until interrupted (Ctrl+C locally, or a real
@@ -129,6 +135,7 @@ async def main():
     await stop_event.wait()
 
     log.info("Shutting down")
+    await spotify.stop_now_playing_poller()
     await stop_tips_listener()
     await health_checks.stop()
     await streamerbot.stop()

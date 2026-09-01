@@ -26,10 +26,18 @@ TRACK = {
 
 
 @pytest.fixture(autouse=True)
-def clean_token():
+def clean_module_state():
+    """
+    Both of these are module-level by design - one access token and one
+    requester memory per process, the way the real thing runs - so they
+    have to be cleared between tests or one test's queued track is still
+    credited in the next.
+    """
     spotify.forget_token()
+    spotify.forget_requesters()
     yield
     spotify.forget_token()
+    spotify.forget_requesters()
 
 
 class TestTrackReferences:
@@ -230,7 +238,7 @@ class TestSwitchedOffOrNotSetUp:
         monkeypatch.setattr(config, "_data", dict(CONNECTED))
         result = await spotify.request_song("someviewer", "   ")
         assert result["ok"] is False
-        assert "!sr" in result["reason"]
+        assert "!song" in result["reason"]
         assert "100 points" in result["reason"]
 
 
@@ -276,3 +284,98 @@ class TestStatus:
         status = spotify.status()
         assert status["configured"] is True
         assert status["request_cost"] == 100
+
+
+class TestTheNowPlayingPayload:
+    """
+    What the overlay renders. Sent in full every tick rather than only on
+    change, because a Browser Source can be reloaded at any moment and the
+    hub has no "send me the current state" call - a change-only stream
+    leaves a reloaded widget blank until the next song.
+    """
+
+    def test_nothing_playing(self):
+        payload = spotify.now_playing_payload(None)
+        assert payload["playing"] is False
+        assert payload["track"] is None
+
+    def test_a_paused_track_is_still_a_track(self):
+        """Paused is not the same as nothing - the overlay shows what is loaded, dimmed."""
+        payload = spotify.now_playing_payload({"item": TRACK, "progress_ms": 1000, "is_playing": False})
+        assert payload["playing"] is False
+        assert payload["track"]["title"] == "Never Gonna Give You Up"
+
+    def test_carries_what_the_overlay_draws(self):
+        state = {
+            "item": {
+                **TRACK,
+                "album": {"images": [{"url": "big.jpg"}, {"url": "small.jpg"}]},
+                "external_urls": {"spotify": "https://open.spotify.com/track/x"},
+            },
+            "progress_ms": 42_000,
+            "is_playing": True,
+        }
+        payload = spotify.now_playing_payload(state)
+
+        assert payload["track"]["artists"] == "Rick Astley"
+        assert payload["track"]["duration_ms"] == 213_000
+        assert payload["progress_ms"] == 42_000
+        # Spotify returns images largest-first and the smallest is still
+        # 64px - plenty at overlay size, and the one worth fetching.
+        assert payload["track"]["album_art"] == "small.jpg"
+
+    def test_a_track_with_no_album_art_still_renders(self):
+        payload = spotify.now_playing_payload({"item": TRACK, "progress_ms": 0, "is_playing": True})
+        assert payload["track"]["album_art"] is None
+
+
+class TestTheRequesterCredit:
+    """
+    The thing an off-the-shelf Spotify widget cannot do, because it has no
+    idea a request system exists.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_queued_track_remembers_who_asked(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", dict(CONNECTED))
+        monkeypatch.setattr(spotify, "search_track", AsyncMock(return_value=TRACK))
+        monkeypatch.setattr(spotify, "try_spend", AsyncMock(return_value=(True, None)))
+        monkeypatch.setattr(spotify, "add_to_queue", AsyncMock())
+
+        await spotify.request_song("someviewer", "a song")
+
+        payload = spotify.now_playing_payload({"item": TRACK, "progress_ms": 0, "is_playing": True})
+        assert payload["requested_by"] == "someviewer"
+
+    @pytest.mark.asyncio
+    async def test_a_track_nobody_requested_credits_nobody(self, monkeypatch):
+        """Most of a stream is the streamer's own playlist - the overlay omits the line rather than inventing one."""
+        monkeypatch.setattr(config, "_data", dict(CONNECTED))
+        payload = spotify.now_playing_payload({"item": TRACK, "progress_ms": 0, "is_playing": True})
+        assert payload["requested_by"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_failed_queue_credits_nobody(self, monkeypatch):
+        """They were refunded, so they did not request it - crediting them would be a lie on stream."""
+        monkeypatch.setattr(config, "_data", dict(CONNECTED))
+        monkeypatch.setattr(spotify, "search_track", AsyncMock(return_value=TRACK))
+        monkeypatch.setattr(spotify, "try_spend", AsyncMock(return_value=(True, None)))
+        monkeypatch.setattr(spotify, "grant_points", AsyncMock())
+        monkeypatch.setattr(spotify, "add_to_queue", AsyncMock(side_effect=RuntimeError("boom")))
+
+        await spotify.request_song("someviewer", "a song")
+
+        assert spotify.requester_of(TRACK["uri"]) is None
+
+    def test_the_memory_is_bounded(self):
+        for i in range(spotify._REQUESTER_MEMORY + 20):
+            spotify.remember_requester(f"spotify:track:{i}", f"viewer{i}")
+
+        assert len(spotify._recent_requests) == spotify._REQUESTER_MEMORY
+        assert spotify.requester_of("spotify:track:0") is None
+        assert spotify.requester_of(f"spotify:track:{spotify._REQUESTER_MEMORY + 19}") is not None
+
+    def test_the_same_track_twice_credits_the_latest_asker(self):
+        spotify.remember_requester("spotify:track:x", "first")
+        spotify.remember_requester("spotify:track:x", "second")
+        assert spotify.requester_of("spotify:track:x") == "second"

@@ -2,8 +2,10 @@
 Spotify song requests (Task #12).
 
 Viewers spend points to put a track in the queue on the streamer's own
-Spotify. `!sr <song>` searches and queues; `!song` says what is playing
-now and costs nothing.
+Spotify: `!song <name or link>` searches, or reads a pasted Spotify link,
+and queues it. There is deliberately no chat command for "what is playing"
+- that has its own overlay on stream, and a command answering a question
+the viewer can already see would be a command spent on nothing.
 
 Nightbot cannot do this - its song requests are YouTube and SoundCloud
 only, and its own position is that streaming full Spotify tracks would
@@ -21,8 +23,8 @@ stack.
      often in practice, so it gets its own message rather than a generic
      one: "start playing something first" is actionable, "request failed"
      is not.
-  3. The `user-modify-playback-state` scope, plus the two read scopes for
-     `!song`.
+  3. The `user-modify-playback-state` scope, plus the two read scopes -
+     those are for the now-playing overlay, not for chat.
 
 **Development Mode is enough and Extended Access is not needed**, which is
 worth writing down because it is the opposite of the Streamlabs Loyalty
@@ -42,6 +44,13 @@ and a backend that has been idle overnight refreshes on the first request
 of the day instead of having spent the night refreshing a token nobody
 wanted. Refreshing needs the client secret, so it happens here and never
 anywhere a widget could reach.
+
+**The now-playing overlay is fed from here**, not by the widget talking to
+Spotify itself - which is what keeps the client secret in this process,
+and is also what lets the overlay say who requested the current track.
+That last part is the thing an off-the-shelf Spotify widget cannot do: it
+has no idea a request system exists. See `_recent_requests` and
+`start_now_playing_poller`.
 
 **Points are taken before the queue call and refunded if it fails**, the
 same shape roulette.trigger_roulette uses and for the same reason: a
@@ -66,9 +75,11 @@ log = get_logger("Spotify")
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API_BASE = "https://api.spotify.com/v1"
 
-# Queueing needs modify; !song needs the two reads. Requested together at
-# consent time because Spotify only asks once - adding a scope later means
-# sending the streamer back through the whole flow.
+# Queueing needs modify; the now-playing overlay needs the two reads.
+# Requested together at consent time because Spotify only asks once -
+# adding a scope later means sending the streamer back through the whole
+# flow, and (see spotify_oauth) doing so quietly returns the OLD scopes
+# unless the consent screen is forced.
 SCOPES = "user-modify-playback-state user-read-playback-state user-read-currently-playing"
 
 DEFAULT_REQUEST_COST = 100
@@ -269,11 +280,50 @@ async def add_to_queue(uri: str) -> None:
 
 
 async def now_playing() -> "dict | None":
-    """The currently playing track, or None when nothing is playing."""
+    """
+    The current playback state - the track, how far into it, and whether it
+    is actually playing - or None when Spotify has nothing loaded.
+
+    The progress matters as much as the track: the widget draws a moving
+    bar, and it gets one reading every few seconds, so it interpolates from
+    this between polls rather than jumping.
+    """
     data = await _api("GET", "/me/player/currently-playing", params={"market": "from_token"})
-    if not data:
+    if not data or not data.get("item"):
         return None
-    return data.get("item")
+    return {
+        "item": data["item"],
+        "progress_ms": data.get("progress_ms") or 0,
+        "is_playing": bool(data.get("is_playing")),
+    }
+
+
+# Who asked for what, so the now-playing widget can say so - the one thing
+# an off-the-shelf Spotify widget cannot do, because it has no idea a
+# request system exists.
+#
+# Keyed by track URI rather than by queue position, because Spotify exposes
+# no queue-position identity: the same track requested twice is the same
+# key, which is right - whoever asked most recently gets the credit, and
+# the alternative is remembering an order Spotify never promised to keep.
+_REQUESTER_MEMORY = 50
+_recent_requests: dict = {}
+
+
+def remember_requester(uri: str, username: str) -> None:
+    _recent_requests[uri] = username
+    while len(_recent_requests) > _REQUESTER_MEMORY:
+        # Python dicts keep insertion order, so the oldest entry is first.
+        _recent_requests.pop(next(iter(_recent_requests)))
+
+
+def requester_of(uri: str) -> "str | None":
+    return _recent_requests.get(uri)
+
+
+def forget_requesters() -> None:
+    """For the tests."""
+    _recent_requests.clear()
 
 
 async def _resolve(query: str) -> "dict | None":
@@ -299,7 +349,7 @@ async def request_song(username: str, query: str, platform: str = "twitch") -> d
     if not is_configured():
         return {"ok": False, "reason": "Song requests aren't set up yet"}
     if not query.strip():
-        return {"ok": False, "reason": f"Give me a song - !sr <song name> (costs {request_cost()} points)"}
+        return {"ok": False, "reason": f"Give me a song - !song <name or Spotify link> (costs {request_cost()} points)"}
 
     try:
         track = await _resolve(query.strip())
@@ -346,6 +396,7 @@ async def request_song(username: str, query: str, platform: str = "twitch") -> d
         reason = str(e) if isinstance(e, (SpotifyUnavailable, SpotifyNotConfigured)) else "Spotify wouldn't take it"
         return {"ok": False, "reason": f"{reason} - your points are back"}
 
+    remember_requester(track["uri"], username)
     log.info(f"{username} queued {describe(track)} for {cost} points")
     return {"ok": True, "track": track, "description": describe(track), "cost": cost}
 
@@ -380,21 +431,17 @@ async def handle_chat_command(event: dict) -> None:
         if config.get("spotify_chat_replies_enabled", True):
             await streamerbot.send_chat_message(message, platform=platform)
 
-    if command in ("sr", "songrequest", "request"):
+    # !song is the REQUEST command, not a "what's playing" one. What is
+    # playing has its own overlay on stream, and a chat command that
+    # answers a question the viewer can already see is a command spent on
+    # nothing - where !song is the word people reach for when they want to
+    # ask for one.
+    if command in ("song", "sr", "songrequest", "request"):
         result = await request_song(username, argument, platform=platform)
         if result.get("ok"):
             await reply(f"@{username} queued {result['description']}")
         else:
             await reply(f"@{username} {result['reason']}")
-    elif command == "song":
-        # Free, and deliberately so: it is the question a viewer asks to
-        # decide whether to spend on the next one.
-        try:
-            track = await now_playing()
-        except (SpotifyNotConfigured, SpotifyUnavailable) as e:
-            await reply(f"@{username} {e}")
-            return
-        await reply(f"@{username} {describe(track)}" if track else f"@{username} nothing's playing right now")
 
 
 def status() -> dict:
@@ -409,3 +456,100 @@ def status() -> dict:
         # "connected once, months ago, and the token was revoked since".
         "token_fresh": bool(_access_token and time.time() < _access_token_expires_at),
     }
+
+
+# ---------- Now-playing, pushed to the overlay ----------
+
+DEFAULT_POLL_SECONDS = 5
+
+_poller_task: "asyncio.Task | None" = None
+
+
+def _poll_seconds() -> float:
+    try:
+        return max(1.0, float(config.get("spotify_now_playing_poll_seconds", DEFAULT_POLL_SECONDS)))
+    except (TypeError, ValueError):
+        return float(DEFAULT_POLL_SECONDS)
+
+
+def now_playing_payload(state: "dict | None") -> dict:
+    """
+    The message the overlay renders, built from a playback state.
+
+    Sent in full every tick rather than only on change. The overlay is a
+    Browser Source that can be reloaded at any moment and the hub has no
+    "send me the current state" call, so a change-only stream would leave
+    a widget blank after every refresh until the next song - which is the
+    exact limitation forced-buy-badge.js documents and has to live with.
+    Repeating a small payload every few seconds costs nothing and removes
+    the whole problem.
+    """
+    if not state or not state.get("item"):
+        return {"type": "now_playing", "playing": False, "track": None}
+
+    item = state["item"]
+    images = (item.get("album") or {}).get("images") or []
+    # Spotify returns images largest-first. The smallest is still 64px,
+    # which is plenty at overlay size and is the one worth fetching.
+    art = images[-1].get("url") if images else None
+    return {
+        "type": "now_playing",
+        "playing": bool(state.get("is_playing")),
+        "track": {
+            "title": item.get("name", ""),
+            "artists": ", ".join(a.get("name", "") for a in item.get("artists", []) if a.get("name")),
+            "album_art": art,
+            "duration_ms": item.get("duration_ms", 0),
+            "url": (item.get("external_urls") or {}).get("spotify"),
+        },
+        "progress_ms": state.get("progress_ms", 0),
+        # None for anything the streamer put on themselves, which is most
+        # of a stream - the overlay simply omits the line rather than
+        # inventing a requester.
+        "requested_by": requester_of(item.get("uri", "")),
+    }
+
+
+async def _poll_once() -> None:
+    from widget_hub import widget_hub
+
+    # Nothing is listening, so nothing is worth an API call. Spotify rate
+    # limits, and a backend left running overnight with no overlay open
+    # would otherwise spend the night asking what is playing.
+    if widget_hub.connected_count("spotify") == 0:
+        return
+    if not is_configured():
+        return
+
+    state = await now_playing()
+    await widget_hub.broadcast(now_playing_payload(state), tag="spotify")
+
+
+async def _poll_loop() -> None:
+    while True:
+        try:
+            await _poll_once()
+        except (SpotifyNotConfigured, SpotifyUnavailable) as e:
+            # Expected and transient - Spotify closed, token being
+            # refreshed, network blip. Logged at debug so a stream's worth
+            # of them cannot bury anything that matters.
+            log.debug(f"Now-playing poll skipped: {e}")
+        except Exception:
+            log.exception("Now-playing poll failed unexpectedly")
+        await asyncio.sleep(_poll_seconds())
+
+
+async def start_now_playing_poller() -> None:
+    """Starts the overlay feed. Safe to call twice - the second call is a no-op."""
+    global _poller_task
+    if _poller_task and not _poller_task.done():
+        return
+    _poller_task = asyncio.create_task(_poll_loop())
+    log.info("Now-playing poller started")
+
+
+async def stop_now_playing_poller() -> None:
+    global _poller_task
+    if _poller_task:
+        _poller_task.cancel()
+        _poller_task = None
