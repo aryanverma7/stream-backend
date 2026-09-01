@@ -83,6 +83,7 @@
   "spotify_request_cost": 100,
   "spotify_max_track_seconds": 600,
   "spotify_now_playing_poll_seconds": 5,
+  "spotify_queue_preview_count": 3,
 
   "twitch_client_id": "",
   "twitch_client_secret": "",

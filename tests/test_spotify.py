@@ -379,3 +379,68 @@ class TestTheRequesterCredit:
         spotify.remember_requester("spotify:track:x", "first")
         spotify.remember_requester("spotify:track:x", "second")
         assert spotify.requester_of("spotify:track:x") == "second"
+
+
+class TestTheQueuePreview:
+    """
+    !songqueue answers "is mine soon", not "show me everything" - so it is
+    short on purpose. YouTube drops a message over 200 characters
+    silently, and a split queue listing is three messages of noise.
+    """
+
+    def test_an_empty_queue_says_so(self):
+        assert spotify.queue_preview([], 3) == "nothing queued"
+
+    def test_numbers_the_next_few(self):
+        line = spotify.queue_preview([TRACK, {**TRACK, "name": "Together Forever"}], 3)
+        assert line.startswith("1. Rick Astley - Never Gonna Give You Up")
+        assert "2. Rick Astley - Together Forever" in line
+
+    def test_credits_the_requester_where_there_is_one(self):
+        spotify.remember_requester(TRACK["uri"], "someviewer")
+        assert "(someviewer)" in spotify.queue_preview([TRACK], 3)
+
+    def test_a_track_the_streamer_queued_credits_nobody(self):
+        assert "(" not in spotify.queue_preview([TRACK], 3)
+
+    def test_says_how_many_more_there_are(self):
+        line = spotify.queue_preview([TRACK] * 10, 3)
+        assert "(+7 more)" in line
+
+    def test_stays_short_enough_for_youtube(self):
+        """
+        The platform floor is 200 characters. Three entries of realistic
+        length have to fit under it, or the answer arrives split or not
+        at all.
+        """
+        realistic = {
+            "uri": "spotify:track:x",
+            "name": "Some Reasonably Long Song Title (Remastered)",
+            "artists": [{"name": "An Artist With A Long Name"}],
+        }
+        line = spotify.queue_preview([realistic] * 8, spotify.DEFAULT_QUEUE_PREVIEW)
+        assert len(f"@someviewer up next: {line}") <= 200
+
+    @pytest.mark.asyncio
+    async def test_the_currently_playing_track_is_not_listed_as_next(self, monkeypatch):
+        """
+        Spotify returns it alongside the queue. Repeating it as entry 1
+        makes the whole answer look off by one - and what is playing is
+        the overlay's job anyway.
+        """
+        monkeypatch.setattr(config, "_data", dict(CONNECTED))
+        monkeypatch.setattr(
+            spotify,
+            "_api",
+            AsyncMock(return_value={"currently_playing": TRACK, "queue": [{**TRACK, "name": "Next One"}]}),
+        )
+
+        upcoming = await spotify.queue()
+
+        assert [item["name"] for item in upcoming] == ["Next One"]
+
+    @pytest.mark.asyncio
+    async def test_an_empty_player_response_is_not_a_crash(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", dict(CONNECTED))
+        monkeypatch.setattr(spotify, "_api", AsyncMock(return_value=None))
+        assert await spotify.queue() == []

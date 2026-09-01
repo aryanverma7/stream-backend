@@ -6,6 +6,8 @@ Spotify: `!song <name or link>` searches, or reads a pasted Spotify link,
 and queues it. There is deliberately no chat command for "what is playing"
 - that has its own overlay on stream, and a command answering a question
 the viewer can already see would be a command spent on nothing.
+`!songqueue` is the exception that proves it: what is COMING is not on the
+overlay, and it is the question someone asks right after paying.
 
 Nightbot cannot do this - its song requests are YouTube and SoundCloud
 only, and its own position is that streaming full Spotify tracks would
@@ -298,6 +300,59 @@ async def now_playing() -> "dict | None":
     }
 
 
+DEFAULT_QUEUE_PREVIEW = 3
+
+# Each entry is trimmed so three of them plus the "@name up next:" prefix
+# fit inside YouTube's 200-character message limit. Chosen against real
+# titles, not short ones: "An Artist With A Long Name - Some Reasonably
+# Long Song Title (Remastered)" is 73 characters on its own, and three of
+# those overflow before any separator is counted.
+#
+# Trimming each entry rather than listing fewer of them is the better
+# trade: the question is "is mine soon", which two entries answer worse
+# than three shortened ones do.
+_QUEUE_ENTRY_MAX_CHARS = 42
+
+
+async def queue() -> "list":
+    """
+    What is coming up next, soonest first.
+
+    Spotify returns the currently playing track alongside the queue and
+    this drops it - "what is playing" is the overlay's job, and repeating
+    it as the first queue entry makes the chat answer look off by one.
+
+    Needs only user-read-playback-state, which the consent flow already
+    asks for, so this adds no re-authorisation.
+    """
+    data = await _api("GET", "/me/player/queue")
+    return [item for item in ((data or {}).get("queue") or []) if isinstance(item, dict)]
+
+
+def queue_preview(items: "list", limit: int) -> str:
+    """
+    The queue as one chat line.
+
+    Kept short deliberately. YouTube drops a message over 200 characters
+    silently (streamerbot_client splits, but a split queue listing is
+    three messages of noise), and nobody reads past the next few anyway -
+    the question being asked is "is mine soon", not "show me everything".
+    """
+    if not items:
+        return "nothing queued"
+    shown = items[:limit]
+    parts = []
+    for index, item in enumerate(shown, start=1):
+        who = requester_of(item.get("uri", ""))
+        title = describe(item)
+        if len(title) > _QUEUE_ENTRY_MAX_CHARS:
+            title = title[: _QUEUE_ENTRY_MAX_CHARS - 1].rstrip() + "\u2026"
+        parts.append(f"{index}. {title}" + (f" ({who})" if who else ""))
+    line = " | ".join(parts)
+    remaining = len(items) - len(shown)
+    return f"{line} (+{remaining} more)" if remaining > 0 else line
+
+
 # Who asked for what, so the now-playing widget can say so - the one thing
 # an off-the-shelf Spotify widget cannot do, because it has no idea a
 # request system exists.
@@ -436,7 +491,19 @@ async def handle_chat_command(event: dict) -> None:
     # answers a question the viewer can already see is a command spent on
     # nothing - where !song is the word people reach for when they want to
     # ask for one.
-    if command in ("song", "sr", "songrequest", "request"):
+    if command in ("songqueue", "queue", "songs"):
+        # Free, like the overlay it complements. A viewer who has just
+        # paid to queue something asks this to find out how long they are
+        # waiting, and charging for that answer would be charging twice
+        # for the same request.
+        try:
+            upcoming = await queue()
+        except (SpotifyNotConfigured, SpotifyUnavailable) as e:
+            await reply(f"@{username} {e}")
+            return
+        limit = int(config.get("spotify_queue_preview_count", DEFAULT_QUEUE_PREVIEW))
+        await reply(f"@{username} up next: {queue_preview(upcoming, limit)}")
+    elif command in ("song", "sr", "songrequest", "request"):
         result = await request_song(username, argument, platform=platform)
         if result.get("ok"):
             await reply(f"@{username} queued {result['description']}")
