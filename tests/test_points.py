@@ -328,3 +328,122 @@ class TestPlatformIsPassedThrough:
 
         assert await points.try_spend("viewer", 200, platform="youtube") == (True, None)
         assert await points.get_user_points("viewer", platform="twitch") == 300
+
+
+class _FakeResponse:
+    def __init__(self, payload, status=200):
+        self._payload = payload
+        self.status = status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        if self.status >= 400:
+            raise RuntimeError(f"HTTP {self.status}")
+
+    async def json(self):
+        return self._payload
+
+
+class _FakeSession:
+    """
+    Records the URL, params and headers of whatever the points module
+    sends, so the wire format can be asserted without a network.
+    """
+
+    def __init__(self, calls, payload):
+        self._calls = calls
+        self._payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def get(self, url, params=None, headers=None):
+        self._calls.append({"method": "GET", "url": url, "params": params, "headers": headers})
+        return _FakeResponse(self._payload)
+
+    def post(self, url, json=None, headers=None):
+        self._calls.append({"method": "POST", "url": url, "body": json, "headers": headers})
+        return _FakeResponse(self._payload)
+
+
+class TestTheStreamlabsWireFormat:
+    """
+    The URLs themselves, pinned.
+
+    Every other test in this file mocks at the function level, which is
+    what let a wrong endpoint sit here unnoticed for the whole time the
+    Loyalty API was 401ing: the read was written against
+    /points/user_points, which is the channel leaderboard - a page of 100
+    users matched on a partial name - rather than /points, which is one
+    user's balance. It could never 404, because it never got past auth.
+    """
+
+    def _install(self, monkeypatch, payload):
+        calls = []
+        monkeypatch.setattr(config, "_data", {
+            "points_backend": "api",
+            "streamlabs_access_token": "tok-123",
+            "streamlabs_channel": "dualbladex",
+        })
+        monkeypatch.setattr(points.aiohttp, "ClientSession", lambda: _FakeSession(calls, payload))
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_a_balance_read_goes_to_points_not_the_leaderboard(self, monkeypatch):
+        calls = self._install(monkeypatch, {"points": 1980, "username": "someviewer"})
+        assert await points.get_user_points("someviewer") == 1980
+
+        assert calls[0]["url"] == "https://streamlabs.com/api/v2.0/points"
+        assert not calls[0]["url"].endswith("/user_points")
+        assert calls[0]["params"] == {"username": "someviewer", "channel": "dualbladex"}
+
+    @pytest.mark.asyncio
+    async def test_the_token_goes_in_a_bearer_header(self, monkeypatch):
+        """v2.0 does not accept the access token as a query parameter at all."""
+        calls = self._install(monkeypatch, {"points": 10})
+        await points.get_user_points("someviewer")
+
+        assert calls[0]["headers"]["Authorization"] == "Bearer tok-123"
+        assert "access_token" not in (calls[0]["params"] or {})
+
+    @pytest.mark.asyncio
+    async def test_subtract_carries_the_channel(self, monkeypatch):
+        calls = self._install(monkeypatch, {"points": 0})
+        await points.subtract_points("someviewer", 350)
+
+        assert calls[0]["url"] == "https://streamlabs.com/api/v2.0/points/subtract"
+        assert calls[0]["body"] == {"username": "someviewer", "channel": "dualbladex", "points": 350}
+
+    @pytest.mark.asyncio
+    async def test_the_absolute_set_does_not_carry_a_channel(self, monkeypatch):
+        """
+        Confirmed against the reference docs: user_point_edit takes only
+        username and points, and `points` REPLACES the balance rather than
+        adding to it - which is why granting is read, add, set.
+        """
+        calls = self._install(monkeypatch, {"points": 500})
+        await points.grant_points("someviewer", 100)
+
+        read, write = calls[0], calls[1]
+        assert read["method"] == "GET"
+        assert write["url"] == "https://streamlabs.com/api/v2.0/points/user_point_edit"
+        assert write["body"] == {"username": "someviewer", "points": 600}
+        assert "channel" not in write["body"]
+
+    @pytest.mark.asyncio
+    async def test_a_spend_reads_first_so_a_refusal_can_say_the_balance(self, monkeypatch):
+        calls = self._install(monkeypatch, {"points": 120})
+        ok, balance = await points.try_spend("someviewer", 350)
+
+        assert ok is False
+        assert balance == 120
+        # Nothing was taken - the refusal happens before any write.
+        assert all(call["method"] == "GET" for call in calls)

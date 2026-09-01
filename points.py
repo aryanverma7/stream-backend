@@ -34,30 +34,42 @@ here changes.
 
 ---
 
-The Streamlabs implementation below was confirmed directly against
-dev.streamlabs.com's own reference docs (project notes, Section 7):
-  - GET  /points/user_points        -> read a user's current balance
-  - POST /points/subtract           -> atomic/relative decrement (confirmed
-                                        via docs: "the points you want to
-                                        subtract from the user")
+The endpoints, re-checked against dev.streamlabs.com after the Loyalty
+approval landed:
+  - GET  /points                    -> read ONE user's balance, by
+                                        `username` + `channel`.
+  - POST /points/subtract           -> relative decrement, needs `channel`.
+                                        Does NOT clamp: a viewer short of
+                                        the amount gets a 400 "User does not
+                                        have enough points" and nothing is
+                                        taken.
   - POST /points/user_point_edit    -> ABSOLUTE SET, not a relative add
-                                        (confirmed: "points that will be set
-                                        to the user") - there is no dedicated
-                                        single-user "add" endpoint, so
-                                        granting points is read -> add ->
-                                        set, wrapped in the lock below.
+                                        ("points that will be set to the
+                                        user"), and needs no `channel`.
+                                        There is no dedicated single-user
+                                        "add", so granting is
+                                        read -> add -> set under the lock
+                                        below.
 
-NOTE on a couple of details not yet empirically confirmed (flagged rather
-than silently assumed, matching the project's "verify, don't assume"
-principle - these are checklist items #10/#11 in the project notes).
-Neither can be settled until the approval above comes through, since
-every call 401s before reaching the logic in question:
-  - Whether `user_point_edit` needs a `channel` field like `subtract` does
-    (docs didn't show one). Left out here; add it if a real test call
-    returns an error asking for it.
-  - Exact placement of the access token (header vs query param) - using an
-    Authorization header below, per Streamlabs' OAuth docs saying either a
-    header or a parameter works.
+Two things this file flagged as unconfirmed while every call was 401ing
+both resolved in its favour: `user_point_edit` genuinely takes no
+`channel`, and the token genuinely goes in an Authorization header - v2.0
+does not accept it as a query parameter at all.
+
+The third guess did NOT survive. The read was written against
+`/points/user_points`, which is a different endpoint entirely: it returns
+a page of 100 users sorted by points, filtered by a partial name. Reading
+a single balance is plain `/points`. Nothing caught it because it 401'd
+long before it could 404, and the tests mocked at the function level - so
+`TestTheStreamlabsWireFormat` below now pins the URLs themselves.
+
+**Still unverified, and it is the one that broke everything last time:**
+how a YouTube viewer is addressed. `GET /points` takes one `channel` and
+the response carries a `platform` field, but nothing in the docs says how
+- or whether - a viewer who only exists in the YouTube chat is reachable.
+Cloudbot kept a separate wallet per platform and could only resolve a name
+in the chat the command was typed in; whether the REST API flattens that
+or inherits it has to be settled with a real call, not assumed here.
 """
 import asyncio
 
@@ -136,10 +148,14 @@ def _headers() -> dict:
 
 
 async def _api_get_user_points(username: str) -> int:
+    # BASE_URL itself, not BASE_URL + "/user_points" - that one is the
+    # channel leaderboard (a page of 100 users matched on a partial name),
+    # and asking it for one balance returns a list that `.get("points")`
+    # reads as absent. See the docstring's note on the three guesses.
     channel = config.get("streamlabs_channel", "")
     params = {"username": username, "channel": channel}
     async with aiohttp.ClientSession() as session:
-        async with session.get(f"{BASE_URL}/user_points", params=params, headers=_headers()) as resp:
+        async with session.get(BASE_URL, params=params, headers=_headers()) as resp:
             resp.raise_for_status()
             data = await resp.json()
             log.info(f"Read balance for {username}: {data}")
@@ -164,7 +180,17 @@ async def _api_set_points_absolute(username: str, new_total: int) -> None:
 
 
 async def _api_try_spend(username: str, amount: int) -> "tuple[bool, int | None]":
-    """Read -> check -> subtract. Called with _spend_lock already held."""
+    """
+    Read -> check -> subtract. Called with _spend_lock already held.
+
+    The read is what lets the refusal say how much the viewer actually
+    had, which is the whole difference between "you need 350" and a bare
+    no. The subtract is a second line of defence rather than the only one:
+    it answers 400 rather than clamping, so a viewer who was topped up or
+    drained between the two calls fails loudly instead of being
+    part-charged - the exact hole the Cloudbot backend could never close,
+    because Cloudbot silently takes whatever is there.
+    """
     current = await _api_get_user_points(username)
     if amount > current:
         return False, current
