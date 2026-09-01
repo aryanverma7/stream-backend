@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import make_mocked_request
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 import auth
 from config import config
@@ -144,3 +144,66 @@ class TestMiddleware:
         request = request_for("/api/status", cookies={auth.SESSION_COOKIE_NAME: "forged"})
         response = await auth.auth_middleware(request, passthrough)
         assert response.status == 401
+
+
+class TestApiCallersAlwaysGetJson:
+    """
+    The dashboard calls .json() on every response, so a body that is not
+    JSON surfaces in the browser as "JSON.parse: unexpected character at
+    line 1 column 1" - a message that says only "not JSON" and is produced
+    identically by an expired session, a route this backend does not have,
+    and a Cloudflare error page while the backend restarts. Three
+    different fixes behind one indistinguishable string, which has now
+    cost a debugging session twice.
+
+    Anything under /api/ therefore answers JSON even when it is refusing.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_unauthenticated_api_call_gets_json(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+        app = web.Application(middlewares=[auth.auth_middleware])
+        app.router.add_get("/api/status", lambda request: web.json_response({"ok": True}))
+        client = TestClient(TestServer(app))
+        await client.start_server()
+
+        resp = await client.get("/api/status")
+
+        assert resp.status == 401
+        assert resp.content_type == "application/json"
+        body = await resp.json()
+        assert "auth/login" in body["error"]
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_a_browser_navigation_still_gets_the_readable_text(self, monkeypatch):
+        """
+        Only /api/ changes. A person who typed a URL is not calling
+        .json() on anything and is better served by a sentence.
+        """
+        monkeypatch.setattr(config, "_data", {})
+        app = web.Application(middlewares=[auth.auth_middleware])
+        app.router.add_get("/something", lambda request: web.Response(text="hi"))
+        client = TestClient(TestServer(app))
+        await client.start_server()
+
+        resp = await client.get("/something")
+
+        assert resp.status == 401
+        assert resp.content_type == "text/plain"
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_admin_still_redirects_into_the_login_flow(self, monkeypatch):
+        """The hidden dragon gesture has to land somewhere, not on an error."""
+        monkeypatch.setattr(config, "_data", {})
+        app = web.Application(middlewares=[auth.auth_middleware])
+        app.router.add_get("/admin", lambda request: web.Response(text="admin"))
+        client = TestClient(TestServer(app))
+        await client.start_server()
+
+        resp = await client.get("/admin", allow_redirects=False)
+
+        assert resp.status == 302
+        assert "/auth/login" in resp.headers["Location"]
+        await client.close()

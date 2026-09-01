@@ -214,11 +214,25 @@ async def auth_middleware(request: web.Request, handler):
         # Visiting /admin itself (not an API call) without a session should
         # smoothly redirect into the login flow rather than show a bare
         # 401 - someone who just did the hidden gesture is expecting to
-        # land somewhere, not read an error. API routes (/api/*) still get
-        # a plain 401, since those are called by code, not a person
-        # navigating a browser.
+        # land somewhere, not read an error.
         if request.path == "/admin":
             raise web.HTTPFound(f"/auth/login?{urlencode({'next': request.path_qs})}")
+
+        # An /api/ caller gets JSON, because it is code that will call
+        # .json() on whatever comes back. This used to answer text/plain,
+        # and every dashboard panel then reported the same useless
+        # "JSON.parse: unexpected character at line 1 column 1" - which
+        # says only "the body was not JSON" and is produced identically by
+        # an expired session, a route this backend does not have, and a
+        # Cloudflare error page while the backend is restarting. Three
+        # completely different fixes behind one indistinguishable message.
+        # Saying it in JSON costs nothing and puts the real reason on
+        # screen.
+        if request.path.startswith("/api/"):
+            return web.json_response(
+                {"error": "Not authenticated - open /auth/login in a browser tab, then retry."},
+                status=401,
+            )
         return web.Response(status=401, text="Not authenticated - visit /auth/login first")
 
     return await handler(request)

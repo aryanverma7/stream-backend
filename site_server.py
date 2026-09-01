@@ -105,6 +105,27 @@ async def serve_site_file(request: web.Request) -> web.Response:
     rather than a blanket opt-out.
     """
     out_dir = _get_out_dir()
+
+    # An /api/ path reaching this catch-all means no route claimed it, and
+    # for a browser calling .json() aiohttp's text/plain "404: Not Found"
+    # is indistinguishable from an expired session or a Cloudflare error
+    # page - all three surface as "JSON.parse: unexpected character at line
+    # 1 column 1" and have nothing in common but the fix being elsewhere.
+    #
+    # This is the shape it takes when the Mac Mini runs a backend older
+    # than the built site: the site calls an endpoint that exists in its
+    # own repo and not in this process, and falls through to here.
+    if request.match_info["path"].startswith("api/"):
+        return web.json_response(
+            {
+                "error": (
+                    f"No route for /{request.match_info['path']} on this backend - "
+                    f"it is probably running older code than the site. Pull and restart it."
+                )
+            },
+            status=404,
+        )
+
     file_path = _resolve_within(out_dir, request.match_info["path"])
     if file_path is None:
         raise web.HTTPNotFound()
