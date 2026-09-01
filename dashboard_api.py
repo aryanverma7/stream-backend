@@ -245,11 +245,6 @@ async def get_status(request: web.Request) -> web.Response:
         # player's CURRENT credits, which is not the same number as the
         # prediction above - see game_events' module docstring.
         "game_events": game_events.status(),
-        # Which points ledger is live. "local" means the flat-file
-        # stand-in, not the balance viewers see with !points in chat -
-        # a distinction that is invisible from the numbers alone, so the
-        # panel has to say it out loud. See points.py's docstring.
-        "points_backend": points.backend_name(),
         "widget_connections": {
             "total": widget_hub.connected_count(),
             "roulette": widget_hub.connected_count("roulette"),

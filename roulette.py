@@ -39,7 +39,7 @@ import time
 import credit_ocr
 from config import config
 from logger import get_logger
-from points import UnknownUser, backend_name as points_backend_name, grant_points, try_spend
+from points import UnknownUser, grant_points, try_spend
 from streamerbot_client import parse_chat_message, streamerbot
 from widget_hub import widget_hub
 
@@ -304,8 +304,6 @@ def _unreachable_wallet(platform: str) -> "str | None":
     `cloudbot_platforms` exists as a way to switch a platform back off
     without a deploy, if one really does prove unusable.
     """
-    if points_backend_name() != "cloudbot":
-        return None
     allowed = config.get("cloudbot_platforms", None)
     if not allowed:
         return None

@@ -17,7 +17,6 @@
   "streamlabs_access_token": "",
   "streamlabs_refresh_token": "",
   "streamlabs_channel": "",
-  "points_backend": "api",
   "cloudbot_reply_timeout_seconds": 6,
   "cloudbot_cache_ttl_seconds": 60,
   "points_exchange_rate_per_inr": 10,

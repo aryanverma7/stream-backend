@@ -1433,7 +1433,7 @@ class TestUnreachableWallet:
 
     @pytest.mark.asyncio
     async def test_youtube_is_charged_like_anywhere_else_by_default(self, monkeypatch):
-        monkeypatch.setattr(config, "_data", {"points_backend": "cloudbot"})
+        monkeypatch.setattr(config, "_data", {})
         mock_spend = AsyncMock(return_value=(True, None))
         monkeypatch.setattr(roulette, "try_spend", mock_spend)
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
@@ -1445,7 +1445,7 @@ class TestUnreachableWallet:
 
     @pytest.mark.asyncio
     async def test_a_vote_charges_in_the_chat_it_came_from(self, monkeypatch):
-        monkeypatch.setattr(config, "_data", {"points_backend": "cloudbot"})
+        monkeypatch.setattr(config, "_data", {})
         roulette._state.is_active = True
         roulette._state.weights = {w: 0 for w in roulette.WEAPONS}
         mock_spend = AsyncMock(return_value=(True, None))
@@ -1460,7 +1460,7 @@ class TestUnreachableWallet:
     @pytest.mark.asyncio
     async def test_a_platform_can_be_switched_off_by_config(self, monkeypatch):
         monkeypatch.setattr(
-            config, "_data", {"points_backend": "cloudbot", "cloudbot_platforms": ["twitch"]}
+            config, "_data", {"cloudbot_platforms": ["twitch"]}
         )
         mock_spend = AsyncMock(return_value=(True, None))
         monkeypatch.setattr(roulette, "try_spend", mock_spend)
@@ -1473,11 +1473,14 @@ class TestUnreachableWallet:
         assert roulette._state.is_active is False
 
     @pytest.mark.asyncio
-    async def test_the_allowlist_never_applies_to_the_other_backends(self, monkeypatch):
-        """Only Cloudbot keeps a separate wallet per platform."""
-        monkeypatch.setattr(
-            config, "_data", {"points_backend": "local", "cloudbot_platforms": ["twitch"]}
-        )
+    async def test_an_unset_allowlist_attempts_every_platform(self, monkeypatch):
+        """
+        The default, and deliberately so. An earlier version refused every
+        non-Twitch viewer outright on evidence that turned out to be about
+        our own bug - those YouTube spends had all been sent to Twitch
+        chat, where the handle does not exist.
+        """
+        monkeypatch.setattr(config, "_data", {})
         monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
         monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
 
@@ -1489,7 +1492,7 @@ class TestUnreachableWallet:
     async def test_a_mistyped_word_still_reads_as_a_typo_not_a_wallet_problem(self, monkeypatch):
         """The guard sits with the payment, after the "is that a weapon?" checks."""
         monkeypatch.setattr(
-            config, "_data", {"points_backend": "cloudbot", "cloudbot_platforms": ["twitch"]}
+            config, "_data", {"cloudbot_platforms": ["twitch"]}
         )
         roulette._state.is_active = True
         roulette._state.weights = {w: 0 for w in roulette.WEAPONS}

@@ -17,7 +17,6 @@ import signal
 import credit_ocr
 import game_events
 import health_checks
-import points
 import points_cloudbot
 import roulette
 from config import config
@@ -44,7 +43,6 @@ async def _forward_chat_to_cloudbot_points(event: dict):
 
 async def main():
     log.info("Mac Mini backend starting up")
-    log.info(f"Points ledger: {points.backend_name()}")
 
     # Widget-facing HTTP + WebSocket server
     runner = await run_server(
@@ -61,11 +59,9 @@ async def main():
     streamerbot.on_event(forward_chat_to_widgets)
     streamerbot.on_event(handle_roulette_command)
 
-    # Cloudbot answers in chat, so the points backend that talks to it has
-    # to read chat too. Registered unconditionally rather than only when
-    # points_backend is "cloudbot": the backend is switchable at runtime
-    # from the dashboard, and a listener that was never attached at
-    # startup would leave every lookup timing out until a restart.
+    # Cloudbot answers in chat, so the points ledger that talks to it has
+    # to read chat too. Without this listener every spend times out
+    # waiting for a confirmation nothing is reading.
     streamerbot.on_event(_forward_chat_to_cloudbot_points)
 
     # The gaming PC's /api/ocr/reset is the only real "a new round has
@@ -91,21 +87,13 @@ async def main():
     # and the rest of the backend - the site, the admin dashboard, chat -
     # must keep working regardless of whether this specific integration is
     # connected yet.
-    # Off by default, full stop. It used to be keyed on the points backend,
-    # defaulting to ON for anything that was not "cloudbot", and both
-    # backends make that wrong in different ways.
+    # Off by default, full stop. Granting here means posting !addpoints
+    # into chat, and Cloudbot already pays out on donations natively - so
+    # a donor would be granted twice, and every tip would leave a visible
+    # bot line in chat as well.
     #
-    # Under "cloudbot" it grants by posting !addpoints into chat, and
-    # Cloudbot already pays out on donations natively - so the donor is
-    # granted twice, and every tip becomes a visible bot line in chat.
-    #
-    # Under "api" it grants into the REST ledger, which is a DIFFERENT
-    # store from the wallet Cloudbot pays into (see points.py) - so the
-    # grant lands somewhere no viewer can see, which is not a double-grant
-    # but is not a payout either.
-    #
-    # Turn it on with streamlabs_tips_listener_enabled only after deciding
-    # deliberately which system pays donors - one of them has to, and
+    # Turn it on with streamlabs_tips_listener_enabled only after turning
+    # Cloudbot's own donation payout off. One of the two has to do it, and
     # never both.
     if not config.get("streamlabs_tips_listener_enabled", False):
         log.info("Streamlabs tips listener is disabled - donations are expected to pay out elsewhere")
