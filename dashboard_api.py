@@ -23,6 +23,27 @@ from widget_hub import widget_hub
 
 log = get_logger("DashboardAPI")
 
+# What this backend answers when an upstream it depends on (Streamlabs,
+# mostly) fails. NOT 502, which is what it used to be, and not any other
+# 5xx: this process sits behind a Cloudflare tunnel, and a 5xx from here
+# does not reach the browser as written - the edge serves its own branded
+# "Bad gateway" HTML page in its place. Confirmed against a real failure,
+# where the backend logged
+#
+#     Points balance lookup failed for pinkuthagoat: 404 ... User not found
+#
+# at 11:44:52 local and the browser was handed a Cloudflare 502 page whose
+# Ray timestamp was 06:14:52 UTC - the same second. The panel then reported
+# "JSON.parse: unexpected character at line 1 column 1", because the body
+# it got was HTML, and the actual reason - a username Streamlabs does not
+# have - was visible only in this log.
+#
+# 424 Failed Dependency says exactly the right thing (this request failed
+# because a request it depended on failed) and, being a 4xx, is passed
+# through untouched by every CDN. The frontend renders body.error for any
+# non-ok status, so nothing there needed to change.
+UPSTREAM_FAILED_STATUS = 424
+
 
 # ---------- Config editor ----------
 
@@ -62,7 +83,7 @@ async def get_points_balance(request: web.Request) -> web.Response:
         return web.json_response({"username": username, "points": balance})
     except Exception as e:
         log.warning(f"Points balance lookup failed for {username}: {e}")
-        return web.json_response({"error": str(e)}, status=502)
+        return web.json_response({"error": str(e)}, status=UPSTREAM_FAILED_STATUS)
 
 
 async def grant_points_route(request: web.Request) -> web.Response:
@@ -81,7 +102,7 @@ async def grant_points_route(request: web.Request) -> web.Response:
         return web.json_response({"username": username, "granted": amount, "new_balance": new_total})
     except Exception as e:
         log.warning(f"Points grant failed for {username}: {e}")
-        return web.json_response({"error": str(e)}, status=502)
+        return web.json_response({"error": str(e)}, status=UPSTREAM_FAILED_STATUS)
 
 
 # ---------- Agent selection ----------

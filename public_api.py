@@ -23,6 +23,14 @@ from config import config
 from logger import get_logger
 from twitch_client import is_channel_live
 
+# Deliberately restated rather than imported from dashboard_api, where the
+# reasoning behind it is written out in full. Importing it from there would
+# drag this module's dependencies through the whole admin API - including
+# credit_ocr, and therefore Pillow and pytesseract - to share one integer.
+# See dashboard_api.UPSTREAM_FAILED_STATUS: not a 5xx, because the
+# Cloudflare tunnel replaces those with its own HTML error page.
+UPSTREAM_FAILED_STATUS = 424
+
 log = get_logger("PublicAPI")
 
 CLIPS_DIR = Path(__file__).parent / "clips"
@@ -56,7 +64,7 @@ async def live_status(request: web.Request) -> web.Response:
         return web.json_response({"live": live})
     except Exception as e:
         log.warning(f"Live status check failed: {e}")
-        return web.json_response({"error": str(e)}, status=502)
+        return web.json_response({"error": str(e)}, status=UPSTREAM_FAILED_STATUS)
 
 
 async def list_videos(request: web.Request) -> web.Response:
@@ -76,7 +84,7 @@ async def list_videos(request: web.Request) -> web.Response:
                 data = await resp.json()
     except Exception as e:
         log.warning(f"YouTube video fetch failed: {e}")
-        return web.json_response({"error": str(e)}, status=502)
+        return web.json_response({"error": str(e)}, status=UPSTREAM_FAILED_STATUS)
 
     videos = [
         {
