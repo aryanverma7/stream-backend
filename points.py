@@ -84,6 +84,44 @@ log = get_logger("Points")
 
 BASE_URL = "https://streamlabs.com/api/v2.0/points"
 
+# Every call below leaves this machine, and this is the only place in the
+# backend where a dashboard request waits on a third party. Without an
+# explicit timeout aiohttp allows five minutes, and a handler that sits
+# there for five minutes is not a slow answer - the Cloudflare tunnel in
+# front of this gives up long before that and serves its own 502 error
+# page, which is HTML, which the dashboard then reports as "JSON.parse:
+# unexpected character at line 1 column 1". A backend that is up and
+# healthy, a panel that says nothing useful, and no log line to connect
+# them.
+#
+# Ten seconds is far longer than a working call to Streamlabs takes and
+# far shorter than the tunnel's patience, so a hang becomes a plain error
+# on the panel with a matching line in the log.
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 10
+
+
+class StreamlabsUnreachable(Exception):
+    """
+    Raised when the Streamlabs API could not be reached or did not answer
+    in time. Its own type, because it means something completely different
+    from a request Streamlabs refused: nothing was read and nothing was
+    written, so a spend that raises this must never be treated as paid.
+    """
+
+
+def _timeout() -> "aiohttp.ClientTimeout":
+    seconds = config.get("streamlabs_api_timeout_seconds", DEFAULT_REQUEST_TIMEOUT_SECONDS)
+    try:
+        seconds = float(seconds)
+    except (TypeError, ValueError):
+        seconds = DEFAULT_REQUEST_TIMEOUT_SECONDS
+    return aiohttp.ClientTimeout(total=seconds)
+
+
+def _session() -> "aiohttp.ClientSession":
+    """Every outbound Streamlabs call goes through here, so none can be created without the timeout."""
+    return aiohttp.ClientSession(timeout=_timeout())
+
 BACKENDS = ("api", "cloudbot", "local")
 DEFAULT_BACKEND = "api"
 
@@ -147,6 +185,35 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+async def _request(method: str, url: str, **kwargs) -> dict:
+    """
+    One outbound call to Streamlabs, with the timeout applied and a
+    network failure turned into StreamlabsUnreachable.
+
+    Every call goes through here so none can be written without either.
+    The translation matters as much as the timeout: aiohttp raises
+    asyncio.TimeoutError for a hang, whose str() is the empty string, so
+    the dashboard's error path (which renders str(e)) would have shown a
+    blank message under a 502 - true, and useless.
+    """
+    try:
+        async with _session() as session:
+            async with session.request(method, url, **kwargs) as resp:
+                resp.raise_for_status()
+                return await resp.json()
+    except asyncio.TimeoutError as e:
+        raise StreamlabsUnreachable(
+            f"Streamlabs did not answer {method} {url} within "
+            f"{_timeout().total}s - nothing was read or written."
+        ) from e
+    except aiohttp.ClientError as e:
+        # Includes the response errors raise_for_status() raises, which
+        # carry Streamlabs' own status - worth keeping in the message,
+        # since a 401 here now means the token expired rather than the
+        # Loyalty approval being absent.
+        raise StreamlabsUnreachable(f"Streamlabs call failed ({method} {url}): {e}") from e
+
+
 async def _api_get_user_points(username: str) -> int:
     # BASE_URL itself, not BASE_URL + "/user_points" - that one is the
     # channel leaderboard (a page of 100 users matched on a partial name),
@@ -154,29 +221,22 @@ async def _api_get_user_points(username: str) -> int:
     # reads as absent. See the docstring's note on the three guesses.
     channel = config.get("streamlabs_channel", "")
     params = {"username": username, "channel": channel}
-    async with aiohttp.ClientSession() as session:
-        async with session.get(BASE_URL, params=params, headers=_headers()) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
-            log.info(f"Read balance for {username}: {data}")
-            return data.get("points", 0)
+    data = await _request("GET", BASE_URL, params=params, headers=_headers())
+    log.info(f"Read balance for {username}: {data}")
+    return data.get("points", 0)
 
 
 async def _api_subtract_points(username: str, amount: int) -> None:
     channel = config.get("streamlabs_channel", "")
     body = {"username": username, "channel": channel, "points": amount}
-    async with aiohttp.ClientSession() as session:
-        async with session.post(f"{BASE_URL}/subtract", json=body, headers=_headers()) as resp:
-            resp.raise_for_status()
-            log.info(f"Subtracted {amount} points from {username}")
+    await _request("POST", f"{BASE_URL}/subtract", json=body, headers=_headers())
+    log.info(f"Subtracted {amount} points from {username}")
 
 
 async def _api_set_points_absolute(username: str, new_total: int) -> None:
     body = {"username": username, "points": new_total}
-    async with aiohttp.ClientSession() as session:
-        async with session.post(f"{BASE_URL}/user_point_edit", json=body, headers=_headers()) as resp:
-            resp.raise_for_status()
-            log.info(f"Set {username}'s balance to {new_total}")
+    await _request("POST", f"{BASE_URL}/user_point_edit", json=body, headers=_headers())
+    log.info(f"Set {username}'s balance to {new_total}")
 
 
 async def _api_try_spend(username: str, amount: int) -> "tuple[bool, int | None]":

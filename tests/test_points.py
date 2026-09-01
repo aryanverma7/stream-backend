@@ -1,3 +1,4 @@
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -355,9 +356,10 @@ class _FakeSession:
     sends, so the wire format can be asserted without a network.
     """
 
-    def __init__(self, calls, payload):
+    def __init__(self, calls, payload, error=None):
         self._calls = calls
         self._payload = payload
+        self._error = error
 
     async def __aenter__(self):
         return self
@@ -365,12 +367,12 @@ class _FakeSession:
     async def __aexit__(self, *exc):
         return False
 
-    def get(self, url, params=None, headers=None):
-        self._calls.append({"method": "GET", "url": url, "params": params, "headers": headers})
-        return _FakeResponse(self._payload)
-
-    def post(self, url, json=None, headers=None):
-        self._calls.append({"method": "POST", "url": url, "body": json, "headers": headers})
+    def request(self, method, url, params=None, json=None, headers=None):
+        self._calls.append(
+            {"method": method, "url": url, "params": params, "body": json, "headers": headers}
+        )
+        if self._error is not None:
+            raise self._error
         return _FakeResponse(self._payload)
 
 
@@ -386,14 +388,18 @@ class TestTheStreamlabsWireFormat:
     user's balance. It could never 404, because it never got past auth.
     """
 
-    def _install(self, monkeypatch, payload):
+    def _install(self, monkeypatch, payload, error=None):
         calls = []
         monkeypatch.setattr(config, "_data", {
             "points_backend": "api",
             "streamlabs_access_token": "tok-123",
             "streamlabs_channel": "dualbladex",
         })
-        monkeypatch.setattr(points.aiohttp, "ClientSession", lambda: _FakeSession(calls, payload))
+        # Accepts the timeout kwarg the real session is now always given -
+        # a fake that refused it would pass while the real call failed.
+        monkeypatch.setattr(
+            points.aiohttp, "ClientSession", lambda timeout=None: _FakeSession(calls, payload, error)
+        )
         return calls
 
     @pytest.mark.asyncio
@@ -446,4 +452,76 @@ class TestTheStreamlabsWireFormat:
         assert ok is False
         assert balance == 120
         # Nothing was taken - the refusal happens before any write.
+        assert all(call["method"] == "GET" for call in calls)
+
+
+class TestTheOutboundCallCannotHangForever:
+    """
+    The dashboard's points routes are the only handlers in this backend
+    that wait on a third party, and a hang there does not look like a
+    hang - aiohttp's default allows five minutes, and the Cloudflare
+    tunnel in front of this gives up long before that and serves its own
+    HTML error page. The browser then reports "JSON.parse: unexpected
+    character at line 1 column 1" while the backend is up, healthy, and
+    answering /health perfectly. Nothing connects the two.
+    """
+
+    def test_every_session_carries_a_timeout(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+        assert points._timeout().total == points.DEFAULT_REQUEST_TIMEOUT_SECONDS
+
+    def test_the_timeout_is_config_overridable(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"streamlabs_api_timeout_seconds": 3})
+        assert points._timeout().total == 3
+
+    def test_a_nonsense_timeout_falls_back_rather_than_raising(self, monkeypatch):
+        """The config editor is a free-text JSON field; a typo must not take points down."""
+        monkeypatch.setattr(config, "_data", {"streamlabs_api_timeout_seconds": "soon"})
+        assert points._timeout().total == points.DEFAULT_REQUEST_TIMEOUT_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_a_hang_becomes_a_readable_error_not_a_blank_one(self, monkeypatch):
+        """
+        asyncio.TimeoutError's str() is the empty string, and the
+        dashboard renders str(e) - so without the translation the panel
+        would show a 502 with no message at all. True, and useless.
+        """
+        calls = []
+        monkeypatch.setattr(config, "_data", {
+            "points_backend": "api",
+            "streamlabs_access_token": "tok-123",
+            "streamlabs_channel": "dualbladex",
+        })
+        monkeypatch.setattr(
+            points.aiohttp,
+            "ClientSession",
+            lambda timeout=None: _FakeSession(calls, {}, error=asyncio.TimeoutError()),
+        )
+
+        with pytest.raises(points.StreamlabsUnreachable) as caught:
+            await points.get_user_points("someviewer")
+        assert "did not answer" in str(caught.value)
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_ledger_is_never_treated_as_a_successful_spend(self, monkeypatch):
+        """
+        The important half. try_spend raising must mean "not paid" - a
+        viewer charged for a roulette that never opened is the failure
+        this whole path exists to avoid.
+        """
+        calls = []
+        monkeypatch.setattr(config, "_data", {
+            "points_backend": "api",
+            "streamlabs_access_token": "tok-123",
+            "streamlabs_channel": "dualbladex",
+        })
+        monkeypatch.setattr(
+            points.aiohttp,
+            "ClientSession",
+            lambda timeout=None: _FakeSession(calls, {}, error=asyncio.TimeoutError()),
+        )
+
+        with pytest.raises(points.StreamlabsUnreachable):
+            await points.try_spend("someviewer", 350)
+        # It raised on the READ, so nothing was ever subtracted.
         assert all(call["method"] == "GET" for call in calls)
