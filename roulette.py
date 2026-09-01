@@ -1155,13 +1155,20 @@ async def handle_chat_command(event: dict):
         # the one command a viewer needs to be able to reach at any time,
         # since it's the only way they find out !roulette exists at all.
         await _reply_in_chat(platform, _help_message())
-    elif command and _state.is_active:
+    elif command and _state.is_active and len(text.split()) == 1:
         # Only treated as a likely mistaken vote attempt (worth feedback)
         # while a session is actually active - otherwise, an unrelated
         # "!word" command (e.g. an unrelated !discord or !lurk from some
         # other bot setup) would get incorrectly flagged as an "invalid
         # weapon" every time it happened to coincide with a live roulette,
         # which isn't what this is meant to catch.
+        #
+        # And only when the whole message is that one word. A vote is
+        # always bare - "!vandal", never "!vandal please" - so anything
+        # carrying arguments belongs to some other command, and answering
+        # "that isn't a recognized weapon" to "!sr blinding lights" is
+        # both wrong and the kind of wrong that looks like the song
+        # request feature is broken.
         result = await vote(username, command, platform=platform)
         if not result.get("ok"):
             await _reply_in_chat(platform, f"@{username} {result['reason']}")
@@ -1216,6 +1223,17 @@ def _help_message() -> str:
     """
     cost = config.get("roulette_trigger_cost", DEFAULT_TRIGGER_COST)
     weapons = ", ".join(WEAPONS)
+    # Song requests are a separate module and this is the only place a
+    # viewer finds out a command exists, so the line is built here rather
+    # than leaving the feature undiscoverable. Imported inside the
+    # function: roulette must not depend on spotify at module level, since
+    # spotify imports points and points has no business pulling in the
+    # roulette's import graph.
+    import spotify
+
+    songs = ""
+    if spotify.is_configured() and spotify.requests_enabled():
+        songs = f" !sr <song> ({spotify.request_cost()} points) queues a track; !song says what's playing."
     # Deliberately does NOT start with "!". Chat replies come back down
     # the subscription as ordinary chat events, and this one used to open
     # with "!roulette", so the bot answered its own !help by parsing it as
@@ -1224,7 +1242,7 @@ def _help_message() -> str:
     # same door, and it costs one word.
     return (
         f"Commands: !roulette ({cost} points) opens a vote for next round's forced buy - "
-        f"vote with !<weapon> while it's open. Weapons: {weapons}."
+        f"vote with !<weapon> while it's open.{songs} Weapons: {weapons}."
     )
 
 

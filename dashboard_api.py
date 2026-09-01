@@ -16,6 +16,7 @@ import health_checks
 import ocr_agent
 import points
 import roulette
+import spotify
 from config import config
 from logger import LOG_FILE, get_logger
 from streamerbot_client import streamerbot
@@ -245,6 +246,10 @@ async def get_status(request: web.Request) -> web.Response:
         # player's CURRENT credits, which is not the same number as the
         # prediction above - see game_events' module docstring.
         "game_events": game_events.status(),
+        # Song requests. `configured` is the one that matters: everything
+        # else here is a setting, and without a refresh token none of the
+        # settings do anything.
+        "spotify": spotify.status(),
         "widget_connections": {
             "total": widget_hub.connected_count(),
             "roulette": widget_hub.connected_count("roulette"),

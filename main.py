@@ -19,6 +19,7 @@ import game_events
 import health_checks
 import points_cloudbot
 import roulette
+import spotify
 from config import config
 from logger import get_logger
 from roulette import handle_chat_command as handle_roulette_command
@@ -63,6 +64,12 @@ async def main():
     # to read chat too. Without this listener every spend times out
     # waiting for a confirmation nothing is reading.
     streamerbot.on_event(_forward_chat_to_cloudbot_points)
+
+    # Song requests. Its own listener rather than another branch inside
+    # the roulette's dispatcher: they are unrelated features that happen
+    # to read the same stream, and one of them being switched off in
+    # config should not mean walking past the other's code to find out.
+    streamerbot.on_event(spotify.handle_chat_command)
 
     # The gaming PC's /api/ocr/reset is the only real "a new round has
     # begun" signal here, and the forced-buy badge needs it as much as the

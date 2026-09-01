@@ -26,6 +26,7 @@ import game_events
 import health_checks
 import public_api
 import site_server
+import spotify_oauth
 import streamlabs_oauth
 from logger import get_logger
 from widget_hub import widget_hub
@@ -59,6 +60,10 @@ def build_app() -> web.Application:
     # attempt, not any random visitor to the site.
     app.router.add_get("/auth/streamlabs/login", streamlabs_oauth.streamlabs_login)
     app.router.add_get("/auth/streamlabs/callback", streamlabs_oauth.streamlabs_callback)
+    # Spotify song requests (Task #12) - same admin-only gating and the
+    # same reason for it.
+    app.router.add_get("/auth/spotify/login", spotify_oauth.spotify_login)
+    app.router.add_get("/auth/spotify/callback", spotify_oauth.spotify_callback)
     # Task #8's credit OCR reporting - IS in auth.py's open_paths (exempt
     # from the GitHub OAuth admin check), gated instead by its own
     # shared-secret check inside the handler - the gaming-PC agent calling

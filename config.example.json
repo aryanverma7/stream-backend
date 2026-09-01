@@ -77,6 +77,11 @@
   "spotify_client_id": "",
   "spotify_client_secret": "",
   "spotify_refresh_token": "",
+  "spotify_redirect_uri": "https://hub.dualbladex.org/auth/spotify/callback",
+  "spotify_song_requests_enabled": true,
+  "spotify_chat_replies_enabled": true,
+  "spotify_request_cost": 100,
+  "spotify_max_track_seconds": 600,
 
   "twitch_client_id": "",
   "twitch_client_secret": "",
