@@ -20,6 +20,7 @@ The HTTP server. Hosts:
 from aiohttp import web
 
 import auth
+import break_timer
 import credit_ocr
 import dashboard_api
 import game_events
@@ -75,6 +76,9 @@ def build_app() -> web.Application:
     # machine, same shared secret, same open_paths exemption as the three
     # OCR routes above.
     game_events.register_routes(app)
+    # The break screen's countdown. Admin-gated like the rest of /api/ -
+    # the overlay is told over the widget socket, never by calling this.
+    break_timer.register_routes(app)
     public_api.register_public_routes(app)
     dashboard_api.register_routes(app)
 

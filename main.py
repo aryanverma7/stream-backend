@@ -14,6 +14,7 @@ them. The actual logic for each piece lives in its own module.
 import asyncio
 import signal
 
+import break_timer
 import credit_ocr
 import game_events
 import health_checks
@@ -118,6 +119,10 @@ async def main():
     # restart if the streamer connects Spotify mid-session.
     await spotify.start_now_playing_poller()
 
+    # Keeps a reloaded break overlay in sync - it cannot ask, so it is
+    # re-told every few seconds.
+    await break_timer.start_broadcaster()
+
     log.info("Backend is up. Waiting for events / connections.")
 
     # Keep the process alive until interrupted (Ctrl+C locally, or a real
@@ -135,6 +140,7 @@ async def main():
     await stop_event.wait()
 
     log.info("Shutting down")
+    await break_timer.stop_broadcaster()
     await spotify.stop_now_playing_poller()
     await stop_tips_listener()
     await health_checks.stop()
