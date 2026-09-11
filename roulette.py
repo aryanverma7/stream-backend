@@ -556,55 +556,57 @@ def spendable_creds(predicted_credits: "int | None") -> "int | None":
 
 def affordable_weapons(predicted_credits: "int | None") -> list[str]:
     """
-    The weapons buyable with predicted_credits, in WEAPONS' own order.
+    The roster a session opens with, in WEAPONS' own order.
 
-    Buyable ALONGSIDE a shield and abilities - the roster is built from
-    spendable_creds(), not from the raw reading, since all three come out
-    of the same wallet in the same buy phase.
+    TWO independent filters, and only one of them is about money.
 
-    Off a pistol round the sidearms are dropped as well, Sheriff aside -
-    see _pistols_to_hide(). That is a taste filter rather than an
-    affordability one, and it is the only trim here that can be switched
-    off on its own (`roulette_hide_pistols_off_pistol_rounds`).
+    The **price** filter drops what cannot be bought alongside a shield
+    and the current agent's kit - all three come out of the same wallet in
+    the same buy phase, so it is built from spendable_creds() rather than
+    the raw reading. It needs a credit reading, and it fails open: no
+    prediction (OCR down, or no buy phase seen since the last reset), the
+    `roulette_affordability_filter_enabled` switch, or a creds table so
+    misconfigured that nothing at all is affordable each leave the roster
+    as it was. Losing the filter is a far smaller problem than a wheel
+    that silently drops most of its options.
 
-    Every failure path returns the full roster rather than a short one -
-    losing the filter is a much smaller problem than a wheel that silently
-    drops most of its options because OCR happened to be down:
-      - filter switched off in config
-      - no prediction yet (OCR down, or no buy phase read since the last
-        reset - get_predicted_credits() returns None for both)
-      - a creds table so misconfigured that nothing at all is affordable
+    The **sidearm** filter drops the pistols bar the Sheriff off a
+    non-pistol round, because eighteen options is more than a chat can
+    read off an overlay in eighteen seconds and four of them are guns
+    nobody wants to be forced into. It is a matter of taste, not money,
+    and it therefore does NOT depend on the credit reading - which it used
+    to, by accident of sitting inside the priced branch. With OCR off or
+    down, every pistol came back onto the wheel, which is the opposite of
+    what the setting says it does.
+
+    Order still matters, and the empty check is still load-bearing: the
+    sidearm trim runs last and is discarded if it would leave nothing,
+    because on a save round the only affordable weapons ARE pistols.
     """
-    if not config.get("roulette_affordability_filter_enabled", True):
-        return list(WEAPONS)
-    if predicted_credits is None:
-        return list(WEAPONS)
+    roster = list(WEAPONS)
 
-    budget = spendable_creds(predicted_credits)
-    affordable = [w for w in WEAPONS if creds_cost_for(w) <= budget]
+    if config.get("roulette_affordability_filter_enabled", True) and predicted_credits is not None:
+        budget = spendable_creds(predicted_credits)
+        priced = [w for w in roster if creds_cost_for(w) <= budget]
+        if priced:
+            roster = priced
+        else:
+            log.warning(
+                f"Predicted credits {predicted_credits} made every weapon unaffordable - that shouldn't be "
+                f"possible while the Classic is priced at 0, so the creds table is likely misconfigured. "
+                f"Leaving the roster unfiltered rather than opening a roulette nobody can vote in."
+            )
 
-    # Off a pistol round the sidearms come off the wheel (bar the Sheriff),
-    # because with real money in the bank they are not choices anyone wants
-    # to be forced into and they crowd out the ones that are.
-    #
-    # Applied AFTER the price filter and only when something survives it,
-    # which is what keeps a save round sane: at 500 spendable the only
-    # affordable weapons ARE pistols, and trimming them would leave nothing
-    # and fall through to the misconfiguration path below, opening all
-    # eighteen. On that round pistols are genuinely the roster.
+    # is_pistol_round(None) is False, so an unknown budget is treated as a
+    # buy round and the sidearms come off. That is the deliberate answer:
+    # the reading is what is missing, not the round, and a wheel full of
+    # Classics is worse than one built on a guess about which round it is.
     if config.get("roulette_hide_pistols_off_pistol_rounds", True) and not is_pistol_round(predicted_credits):
-        trimmed = [w for w in affordable if w not in _pistols_to_hide()]
+        trimmed = [w for w in roster if w not in _pistols_to_hide()]
         if trimmed:
-            affordable = trimmed
+            roster = trimmed
 
-    if not affordable:
-        log.warning(
-            f"Predicted credits {predicted_credits} made every weapon unaffordable - that shouldn't be possible "
-            f"while the Classic is priced at 0, so the creds table is likely misconfigured. Falling back to the "
-            f"full roster rather than opening a roulette nobody can vote in."
-        )
-        return list(WEAPONS)
-    return affordable
+    return roster
 
 
 async def trigger_roulette(username: str, platform: str = "twitch") -> dict:

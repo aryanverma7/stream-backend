@@ -34,7 +34,7 @@ class TestTriggerRoulette:
 
         assert result["ok"] is True
         assert roulette._state.is_active is True
-        assert set(roulette._state.weights.keys()) == set(roulette.WEAPONS)
+        assert set(roulette._state.weights.keys()) == set(roster_without_sidearms())
         assert all(w == 0 for w in roulette._state.weights.values())
 
     @pytest.mark.asyncio
@@ -71,7 +71,7 @@ class TestTriggerRoulette:
         assert "cooldown" in result["reason"].lower()
 
     @pytest.mark.asyncio
-    async def test_broadcasts_roulette_started_with_the_full_weapon_list(self, monkeypatch):
+    async def test_broadcasts_roulette_started_with_the_votable_roster(self, monkeypatch):
         mock_broadcast = AsyncMock()
         monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
         monkeypatch.setattr(roulette.widget_hub, "broadcast", mock_broadcast)
@@ -85,13 +85,26 @@ class TestTriggerRoulette:
         mock_broadcast.assert_called_once()
         payload, kwargs = mock_broadcast.call_args
         assert payload[0]["type"] == "roulette_started"
-        assert set(payload[0]["weapons"]) == set(roulette.WEAPONS)
+        # No prediction, so nothing is priced out - but the sidearms are
+        # still trimmed, which is what the overlay has to render.
+        assert set(payload[0]["weapons"]) == set(roster_without_sidearms())
         assert kwargs["tag"] == "roulette"
 
 
 # Shields and abilities are reserved out of every reading (see
 # roulette.reserved_creds), which is its own behaviour with its own tests
 # below. The price-filter tests zero it so they are about the prices.
+def roster_without_sidearms():
+    """
+    Every weapon except the sidearms the wheel hides off a pistol round.
+    What "the full roster" means on any path where the price filter did
+    not run - the sidearm trim is about taste, not money, so it applies
+    whether or not a credit reading exists.
+    """
+    hidden = set(roulette.PISTOL_WEAPONS) - set(roulette.ALWAYS_VOTABLE_PISTOLS)
+    return [w for w in roulette.WEAPONS if w not in hidden]
+
+
 NO_RESERVE = {
     "roulette_shield_reserve_creds": 0,
     "roulette_ability_reserve_creds": 0,
@@ -111,15 +124,22 @@ class TestAffordableWeapons:
     their own coverage below.
     """
 
-    def test_no_prediction_available_opens_the_whole_roster(self, monkeypatch):
+    def test_no_prediction_still_leaves_a_full_priced_roster(self, monkeypatch):
         """
         The single most important behaviour here. get_predicted_credits()
         returns None whenever OCR is down, or the agent has just reset the
         history, or no buy phase has been captured yet - none of which
         should stop viewers using a feature they pay points for.
+
+        Nothing is dropped for being unaffordable, because affordability is
+        unknown. The sidearm trim still applies: it never depended on the
+        reading, and used to only by accident of where it sat.
         """
         monkeypatch.setattr(config, "_data", {})
-        assert roulette.affordable_weapons(None) == list(roulette.WEAPONS)
+        votable = roulette.affordable_weapons(None)
+        assert votable == roster_without_sidearms()
+        assert "operator" in votable   # nothing priced out
+        assert "ghost" not in votable  # but the sidearms are still gone
 
     def test_filters_to_what_the_predicted_credits_actually_cover(self, monkeypatch):
         monkeypatch.setattr(config, "_data", dict(NO_RESERVE))
@@ -180,7 +200,7 @@ class TestAffordableWeapons:
         monkeypatch.setattr(config, "_data", {
             "roulette_weapon_creds_costs": {w: 99999 for w in roulette.WEAPONS},
         })
-        assert roulette.affordable_weapons(1000) == list(roulette.WEAPONS)
+        assert roulette.affordable_weapons(1000) == roster_without_sidearms()
 
     def test_every_weapon_in_the_roster_has_a_price(self):
         """
@@ -237,15 +257,17 @@ class TestPistolsOffTheWheelOffPistolRounds:
         for predicted in range(0, 9001, 100):
             assert roulette.affordable_weapons(predicted), f"empty roster at {predicted}"
 
-    def test_an_unknown_prediction_is_not_treated_as_a_pistol_round(self, monkeypatch):
+    def test_an_unknown_prediction_is_treated_as_a_buy_round(self, monkeypatch):
         """
-        Every other unknown here opens the full roster. Answering "pistol
-        round" to a missing reading would instead trim the wheel on the
-        strength of a number that does not exist.
+        The reading is what is missing, not the round. Answering "pistol
+        round" to a missing number would put every sidearm back on the
+        wheel exactly when there is no evidence for it - and a wheel full
+        of Classics is worse than one built on a guess about the round.
         """
         monkeypatch.setattr(config, "_data", {})
         assert roulette.is_pistol_round(None) is False
-        assert roulette.affordable_weapons(None) == list(roulette.WEAPONS)
+        assert "ghost" not in roulette.affordable_weapons(None)
+        assert "sheriff" in roulette.affordable_weapons(None)
 
     def test_the_trim_can_be_switched_off(self, monkeypatch):
         monkeypatch.setattr(
@@ -1759,10 +1781,10 @@ class TestReservedCreds:
         assert roulette.spendable_creds(800) == 0
         assert roulette.affordable_weapons(800) == ["classic"]
 
-    def test_no_prediction_still_opens_the_whole_roster(self, monkeypatch):
+    def test_no_prediction_reserves_nothing_and_prices_nothing_out(self, monkeypatch):
         monkeypatch.setattr(config, "_data", {})
         assert roulette.spendable_creds(None) is None
-        assert roulette.affordable_weapons(None) == list(roulette.WEAPONS)
+        assert roulette.affordable_weapons(None) == roster_without_sidearms()
 
     @pytest.mark.asyncio
     async def test_the_started_broadcast_carries_both_numbers(self, monkeypatch):
