@@ -87,6 +87,19 @@
 
   "break_default_minutes": 10,
 
+  "riot_name": "",
+  "riot_tag": "",
+  "riot_region": "ap",
+  "riot_platform": "pc",
+  "henrik_api_key": "",
+  "rank_cache_seconds": 60,
+
+  "greeter_enabled": false,
+  "discord_invite_url": "",
+  "greeter_message": "welcome in! Come hang out in the Discord: {discord}",
+  "greeter_cooldown_seconds": 45,
+  "greeter_ignore_users": [],
+
   "twitch_client_id": "",
   "twitch_client_secret": "",
   "twitch_user_access_token": "",

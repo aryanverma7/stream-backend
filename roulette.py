@@ -1235,7 +1235,14 @@ def _help_message() -> str:
 
     songs = ""
     if spotify.is_configured() and spotify.requests_enabled():
-        songs = f" !song <name or link> ({spotify.request_cost()} points) queues a track; !songqueue shows what's next."
+        songs = f" !song <name or link> ({spotify.request_cost()} points) queues a track; !queue shows what's next."
+
+    # Same treatment as songs: only advertised when it can actually
+    # answer, since a listed command that replies "not set up" is worse
+    # than one nobody knew about.
+    import valorant_rank
+
+    rank = " !rank for my current rank." if valorant_rank.is_configured() else ""
     # Deliberately does NOT start with "!". Chat replies come back down
     # the subscription as ordinary chat events, and this one used to open
     # with "!roulette", so the bot answered its own !help by parsing it as
@@ -1244,7 +1251,7 @@ def _help_message() -> str:
     # same door, and it costs one word.
     return (
         f"Commands: !roulette ({cost} points) opens a vote for next round's forced buy - "
-        f"vote with !<weapon> while it's open.{songs} Weapons: {weapons}."
+        f"vote with !<weapon> while it's open.{songs}{rank} Weapons: {weapons}."
     )
 
 

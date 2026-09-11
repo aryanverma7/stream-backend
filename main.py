@@ -19,8 +19,10 @@ import credit_ocr
 import game_events
 import health_checks
 import points_cloudbot
+import greeter
 import roulette
 import spotify
+import valorant_rank
 from config import config
 from logger import get_logger
 from roulette import handle_chat_command as handle_roulette_command
@@ -71,6 +73,16 @@ async def main():
     # to read the same stream, and one of them being switched off in
     # config should not mean walking past the other's code to find out.
     streamerbot.on_event(spotify.handle_chat_command)
+
+    # !rank, reading the same unofficial API the rank overlay does - for
+    # anyone watching on a phone, or with the overlay cropped out.
+    streamerbot.on_event(valorant_rank.handle_chat_command)
+
+    # Greets a first-time chatter once with the Discord link. Reacts to
+    # every message rather than a command, which is why it is last: a
+    # listener that runs on all chat should not sit in front of the ones
+    # that only run on a few.
+    streamerbot.on_event(greeter.handle_chat_command)
 
     # The gaming PC's /api/ocr/reset is the only real "a new round has
     # begun" signal here, and the forced-buy badge needs it as much as the
