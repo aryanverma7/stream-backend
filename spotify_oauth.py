@@ -60,7 +60,7 @@ async def spotify_login(request: web.Request) -> web.Response:
         "response_type": "code",
         "client_id": client_id,
         "redirect_uri": redirect_uri,
-        "scope": spotify.SCOPES,
+        "scope": spotify.requested_scopes(),
         "state": state,
         # Forces the consent screen even if this account has approved the
         # app before. Without it, re-running the flow to add a scope
@@ -125,6 +125,8 @@ async def spotify_callback(request: web.Request) -> web.Response:
     # not granted, this is where it is visible - not three days later when
     # a viewer gets "Insufficient client scope" in chat.
     granted = set(str(data.get("scope", "")).split())
+    # Only the REQUIRED set is an error. An optional scope Spotify did not
+    # grant costs a dashboard nicety, not the feature.
     absent = sorted(set(spotify.SCOPES.split()) - granted)
     if absent:
         log.error(f"Spotify granted {sorted(granted) or 'nothing'} but NOT {', '.join(absent)}")

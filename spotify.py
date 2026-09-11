@@ -84,6 +84,19 @@ API_BASE = "https://api.spotify.com/v1"
 # unless the consent screen is forced.
 SCOPES = "user-modify-playback-state user-read-playback-state user-read-currently-playing"
 
+# Asked for at consent, never required. `user-read-private` is what lets
+# GET /me report `product`, which is how the dashboard says whether the
+# connected account has Premium - useful, and not worth refusing to run
+# without. Kept out of SCOPES so missing_scopes() never nags about a
+# permission that only costs a nicety, and so an existing token that
+# predates this line is not reported as broken.
+OPTIONAL_SCOPES = "user-read-private"
+
+
+def requested_scopes() -> str:
+    """Everything the consent screen asks for: the required set plus the extras."""
+    return f"{SCOPES} {OPTIONAL_SCOPES}".strip()
+
 DEFAULT_REQUEST_COST = 100
 # Nobody's chat wants a 19-minute prog epic bought for 100 points. Long
 # enough for a genuine long song, short enough that the queue keeps moving.
@@ -357,18 +370,33 @@ def describe(track: dict) -> str:
 
 
 async def search_track(query: str) -> "dict | None":
-    """The first track match, or None. market=from_token so results are playable on the streamer's account."""
+    """
+    The first track match, or None.
+
+    **No `market` parameter.** This used to send `market=from_token`, to
+    get results playable on the streamer's account - and that is the
+    legacy spelling, which requires the `user-read-private` scope. With
+    that scope absent, /search - an endpoint that otherwise needs no
+    scopes at all - answered 403 "Insufficient client scope", which reads
+    exactly like the queue endpoint refusing for want of Premium and sent
+    a debugging session the wrong way twice.
+
+    Omitting it is not a compromise: with a user access token Spotify
+    already resolves the market from the account, which is what the
+    legacy parameter asked for explicitly.
+    """
     data = await _api(
         "GET",
         "/search",
-        params={"q": query, "type": "track", "limit": "1", "market": "from_token"},
+        params={"q": query, "type": "track", "limit": "1"},
     )
     items = ((data or {}).get("tracks") or {}).get("items") or []
     return items[0] if items else None
 
 
 async def get_track(track_id: str) -> "dict | None":
-    return await _api("GET", f"/tracks/{track_id}", params={"market": "from_token"})
+    # No market, for the reason search_track spells out.
+    return await _api("GET", f"/tracks/{track_id}")
 
 
 async def add_to_queue(uri: str) -> None:
@@ -384,7 +412,7 @@ async def now_playing() -> "dict | None":
     bar, and it gets one reading every few seconds, so it interpolates from
     this between polls rather than jumping.
     """
-    data = await _api("GET", "/me/player/currently-playing", params={"market": "from_token"})
+    data = await _api("GET", "/me/player/currently-playing")
     if not data or not data.get("item"):
         return None
     return {

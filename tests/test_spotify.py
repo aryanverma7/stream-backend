@@ -571,3 +571,65 @@ class TestScopesAreVisible:
 
         assert "reconnecting" in result["reason"]
         assert "your points are back" in result["reason"]
+
+
+class TestNoMarketParameter:
+    """
+    `market=from_token` is the legacy spelling and requires
+    `user-read-private`. With that scope absent it made /search - an
+    endpoint needing no scopes at all - answer 403 "Insufficient client
+    scope", which reads exactly like the queue endpoint refusing for want
+    of Premium. That one parameter cost two wrong diagnoses.
+
+    Omitting it is not a compromise: a user access token already resolves
+    the market from the account.
+    """
+
+    @pytest.mark.asyncio
+    async def test_search_sends_no_market(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", dict(CONNECTED))
+        api = AsyncMock(return_value={"tracks": {"items": [TRACK]}})
+        monkeypatch.setattr(spotify, "_api", api)
+
+        await spotify.search_track("a song")
+
+        assert "market" not in api.await_args.kwargs["params"]
+
+    @pytest.mark.asyncio
+    async def test_a_track_lookup_sends_no_market(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", dict(CONNECTED))
+        api = AsyncMock(return_value=TRACK)
+        monkeypatch.setattr(spotify, "_api", api)
+
+        await spotify.get_track("4cOdK2wGLETKBW3PvgPWqT")
+
+        assert "params" not in api.await_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_now_playing_sends_no_market(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", dict(CONNECTED))
+        api = AsyncMock(return_value={"item": TRACK, "progress_ms": 0, "is_playing": True})
+        monkeypatch.setattr(spotify, "_api", api)
+
+        await spotify.now_playing()
+
+        assert "params" not in api.await_args.kwargs
+
+
+class TestOptionalScopes:
+    def test_the_consent_screen_asks_for_more_than_is_required(self):
+        """
+        user-read-private is what makes GET /me report `product`, which is
+        how the dashboard says whether the account has Premium.
+        """
+        assert "user-read-private" in spotify.requested_scopes()
+        assert "user-read-private" not in spotify.SCOPES
+
+    def test_an_optional_scope_is_never_reported_missing(self, monkeypatch):
+        """
+        Otherwise a token that predates the optional scope is shown as
+        broken on the one panel that exists to be trusted.
+        """
+        monkeypatch.setattr(config, "_data", dict(CONNECTED))
+        monkeypatch.setattr(spotify, "_granted_scopes", set(spotify.SCOPES.split()))
+        assert spotify.missing_scopes() == []
