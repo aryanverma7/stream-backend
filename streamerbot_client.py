@@ -228,7 +228,53 @@ def parse_chat_message(event: dict) -> "dict | None":
         "username": username,
         "display_name": display_name,
         "text": text,
+        "emotes": _parse_emotes(data),
     }
+
+
+def _parse_emotes(data: dict) -> list:
+    """
+    Whatever emote data the payload happens to carry, as a list of
+    {name, url, start, end}.
+
+    Deliberately shape-tolerant, for exactly the reason parse_chat_message
+    above is: the emote array is one of the least stable parts of the
+    payload across Streamer.bot builds and across the two platforms, and
+    reading it wrongly must degrade to "no emotes" rather than to an
+    exception on every chat message.
+
+    An entry with no usable image URL is dropped rather than guessed at.
+    Twitch emote ids can be turned into a CDN URL by formula and YouTube's
+    cannot, so inventing one would work on half the audience and produce
+    broken images on the other half - and a broken image in an overlay is
+    worse than a word.
+    """
+    raw = data.get("emotes")
+    if not isinstance(raw, list):
+        return []
+
+    emotes = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        url = _first_string(item, "imageUrl", "url", "image")
+        name = _first_string(item, "name", "text", "code")
+        if not url:
+            # Twitch ships an id and no URL on some builds; the CDN path
+            # is documented and stable, so this one is a formula rather
+            # than a guess.
+            emote_id = _first_string(item, "id", "emoteId")
+            if emote_id and str(item.get("type", "")).lower() in ("twitch", ""):
+                url = f"https://static-cdn.jtvnw.net/emoticons/v2/{emote_id}/default/dark/1.0"
+        if not url or not name:
+            continue
+        emotes.append({
+            "name": name,
+            "url": url,
+            "start": item.get("startIndex"),
+            "end": item.get("endIndex"),
+        })
+    return emotes
 
 
 class StreamerBotClient:
@@ -588,6 +634,13 @@ async def forward_chat_to_widgets(event: dict):
     if chat is None:
         return
 
+    # Off by default. Turned on for one message, this is the only way to
+    # learn what a given Streamer.bot build actually sends - which is how
+    # the three accepted payload shapes above were each discovered, one
+    # production surprise at a time.
+    if config.get("streamerbot_log_raw_chat", False):
+        log.info(f"RAW CHAT EVENT: {json.dumps(event)[:2000]}")
+
     await widget_hub.broadcast(
         {
             "type": "chat_message",
@@ -600,6 +653,10 @@ async def forward_chat_to_widgets(event: dict):
             # name, so this is never empty when username isn't.
             "display_name": chat["display_name"],
             "message": chat["text"],
+            # Empty on any build that does not send them, which the
+            # overlay renders as plain text - the same message, minus the
+            # pictures.
+            "emotes": chat["emotes"],
         },
         tag="chat",
     )

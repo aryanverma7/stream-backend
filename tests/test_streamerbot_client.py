@@ -30,6 +30,7 @@ def test_parses_the_current_twitch_shape():
         "username": "someviewer",
         "display_name": "SomeViewer",
         "text": "!vandal",
+        "emotes": [],
     }
 
 
@@ -67,7 +68,9 @@ def test_survives_a_chat_event_with_nothing_usable_in_it():
     parsed = streamerbot_client.parse_chat_message(
         {"event": {"source": "Twitch", "type": "ChatMessage"}, "data": {}}
     )
-    assert parsed == {"platform": "twitch", "username": "", "display_name": "", "text": ""}
+    assert parsed == {
+        "platform": "twitch", "username": "", "display_name": "", "text": "", "emotes": []
+    }
 
 
 # ---------- Widget relay ----------
@@ -94,6 +97,7 @@ async def test_forward_chat_broadcasts_twitch_message():
                 # consumer.
                 "display_name": "SomeViewer",
                 "message": "hey chat",
+                "emotes": [],
             },
             tag="chat",
         )
@@ -641,3 +645,57 @@ class TestSendingALongReply:
 
         for payload in sent:
             assert client._is_our_own_message(payload["message"]) is True
+
+
+class TestEmoteParsing:
+    """
+    The emote array is the least stable part of the payload - it differs
+    across Streamer.bot builds and across the two platforms - so reading
+    it must degrade to "no emotes" rather than to an exception on every
+    chat message.
+    """
+
+    def _event(self, emotes):
+        return {
+            "event": {"source": "Twitch", "type": "ChatMessage"},
+            "data": {"user": {"login": "someviewer"}, "text": "hey Kappa", "emotes": emotes},
+        }
+
+    def test_no_emote_data_is_not_an_error(self):
+        event = {
+            "event": {"source": "Twitch", "type": "ChatMessage"},
+            "data": {"user": {"login": "someviewer"}, "text": "hey"},
+        }
+        assert streamerbot_client.parse_chat_message(event)["emotes"] == []
+
+    def test_a_url_carrying_shape_is_read(self):
+        parsed = streamerbot_client.parse_chat_message(
+            self._event([{"name": "Kappa", "imageUrl": "https://cdn/kappa.png", "startIndex": 4, "endIndex": 8}])
+        )
+        assert parsed["emotes"] == [
+            {"name": "Kappa", "url": "https://cdn/kappa.png", "start": 4, "end": 8}
+        ]
+
+    def test_a_twitch_id_becomes_a_cdn_url_by_formula(self):
+        """Documented and stable, so this one is a formula rather than a guess."""
+        parsed = streamerbot_client.parse_chat_message(self._event([{"name": "Kappa", "id": "25"}]))
+        assert parsed["emotes"][0]["url"].endswith("/emoticons/v2/25/default/dark/1.0")
+
+    def test_an_entry_with_no_usable_image_is_dropped(self):
+        """
+        A broken image in an overlay is worse than a word, so nothing is
+        invented - YouTube emote ids cannot be turned into a URL the way
+        Twitch's can.
+        """
+        parsed = streamerbot_client.parse_chat_message(
+            self._event([{"name": "somethingelse", "type": "youtube"}])
+        )
+        assert parsed["emotes"] == []
+
+    def test_junk_in_the_array_does_not_take_chat_down(self):
+        parsed = streamerbot_client.parse_chat_message(self._event(["not a dict", None, 7]))
+        assert parsed["emotes"] == []
+
+    def test_a_non_list_emote_field_is_ignored(self):
+        parsed = streamerbot_client.parse_chat_message(self._event("nope"))
+        assert parsed["emotes"] == []
