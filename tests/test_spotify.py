@@ -35,9 +35,11 @@ def clean_module_state():
     """
     spotify.forget_token()
     spotify.forget_requesters()
+    spotify.forget_account()
     yield
     spotify.forget_token()
     spotify.forget_requesters()
+    spotify.forget_account()
 
 
 class TestTrackReferences:
@@ -444,3 +446,68 @@ class TestTheQueuePreview:
         monkeypatch.setattr(config, "_data", dict(CONNECTED))
         monkeypatch.setattr(spotify, "_api", AsyncMock(return_value=None))
         assert await spotify.queue() == []
+
+
+class TestTheConnectedAccount:
+    """
+    "I have Premium" and "the account this token belongs to has Premium"
+    are different statements, and the 403 from the queue endpoint looks
+    identical either way. This is what tells them apart.
+    """
+
+    def setup_method(self):
+        spotify.forget_account()
+
+    @pytest.mark.asyncio
+    async def test_reports_the_account_and_its_product(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", dict(CONNECTED))
+        monkeypatch.setattr(
+            spotify,
+            "_api",
+            AsyncMock(return_value={"display_name": "DualBladeX", "product": "premium", "country": "IN"}),
+        )
+
+        await spotify.ensure_account()
+        status = spotify.status()
+
+        assert status["account_name"] == "DualBladeX"
+        assert status["account_product"] == "premium"
+
+    @pytest.mark.asyncio
+    async def test_a_free_account_is_visible_rather_than_a_mystery_403(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", dict(CONNECTED))
+        monkeypatch.setattr(
+            spotify, "_api", AsyncMock(return_value={"display_name": "SomeoneElse", "product": "free"})
+        )
+
+        await spotify.ensure_account()
+        assert spotify.status()["account_product"] == "free"
+
+    @pytest.mark.asyncio
+    async def test_it_is_read_once(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", dict(CONNECTED))
+        api = AsyncMock(return_value={"display_name": "X", "product": "premium"})
+        monkeypatch.setattr(spotify, "_api", api)
+
+        await spotify.ensure_account()
+        await spotify.ensure_account()
+        await spotify.ensure_account()
+
+        assert api.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_spotify_does_not_break_the_status_panel(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", dict(CONNECTED))
+        monkeypatch.setattr(spotify, "_api", AsyncMock(side_effect=spotify.SpotifyUnavailable("down")))
+
+        await spotify.ensure_account()  # must not raise
+        assert spotify.status()["account_name"] is None
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_read_before_the_oauth_flow(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+        api = AsyncMock()
+        monkeypatch.setattr(spotify, "_api", api)
+
+        await spotify.ensure_account()
+        api.assert_not_awaited()

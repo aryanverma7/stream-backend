@@ -215,6 +215,10 @@ def _credit_prediction() -> dict:
 
 
 async def get_status(request: web.Request) -> web.Response:
+    # Reads which Spotify account is connected, once, so the panel can
+    # answer "does the connected account have Premium" - which a 403 from
+    # the queue endpoint cannot, and which cost a debugging session.
+    await spotify.ensure_account()
     # no-store, because the admin panel now polls this on a timer rather
     # than only when someone clicks Refresh. Nothing on this response
     # carries a validator, so without an explicit directive a browser or an

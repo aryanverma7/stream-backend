@@ -195,11 +195,46 @@ async def access_token() -> str:
         # Spotify MAY return a new refresh token on refresh, and when it
         # does the old one stops working. Silently dropping it would mean
         # song requests worked until the next restart and then never again.
+        # The account is re-read after a refresh, because a refresh is the
+        # only moment the connection can have changed underneath us.
+        forget_account()
         if data.get("refresh_token"):
             config.set("spotify_refresh_token", data["refresh_token"])
             config.save()
             log.info("Spotify issued a new refresh token - saved")
         return _access_token
+
+
+_account: "dict | None" = None
+
+
+def forget_account() -> None:
+    """For the tests, and for the OAuth callback when the account changes."""
+    global _account
+    _account = None
+
+
+async def account() -> dict:
+    """
+    Who the stored token actually belongs to, and whether they have
+    Premium.
+
+    Exists because "I have Premium" and "the connected account has
+    Premium" are different statements, and nothing in the stack could
+    tell them apart - the 403 looked identical either way. Cached for the
+    life of the process: it answers a question about the connection, not
+    about the moment.
+    """
+    global _account
+    if _account is not None:
+        return _account
+    data = await _api("GET", "/me")
+    _account = {
+        "name": (data or {}).get("display_name") or (data or {}).get("id"),
+        "product": (data or {}).get("product"),
+        "country": (data or {}).get("country"),
+    }
+    return _account
 
 
 async def _api(method: str, path: str, **kwargs) -> "dict | None":
@@ -223,8 +258,27 @@ async def _api(method: str, path: str, **kwargs) -> "dict | None":
                         data = {}
 
                 if resp.status == 403:
+                    # Spotify's 403 on the player endpoints is NOT only
+                    # "no Premium", and reporting it as such sent a real
+                    # debugging session chasing a subscription that was
+                    # already active. At least three things produce it:
+                    # the account genuinely lacking Premium
+                    # (reason PREMIUM_REQUIRED), the token missing
+                    # user-modify-playback-state ("Insufficient client
+                    # scope"), and - since the March 2026 dev-mode rules -
+                    # the authorising account not being on the app's user
+                    # list. Spotify names which in `reason`/`message`, so
+                    # say what it said rather than guessing.
+                    detail = (data.get("error") or {}) if isinstance(data, dict) else {}
+                    reason = detail.get("reason") or ""
+                    message = detail.get("message") or ""
+                    log.warning(f"Spotify 403 on {path}: reason={reason!r} message={message!r}")
+                    if reason == "PREMIUM_REQUIRED":
+                        raise SpotifyUnavailable(
+                            "Spotify says this account doesn't have Premium - check which account is connected"
+                        )
                     raise SpotifyUnavailable(
-                        "Spotify refused this - song requests need Spotify Premium on the streamer's account."
+                        f"Spotify refused this ({message or reason or 'no reason given'})"
                     )
                 if resp.status == 404 and _NO_ACTIVE_DEVICE in text:
                     raise SpotifyUnavailable(
@@ -511,10 +565,32 @@ async def handle_chat_command(event: dict) -> None:
             await reply(f"@{username} {result['reason']}")
 
 
+async def ensure_account() -> None:
+    """
+    Loads the account once, swallowing failure.
+
+    Called from the status route so the dashboard can say WHICH Spotify
+    account is connected and whether it has Premium - the question a 403
+    cannot answer on its own. Swallowed because the status panel must
+    render whatever else it knows even when Spotify is unreachable.
+    """
+    if _account is not None or not is_configured():
+        return
+    try:
+        await account()
+    except Exception as e:
+        log.debug(f"Could not read the Spotify account: {e}")
+
+
 def status() -> dict:
     """For the admin dashboard's status panel."""
     return {
         "configured": is_configured(),
+        # Filled in by the first successful call after a refresh. None
+        # until then, which the panel renders as "not checked yet" rather
+        # than as a problem.
+        "account_name": (_account or {}).get("name"),
+        "account_product": (_account or {}).get("product"),
         "requests_enabled": requests_enabled(),
         "request_cost": request_cost(),
         # Whether the in-memory access token is currently valid. Not a
