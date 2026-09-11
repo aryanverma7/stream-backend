@@ -97,6 +97,12 @@ _TOKEN_EXPIRY_MARGIN_SECONDS = 60
 
 _access_token: "str | None" = None
 _access_token_expires_at: float = 0.0
+# What Spotify says the stored token is actually allowed to do, from the
+# `scope` field it returns with every token. Recorded because the token
+# having a scope and the consent screen having listed it are different
+# facts, and a queue call refused for "Insufficient client scope" gives
+# no way to tell which scope is missing.
+_granted_scopes: "set" = set()
 # One refresh at a time. Without it, a burst of requests on a cold token
 # would each start their own refresh, and Spotify would answer some of
 # them with a token the others have already replaced.
@@ -146,6 +152,20 @@ def forget_token() -> None:
     global _access_token, _access_token_expires_at
     _access_token = None
     _access_token_expires_at = 0.0
+    _granted_scopes.clear()
+
+
+def missing_scopes() -> list:
+    """
+    Required scopes the stored token does not carry.
+
+    Empty while nothing has been read yet - absence of evidence, not
+    evidence of absence, and reporting every scope as missing before the
+    first refresh would be a false alarm on every restart.
+    """
+    if not _granted_scopes:
+        return []
+    return sorted(set(SCOPES.split()) - _granted_scopes)
 
 
 async def access_token() -> str:
@@ -191,6 +211,18 @@ async def access_token() -> str:
             raise SpotifyUnavailable(f"Could not reach Spotify: {e}") from e
 
         _access_token = data["access_token"]
+        # Spotify returns the granted scopes with the token. This is the
+        # only authoritative answer to "what is this token allowed to do":
+        # what the consent screen showed, and what the app requested, are
+        # both guesses about it.
+        _granted_scopes.clear()
+        _granted_scopes.update(str(data.get("scope", "")).split())
+        absent = sorted(set(SCOPES.split()) - _granted_scopes)
+        if absent:
+            log.error(
+                f"The Spotify token is missing {', '.join(absent)} - reconnect from the dashboard. "
+                f"Granted: {sorted(_granted_scopes) or 'nothing'}"
+            )
         _access_token_expires_at = time.time() + int(data.get("expires_in", 3600)) - _TOKEN_EXPIRY_MARGIN_SECONDS
         # Spotify MAY return a new refresh token on refresh, and when it
         # does the old one stops working. Silently dropping it would mean
@@ -276,6 +308,14 @@ async def _api(method: str, path: str, **kwargs) -> "dict | None":
                     if reason == "PREMIUM_REQUIRED":
                         raise SpotifyUnavailable(
                             "Spotify says this account doesn't have Premium - check which account is connected"
+                        )
+                    if "scope" in message.lower():
+                        # Said in terms a viewer can act on - they cannot
+                        # fix a scope, but they can tell the streamer, and
+                        # "insufficient client scope" tells them nothing.
+                        raise SpotifyUnavailable(
+                            "song requests need reconnecting on the streamer's side - the Spotify "
+                            "login is missing a permission"
                         )
                     raise SpotifyUnavailable(
                         f"Spotify refused this ({message or reason or 'no reason given'})"
@@ -589,6 +629,10 @@ def status() -> dict:
         # Filled in by the first successful call after a refresh. None
         # until then, which the panel renders as "not checked yet" rather
         # than as a problem.
+        # What the token may actually do, and what it is missing. Both
+        # empty until a token has been fetched at least once.
+        "granted_scopes": sorted(_granted_scopes),
+        "missing_scopes": missing_scopes(),
         "account_name": (_account or {}).get("name"),
         "account_product": (_account or {}).get("product"),
         "requests_enabled": requests_enabled(),

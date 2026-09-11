@@ -511,3 +511,63 @@ class TestTheConnectedAccount:
 
         await spotify.ensure_account()
         api.assert_not_awaited()
+
+
+class TestScopesAreVisible:
+    """
+    "Insufficient client scope" is the one Spotify refusal that names a
+    problem and not which one - and the token's granted scopes are the
+    only authoritative answer. What the consent screen showed and what the
+    app requested are both guesses about it.
+    """
+
+    def test_nothing_is_claimed_before_a_token_has_been_read(self, monkeypatch):
+        """
+        Absence of evidence, not evidence of absence - reporting every
+        scope as missing on every restart would be a false alarm.
+        """
+        monkeypatch.setattr(config, "_data", dict(CONNECTED))
+        assert spotify.missing_scopes() == []
+        assert spotify.status()["granted_scopes"] == []
+
+    def test_a_complete_token_reports_nothing_missing(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", dict(CONNECTED))
+        monkeypatch.setattr(spotify, "_granted_scopes", set(spotify.SCOPES.split()))
+        assert spotify.missing_scopes() == []
+
+    def test_a_partial_token_names_exactly_what_is_absent(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", dict(CONNECTED))
+        monkeypatch.setattr(
+            spotify, "_granted_scopes", {"user-read-playback-state", "user-read-currently-playing"}
+        )
+        assert spotify.missing_scopes() == ["user-modify-playback-state"]
+
+    def test_the_scope_that_matters_is_the_one_queueing_needs(self):
+        """Pinned: dropping it from SCOPES would break !song and nothing else would notice."""
+        assert "user-modify-playback-state" in spotify.SCOPES.split()
+
+    @pytest.mark.asyncio
+    async def test_a_scope_refusal_is_translated_for_the_viewer(self, monkeypatch):
+        """
+        A viewer cannot fix a scope, but they can tell the streamer -
+        and "Insufficient client scope" tells them neither.
+        """
+        monkeypatch.setattr(config, "_data", dict(CONNECTED))
+        monkeypatch.setattr(spotify, "search_track", AsyncMock(return_value=TRACK))
+        monkeypatch.setattr(spotify, "try_spend", AsyncMock(return_value=(True, None)))
+        monkeypatch.setattr(spotify, "grant_points", AsyncMock())
+        monkeypatch.setattr(
+            spotify,
+            "add_to_queue",
+            AsyncMock(
+                side_effect=spotify.SpotifyUnavailable(
+                    "song requests need reconnecting on the streamer's side - the Spotify login is "
+                    "missing a permission"
+                )
+            ),
+        )
+
+        result = await spotify.request_song("someviewer", "a song")
+
+        assert "reconnecting" in result["reason"]
+        assert "your points are back" in result["reason"]

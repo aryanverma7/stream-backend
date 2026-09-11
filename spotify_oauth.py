@@ -54,7 +54,7 @@ async def spotify_login(request: web.Request) -> web.Response:
     state = secrets.token_urlsafe(24)
     _pending_states.add(state)
 
-    from urllib.parse import urlencode
+    from urllib.parse import quote, urlencode
 
     params = {
         "response_type": "code",
@@ -69,7 +69,12 @@ async def spotify_login(request: web.Request) -> web.Response:
         # problem.
         "show_dialog": "true",
     }
-    raise web.HTTPFound(f"{AUTHORIZE_URL}?{urlencode(params)}")
+    # quote_via=quote so the space-separated scope list is encoded with
+    # %20 rather than urlencode's default "+". Both are legal in a query
+    # string and Spotify accepts either, but a scope list is the one
+    # parameter where an encoding disagreement costs a permission rather
+    # than an error - so it is not worth relying on.
+    raise web.HTTPFound(f"{AUTHORIZE_URL}?{urlencode(params, quote_via=quote)}")
 
 
 async def spotify_callback(request: web.Request) -> web.Response:
@@ -115,6 +120,16 @@ async def spotify_callback(request: web.Request) -> web.Response:
 
     config.set("spotify_refresh_token", data["refresh_token"])
     config.save()
+
+    # Logged at the one moment the answer is authoritative. If a scope was
+    # not granted, this is where it is visible - not three days later when
+    # a viewer gets "Insufficient client scope" in chat.
+    granted = set(str(data.get("scope", "")).split())
+    absent = sorted(set(spotify.SCOPES.split()) - granted)
+    if absent:
+        log.error(f"Spotify granted {sorted(granted) or 'nothing'} but NOT {', '.join(absent)}")
+    else:
+        log.info(f"Spotify granted all requested scopes: {sorted(granted)}")
     # The in-memory access token belongs to whatever account was connected
     # before. Dropping it means the next request refreshes against the new
     # credential rather than using a stale one until it expires.
