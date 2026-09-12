@@ -16,6 +16,7 @@ import signal
 
 import break_timer
 import credit_ocr
+import discord_live
 import game_events
 import health_checks
 import points_cloudbot
@@ -84,6 +85,17 @@ async def main():
     # that only run on a few.
     streamerbot.on_event(greeter.handle_chat_command)
 
+    # "We are live" from Streamer.bot, when its build emits such an event.
+    # Registered ALONGSIDE the Twitch poll below rather than instead of it,
+    # the same way the two buy-phase signals are: this one is instant and is
+    # the only route that could ever cover YouTube, the poll needs nothing
+    # but the app token and keeps working while Streamer.bot is down. Both
+    # firing is the expected case - discord_live's dedupe collapses them.
+    #
+    # Needs the event in streamerbot_subscribe_events too; subscribing to
+    # nothing is how you get a listener that never runs.
+    streamerbot.on_event(discord_live.handle_streamerbot_event)
+
     # The gaming PC's /api/ocr/reset is the only real "a new round has
     # begun" signal here, and the forced-buy badge needs it as much as the
     # OCR reading window does - without it the badge only knows how much
@@ -134,6 +146,10 @@ async def main():
     # Keeps a reloaded break overlay in sync - it cannot ask, so it is
     # re-told every few seconds.
     await break_timer.start_broadcaster()
+
+    # Announces the stream in Discord, once. Does nothing at all while
+    # discord_live_enabled is off or no webhook is set, and logs which.
+    await discord_live.start_poller()
 
     log.info("Backend is up. Waiting for events / connections.")
 

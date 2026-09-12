@@ -1,17 +1,20 @@
 {
   "_comment": "Copy this file to config.json and fill in real values. config.json is never committed anywhere - it's the single local secrets file per Task #3's design (Section 3).",
-
   "http_host": "0.0.0.0",
   "http_port": 8765,
-
   "streamerbot_ws_url": "ws://localhost:8080/",
   "streamerbot_ws_password": "",
   "streamerbot_send_as_bot": true,
   "streamerbot_log_raw_chat": false,
-  "streamerbot_subscribe_events": {"Twitch": ["ChatMessage"], "YouTube": ["Message"]},
-
+  "streamerbot_subscribe_events": {
+    "Twitch": [
+      "ChatMessage"
+    ],
+    "YouTube": [
+      "Message"
+    ]
+  },
   "_comment_future": "The keys below aren't used yet - they're placeholders for later tasks so this stays ONE evolving config file rather than needing new files created each task. Fill them in when you actually reach that task.",
-
   "streamlabs_client_id": "",
   "streamlabs_client_secret": "",
   "streamlabs_redirect_uri": "https://hub.dualbladex.org/auth/streamlabs/callback",
@@ -22,7 +25,6 @@
   "cloudbot_cache_ttl_seconds": 60,
   "points_exchange_rate_per_inr": 10,
   "streamlabs_tips_listener_enabled": true,
-
   "roulette_trigger_cost": 500,
   "roulette_vote_cost_increment": 25,
   "roulette_voting_duration_seconds": 18,
@@ -32,19 +34,23 @@
   "roulette_random_pick_when_no_votes": true,
   "roulette_weapon_base_costs": {},
   "roulette_base_wheel_share": 1,
-
   "roulette_hide_pistols_off_pistol_rounds": true,
-  "roulette_pistol_weapons": ["classic", "shorty", "frenzy", "ghost", "sheriff"],
-  "roulette_always_votable_pistols": ["sheriff"],
-
+  "roulette_pistol_weapons": [
+    "classic",
+    "shorty",
+    "frenzy",
+    "ghost",
+    "sheriff"
+  ],
+  "roulette_always_votable_pistols": [
+    "sheriff"
+  ],
   "roulette_shield_reserve_creds": 1000,
   "roulette_ability_reserve_creds": 400,
   "roulette_pistol_round_max_creds": 800,
   "roulette_pistol_reserved_creds": 400,
-
   "roulette_current_agent": "",
   "roulette_agent_command_users": null,
-
   "roulette_agent_ability_costs": {
     "astra": 600,
     "breach": 700,
@@ -65,16 +71,13 @@
   },
   "forced_buy_queued_duration_seconds": 30,
   "forced_buy_active_duration_seconds": 100,
-
   "ocr_agent_secret": "",
   "ocr_workers": 2,
   "ocr_reading_max_age_seconds": 300,
-
   "github_client_id": "",
   "github_client_secret": "",
   "authorized_github_usernames": [],
   "public_base_url": "",
-
   "spotify_client_id": "",
   "spotify_client_secret": "",
   "spotify_refresh_token": "",
@@ -85,31 +88,36 @@
   "spotify_max_track_seconds": 600,
   "spotify_now_playing_poll_seconds": 5,
   "spotify_queue_preview_count": 3,
-
   "break_default_minutes": 10,
-
   "riot_name": "",
   "riot_tag": "",
   "riot_region": "ap",
   "riot_platform": "pc",
   "henrik_api_key": "",
   "rank_cache_seconds": 60,
-
   "greeter_enabled": false,
   "discord_invite_url": "",
   "greeter_message": "welcome in! Come hang out in the Discord: {discord}",
   "greeter_cooldown_seconds": 45,
   "greeter_ignore_users": [],
-
   "twitch_client_id": "",
   "twitch_client_secret": "",
   "twitch_user_access_token": "",
   "twitch_channel": "",
-
   "youtube_api_key": "",
   "youtube_channel_id": "",
-
   "cloudflare_tunnel_domain": "",
-
-  "site_out_dir": ""
+  "site_out_dir": "",
+  "discord_live_enabled": false,
+  "discord_webhook_url": "",
+  "discord_live_role_mention": "",
+  "discord_live_message": "{mention}**{name}** is live now - {title}",
+  "discord_live_poll_seconds": 60,
+  "discord_live_cooldown_minutes": 60,
+  "streamerbot_golive_events": [
+    "StreamOnline",
+    "BroadcastStarted",
+    "StreamUp",
+    "LiveStreamStarted"
+  ]
 }

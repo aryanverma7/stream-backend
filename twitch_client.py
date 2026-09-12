@@ -47,7 +47,16 @@ async def get_app_token() -> str:
     return _cached_token
 
 
-async def is_channel_live(channel_name: str) -> bool:
+async def stream_info(channel_name: str) -> "dict | None":
+    """
+    The live stream's own record, or None when the channel is offline.
+
+    `is_channel_live` used to be the whole of this and threw away everything
+    but the boolean. The title, the game and the stream id are in the same
+    response for the same cost, and the go-live announcer needs all three -
+    the id in particular, because it is the only thing that distinguishes
+    "still the same broadcast" from "a second one tonight".
+    """
     token = await get_app_token()
     client_id = config.get("twitch_client_id", "")
 
@@ -60,6 +69,11 @@ async def is_channel_live(channel_name: str) -> bool:
             resp.raise_for_status()
             data = await resp.json()
 
-    is_live = len(data.get("data", [])) > 0
-    log.info(f"Twitch live check for {channel_name}: {is_live}")
-    return is_live
+    streams = data.get("data", []) or []
+    info = streams[0] if streams else None
+    log.info(f"Twitch live check for {channel_name}: {bool(info)}")
+    return info
+
+
+async def is_channel_live(channel_name: str) -> bool:
+    return (await stream_info(channel_name)) is not None
