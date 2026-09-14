@@ -241,6 +241,7 @@ async def poll_once(stream_info=None) -> bool:
     channel = config.get("twitch_channel", "")
     if not is_enabled() or not channel:
         return False
+
     if stream_info is None:
         import twitch_client
         stream_info = twitch_client.stream_info
@@ -270,14 +271,29 @@ async def _poll_loop() -> None:
 
 
 async def start_poller() -> None:
-    """Safe to call twice; does nothing while the feature is off."""
+    """
+    Safe to call twice; does nothing while the feature is off.
+
+    Logs on BOTH paths on purpose. It used to announce only that it was
+    disabled, which made a working poller and a module that never loaded
+    look identical in the log - and the log is the only window onto this
+    thing until a stream actually starts. A feature whose healthy state is
+    silence cannot be diagnosed.
+    """
     global _poll_task
     if not is_enabled():
-        log.info("Discord go-live announcements are off (needs discord_live_enabled and discord_webhook_url)")
+        log.info("Discord go-live announcements are OFF (needs discord_live_enabled and discord_webhook_url)")
         return
+    channel = config.get("twitch_channel", "")
+    if not channel:
+        log.warning("Discord go-live is enabled but twitch_channel is empty - the poll has nothing to check")
     if _poll_task and not _poll_task.done():
         return
     _poll_task = asyncio.create_task(_poll_loop())
+    log.info(
+        f"Discord go-live poller started - checking Twitch channel "
+        f"{channel or '<unset>'} every {int(_poll_seconds())}s"
+    )
 
 
 async def stop_poller() -> None:
