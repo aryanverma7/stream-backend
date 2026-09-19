@@ -37,6 +37,7 @@ nothing while looking configured.
 import asyncio
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -231,6 +232,10 @@ async def announce(title: str = "", game: str = "", url: str = "", name: str = "
             image_file = ""
         if image_file:
             image = "attachment://" + os.path.basename(image_file)
+        elif not str(config.get("discord_live_image_url", "") or "").strip():
+            # Prefer the thumbnail you actually made over Twitch's
+            # automatic screenshot of whatever was on screen.
+            image = (await youtube_live_thumbnail()) or image
 
         payload = build_payload(title, game, url, name, image)
 
@@ -265,6 +270,41 @@ async def announce(title: str = "", game: str = "", url: str = "", name: str = "
         _remember(stream_id, now)
         log.info(f"Announced go-live to Discord: {title or name or stream_id}")
         return True
+
+
+async def youtube_live_thumbnail(session_factory=None) -> str:
+    """
+    The thumbnail you already uploaded to YouTube, read back off their CDN.
+
+    You make a thumbnail and upload it with the broadcast; asking you to
+    also copy it onto the Mac Mini is the same work twice. All this needs
+    is the live video's id, and /live redirects to it - so no API key, no
+    quota, no second upload.
+
+    ponytail: scrapes the id out of the /live page's HTML. YouTube can
+    change that markup; if it ever stops matching this returns "" and the
+    post falls through to the next image source rather than failing.
+    """
+    channel = str(config.get("youtube_channel_id", "") or "").strip()
+    if not channel:
+        return ""
+    if session_factory is None:
+        def session_factory():
+            return aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
+    try:
+        async with session_factory() as session:
+            async with session.get(f"https://www.youtube.com/channel/{channel}/live") as resp:
+                html = await resp.text()
+    except Exception as e:
+        log.warning(f"Could not read the YouTube live page: {e}")
+        return ""
+    match = re.search(r'"videoId":"([\w-]{11})"', html)
+    if not match:
+        log.info("No live video id on the YouTube live page - not live there yet?")
+        return ""
+    # maxres only exists if the uploaded thumbnail was big enough; hqdefault
+    # always exists, so it is the safe one to hand Discord.
+    return f"https://img.youtube.com/vi/{match.group(1)}/maxresdefault.jpg"
 
 
 # ---------- source 1: the Twitch poll ----------

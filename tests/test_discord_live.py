@@ -286,3 +286,28 @@ async def test_a_missing_thumbnail_file_does_not_block_the_post(monkeypatch, tmp
     session = FakeSession()
     assert await discord_live.announce(url="https://twitch.tv/x", stream_id="s1",
                                        session_factory=lambda: session) is True
+
+
+class FakeGetSession(FakeSession):
+    def __init__(self, html=""):
+        super().__init__()
+        self.html = html
+
+    def get(self, url):
+        self.posts.append(("GET", url))
+        return FakeResponse(200, self.html)
+
+
+@pytest.mark.asyncio
+async def test_youtube_thumbnail_is_read_off_the_live_page(monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path, youtube_channel_id="UC123")
+    session = FakeGetSession('{"videoId":"abcdefghijk","x":1}')
+    url = await discord_live.youtube_live_thumbnail(lambda: session)
+    assert url == "https://img.youtube.com/vi/abcdefghijk/maxresdefault.jpg"
+
+
+@pytest.mark.asyncio
+async def test_no_live_video_returns_nothing(monkeypatch, tmp_path):
+    """Falls through to the next image source rather than failing the post."""
+    _enable(monkeypatch, tmp_path, youtube_channel_id="UC123")
+    assert await discord_live.youtube_live_thumbnail(lambda: FakeGetSession("no ids here")) == ""
