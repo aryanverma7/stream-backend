@@ -27,7 +27,7 @@
   "streamlabs_tips_listener_enabled": true,
   "roulette_trigger_cost": 500,
   "roulette_vote_cost_increment": 25,
-  "roulette_voting_duration_seconds": 18,
+  "roulette_voting_duration_seconds": 25,
   "roulette_cooldown_seconds": 90,
   "roulette_chat_replies_enabled": true,
   "roulette_affordability_filter_enabled": true,
@@ -119,5 +119,6 @@
     "BroadcastStarted",
     "StreamUp",
     "LiveStreamStarted"
-  ]
+  ],
+  "discord_live_image_url": ""
 }

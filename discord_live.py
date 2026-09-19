@@ -159,7 +159,7 @@ def _remember(stream_id: str, now: float) -> None:
 
 # ---------- the message ----------
 
-def build_payload(title: str, game: str, url: str, name: str) -> dict:
+def build_payload(title: str, game: str, url: str, name: str, image: str = "") -> dict:
     """
     The Discord webhook body.
 
@@ -186,12 +186,20 @@ def build_payload(title: str, game: str, url: str, name: str) -> dict:
         embed: dict = {"title": title or "Live now", "url": url}
         if game:
             embed["description"] = f"Playing {game}"
+        # discord_live_image_url wins when set, because Twitch's own
+        # thumbnail is an automatic screenshot of whatever was on screen -
+        # frequently a black frame at the moment of going live, which is
+        # the exact moment this posts. Point the override at a URL you
+        # overwrite per stream to use the thumbnail you actually made.
+        image = str(config.get("discord_live_image_url", "") or "").strip() or image
+        if image:
+            embed["image"] = {"url": image}
         payload["embeds"] = [embed]
     return payload
 
 
 async def announce(title: str = "", game: str = "", url: str = "", name: str = "",
-                   stream_id: str = "", session_factory=None) -> bool:
+                   stream_id: str = "", image: str = "", session_factory=None) -> bool:
     """
     Posts the announcement if this is genuinely a new broadcast.
 
@@ -210,7 +218,7 @@ async def announce(title: str = "", game: str = "", url: str = "", name: str = "
             return False
 
         webhook = config.get("discord_webhook_url", "")
-        payload = build_payload(title, game, url, name)
+        payload = build_payload(title, game, url, name, image)
 
         if session_factory is None:
             def session_factory():
@@ -252,12 +260,20 @@ async def poll_once(stream_info=None) -> bool:
         return False
     if not info:
         return False
+    # Twitch hands back a templated URL; the cache-buster is because
+    # Discord caches an embed image by URL, so without it every stream
+    # would show the first stream's screenshot forever.
+    thumb = str(info.get("thumbnail_url", "") or "")
+    if thumb:
+        thumb = thumb.replace("{width}", "1280").replace("{height}", "720")
+        thumb += ("&" if "?" in thumb else "?") + "t=" + str(int(time.time()))
     return await announce(
         title=info.get("title", ""),
         game=info.get("game_name", ""),
         url=f"https://twitch.tv/{channel}",
         name=info.get("user_name") or channel,
         stream_id=str(info.get("id", "")),
+        image=thumb,
     )
 
 

@@ -164,7 +164,10 @@ DEFAULT_PISTOL_RESERVE_CREDS = 400      # light shield, and little else
 DEFAULT_TRIGGER_COST = 500
 DEFAULT_VOTE_BASE_COST = 50
 DEFAULT_VOTE_COST_INCREMENT = 25
-DEFAULT_VOTING_DURATION_SECONDS = 18
+DEFAULT_VOTING_DURATION_SECONDS = 25
+# Where session-wide announcements go. Anyone can vote regardless of which
+# chat opened the session, so both chats have to be told it is open.
+ANNOUNCE_PLATFORMS = ("twitch", "youtube")
 # What every votable weapon is worth on the wheel before anyone votes.
 # Each vote adds one more, so at the default a single vote doubles that
 # weapon's slice rather than eliminating the rest of the roster. Raise it
@@ -859,19 +862,15 @@ async def end_roulette() -> "str | None":
     )
 
     if winner and randomly_picked:
-        await _reply_in_chat(
-            _state.platform,
-            f"No votes - the wheel landed on {winner}. Forced buy next round.",
-        )
+        await _announce(f"No votes - the wheel landed on {winner}. Forced buy next round.")
         await _start_forced_buy(winner)
     elif winner:
-        await _reply_in_chat(
-            _state.platform,
-            f"The wheel landed on {winner} ({_odds_text(shares, winner)}). Forced buy next round.",
+        await _announce(
+            f"The wheel landed on {winner} ({_odds_text(shares, winner)}). Forced buy next round."
         )
         await _start_forced_buy(winner)
     else:
-        await _reply_in_chat(_state.platform, "Roulette closed with no votes - no forced buy this round.")
+        await _announce("Roulette closed with no votes - no forced buy this round.")
 
     return winner
 
@@ -1106,6 +1105,24 @@ async def _reply_in_chat(platform: str, text: str) -> None:
     await streamerbot.send_chat_message(text, platform=platform or "twitch")
 
 
+async def _announce(text: str) -> None:
+    """
+    Session-wide news, to every chat.
+
+    vote() never checks which platform the session was opened from, so a
+    YouTube viewer has always been able to vote on a roulette a Twitch
+    viewer started. What they could not do is find out it was open -
+    announcements went only to the chat the !roulette came from, which
+    left half the audience locked out of something they were allowed to
+    join, and looked exactly like the feature being Twitch-only.
+
+    Per-viewer replies still go back to the chat that asked; only the
+    open/close announcements are broadcast.
+    """
+    for platform in ANNOUNCE_PLATFORMS:
+        await _reply_in_chat(platform, text)
+
+
 async def handle_chat_command(event: dict):
     """
     Registered via streamerbot.on_event() - parses chat events for
@@ -1135,7 +1152,7 @@ async def handle_chat_command(event: dict):
     if command == "roulette":
         result = await trigger_roulette(username, platform=platform)
         if result.get("ok"):
-            await _reply_in_chat(platform, _roulette_open_announcement())
+            await _announce(_roulette_open_announcement())
         else:
             await _reply_in_chat(platform, f"@{username} {result['reason']}")
     elif command in WEAPONS:

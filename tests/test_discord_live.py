@@ -245,3 +245,16 @@ async def test_both_sources_announce_only_once(monkeypatch, tmp_path):
         "event": {"source": "Twitch", "type": "StreamOnline"}, "data": {"id": "77"},
     })
     assert len(session.posts) == 1
+
+
+def test_embed_carries_the_stream_thumbnail(monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path)
+    p = discord_live.build_payload("t", "", "https://twitch.tv/x", "n", "https://cdn/thumb.jpg?t=1")
+    assert p["embeds"][0]["image"] == {"url": "https://cdn/thumb.jpg?t=1"}
+
+
+def test_configured_image_beats_the_auto_screenshot(monkeypatch, tmp_path):
+    """Twitch's own thumbnail is often a black frame at the moment of going live."""
+    _enable(monkeypatch, tmp_path, discord_live_image_url="https://mine/thumb.png")
+    p = discord_live.build_payload("t", "", "https://twitch.tv/x", "n", "https://cdn/auto.jpg")
+    assert p["embeds"][0]["image"] == {"url": "https://mine/thumb.png"}

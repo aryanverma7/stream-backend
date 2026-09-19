@@ -2036,3 +2036,18 @@ class TestHelpCommand:
         streamerbot_client is the real fix; this is the second lock.
         """
         assert not roulette._help_message().startswith("!")
+
+
+class TestCrossPlatformAnnouncements:
+    """
+    Voting was never gated on the platform that opened the session - the
+    announcement was. Half the audience could vote and was never told.
+    """
+
+    @pytest.mark.asyncio
+    async def test_open_announcement_reaches_both_chats(self, monkeypatch):
+        sent = AsyncMock(return_value=True)
+        monkeypatch.setattr(roulette.streamerbot, "send_chat_message", sent)
+        await roulette._announce("roulette is open")
+        platforms = {c.kwargs.get("platform") for c in sent.call_args_list}
+        assert platforms == set(roulette.ANNOUNCE_PLATFORMS)
