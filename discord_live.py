@@ -36,6 +36,7 @@ nothing while looking configured.
 """
 import asyncio
 import json
+import os
 import time
 from pathlib import Path
 
@@ -186,12 +187,13 @@ def build_payload(title: str, game: str, url: str, name: str, image: str = "") -
         embed: dict = {"title": title or "Live now", "url": url}
         if game:
             embed["description"] = f"Playing {game}"
-        # discord_live_image_url wins when set, because Twitch's own
-        # thumbnail is an automatic screenshot of whatever was on screen -
-        # frequently a black frame at the moment of going live, which is
-        # the exact moment this posts. Point the override at a URL you
-        # overwrite per stream to use the thumbnail you actually made.
-        image = str(config.get("discord_live_image_url", "") or "").strip() or image
+        # An attachment:// image is a file being uploaded with this post
+        # and always wins. Otherwise discord_live_image_url overrides
+        # Twitch's own thumbnail, which is an automatic screenshot of
+        # whatever was on screen - frequently a black frame at the moment
+        # of going live, which is the exact moment this posts.
+        if not image.startswith("attachment://"):
+            image = str(config.get("discord_live_image_url", "") or "").strip() or image
         if image:
             embed["image"] = {"url": image}
         payload["embeds"] = [embed]
@@ -218,6 +220,18 @@ async def announce(title: str = "", game: str = "", url: str = "", name: str = "
             return False
 
         webhook = config.get("discord_webhook_url", "")
+
+        # A local file beats every URL. Uploading the thumbnail somewhere
+        # and pasting a link before each stream is work; overwriting one
+        # file you already export to is not. Missing file just falls
+        # through to whatever URL was going to be used anyway.
+        image_file = str(config.get("discord_live_image_file", "") or "").strip()
+        if image_file and not os.path.isfile(image_file):
+            log.warning(f"discord_live_image_file points at nothing: {image_file}")
+            image_file = ""
+        if image_file:
+            image = "attachment://" + os.path.basename(image_file)
+
         payload = build_payload(title, game, url, name, image)
 
         if session_factory is None:
@@ -226,7 +240,18 @@ async def announce(title: str = "", game: str = "", url: str = "", name: str = "
 
         try:
             async with session_factory() as session:
-                async with session.post(webhook, json=payload) as resp:
+                if image_file:
+                    form = aiohttp.FormData()
+                    form.add_field("payload_json", json.dumps(payload),
+                                   content_type="application/json")
+                    with open(image_file, "rb") as fh:
+                        form.add_field("files[0]", fh.read(),
+                                       filename=os.path.basename(image_file),
+                                       content_type="application/octet-stream")
+                    post = session.post(webhook, data=form)
+                else:
+                    post = session.post(webhook, json=payload)
+                async with post as resp:
                     if resp.status >= 400:
                         body = (await resp.text())[:300]
                         log.error(f"Discord refused the go-live post ({resp.status}): {body}")

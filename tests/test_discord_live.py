@@ -40,8 +40,8 @@ class FakeSession:
         self.body = body
         self.posts = []
 
-    def post(self, url, json=None):
-        self.posts.append((url, json))
+    def post(self, url, json=None, data=None):
+        self.posts.append((url, json if json is not None else data))
         return FakeResponse(self.status, self.body)
 
     async def __aenter__(self):
@@ -258,3 +258,31 @@ def test_configured_image_beats_the_auto_screenshot(monkeypatch, tmp_path):
     _enable(monkeypatch, tmp_path, discord_live_image_url="https://mine/thumb.png")
     p = discord_live.build_payload("t", "", "https://twitch.tv/x", "n", "https://cdn/auto.jpg")
     assert p["embeds"][0]["image"] == {"url": "https://mine/thumb.png"}
+
+
+@pytest.mark.asyncio
+async def test_a_local_thumbnail_is_uploaded_with_the_post(monkeypatch, tmp_path):
+    """No hosting step: overwrite one file you already export to."""
+    thumb = tmp_path / "thumb.jpg"
+    thumb.write_bytes(b"jpegbytes")
+    _enable(monkeypatch, tmp_path, discord_live_image_file=str(thumb),
+            discord_live_image_url="https://ignored/x.png")
+    session = FakeSession()
+    assert await discord_live.announce(url="https://twitch.tv/x", stream_id="s1",
+                                       session_factory=lambda: session) is True
+    sent = session.posts[0][1]
+    assert not isinstance(sent, dict), "a file post must be multipart, not json"
+
+
+def test_attachment_beats_the_configured_url(monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path, discord_live_image_url="https://ignored/x.png")
+    p = discord_live.build_payload("t", "", "https://twitch.tv/x", "n", "attachment://thumb.jpg")
+    assert p["embeds"][0]["image"] == {"url": "attachment://thumb.jpg"}
+
+
+@pytest.mark.asyncio
+async def test_a_missing_thumbnail_file_does_not_block_the_post(monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path, discord_live_image_file=str(tmp_path / "gone.jpg"))
+    session = FakeSession()
+    assert await discord_live.announce(url="https://twitch.tv/x", stream_id="s1",
+                                       session_factory=lambda: session) is True

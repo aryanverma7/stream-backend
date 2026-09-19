@@ -120,5 +120,6 @@
     "StreamUp",
     "LiveStreamStarted"
   ],
-  "discord_live_image_url": ""
+  "discord_live_image_url": "",
+  "discord_live_image_file": ""
 }
