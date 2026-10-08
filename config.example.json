@@ -121,5 +121,6 @@
     "LiveStreamStarted"
   ],
   "discord_live_image_url": "",
-  "discord_live_image_file": ""
+  "discord_live_image_file": "",
+  "discord_live_youtube_wait_seconds": 90
 }

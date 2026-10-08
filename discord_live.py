@@ -57,6 +57,13 @@ DEFAULT_MESSAGE = "{mention}**{name}** is live now - {title}"
 # depends on its version and on which platform integrations are connected,
 # and being wrong about that should be a config edit, not a code change.
 DEFAULT_GOLIVE_EVENTS = ["StreamOnline", "BroadcastStarted", "StreamUp", "LiveStreamStarted"]
+# How long to keep looking for the YouTube broadcast before settling for
+# Twitch's screenshot. Both streams start together, but Twitch reports live
+# within seconds and YouTube's /live page can take a minute to point at the
+# new broadcast - announcing on the first Twitch poll used to miss it every
+# time.
+DEFAULT_YOUTUBE_WAIT_SECONDS = 90
+YOUTUBE_RETRY_SECONDS = 15
 
 _state: "dict | None" = None
 _poll_task: "asyncio.Task | None" = None
@@ -233,9 +240,14 @@ async def announce(title: str = "", game: str = "", url: str = "", name: str = "
         if image_file:
             image = "attachment://" + os.path.basename(image_file)
         elif not str(config.get("discord_live_image_url", "") or "").strip():
-            # Prefer the thumbnail you actually made over Twitch's
-            # automatic screenshot of whatever was on screen.
-            image = (await youtube_live_thumbnail()) or image
+            # The YouTube thumbnail you made is the primary image; Twitch's
+            # automatic screenshot is only the failover.
+            thumb = await _youtube_thumbnail_with_wait()
+            if thumb:
+                log.info(f"Go-live image: YouTube thumbnail {thumb}")
+                image = thumb
+            else:
+                log.info("Go-live image: no YouTube thumbnail found, using the Twitch screenshot")
 
         payload = build_payload(title, game, url, name, image)
 
@@ -272,39 +284,87 @@ async def announce(title: str = "", game: str = "", url: str = "", name: str = "
         return True
 
 
+def _youtube_live_page() -> str:
+    """
+    Where to look for the live broadcast. `youtube_channel_id` if set,
+    otherwise the YouTube link the site already shows (social_links) - so
+    this works without a second copy of the channel in config.
+    """
+    channel = str(config.get("youtube_channel_id", "") or "").strip()
+    if channel:
+        return f"https://www.youtube.com/channel/{channel}/live"
+    link = str((config.get("social_links", {}) or {}).get("youtube", "") or "").strip().rstrip("/")
+    return f"{link}/live" if link.startswith("https://") else ""
+
+
+def _youtube_wait_seconds() -> float:
+    try:
+        return max(0.0, float(config.get("discord_live_youtube_wait_seconds", DEFAULT_YOUTUBE_WAIT_SECONDS)))
+    except (TypeError, ValueError):
+        return float(DEFAULT_YOUTUBE_WAIT_SECONDS)
+
+
+async def _youtube_thumbnail_with_wait(fetch=None, sleep=asyncio.sleep) -> str:
+    """
+    Retries the YouTube lookup for up to `discord_live_youtube_wait_seconds`
+    because YouTube usually goes live after Twitch has already been seen.
+    No YouTube page configured means no wait at all.
+    """
+    if not _youtube_live_page():
+        return ""
+    fetch = fetch or youtube_live_thumbnail
+    waited = 0.0
+    while True:
+        thumb = await fetch()
+        if thumb or waited >= _youtube_wait_seconds():
+            return thumb
+        await sleep(YOUTUBE_RETRY_SECONDS)
+        waited += YOUTUBE_RETRY_SECONDS
+
+
 async def youtube_live_thumbnail(session_factory=None) -> str:
     """
     The thumbnail you already uploaded to YouTube, read back off their CDN.
 
     You make a thumbnail and upload it with the broadcast; asking you to
     also copy it onto the Mac Mini is the same work twice. All this needs
-    is the live video's id, and /live redirects to it - so no API key, no
-    quota, no second upload.
+    is the broadcast's video id, and /live points at it - so no API key,
+    no quota, no second upload.
 
-    ponytail: scrapes the id out of the /live page's HTML. YouTube can
-    change that markup; if it ever stops matching this returns "" and the
-    post falls through to the next image source rather than failing.
+    The id comes from the page's canonical link, never from the first
+    "videoId" in the HTML: when nothing is live, /live serves the channel
+    page, which is full of OTHER videos' ids, and grabbing one of those
+    posted an old video's thumbnail. A scheduled broadcast also has a
+    watch canonical, which is fine - its thumbnail is the one you uploaded.
+
+    ponytail: scrapes YouTube's HTML. If the markup changes this returns ""
+    and the post falls back to the Twitch screenshot rather than failing.
     """
-    channel = str(config.get("youtube_channel_id", "") or "").strip()
-    if not channel:
+    page = _youtube_live_page()
+    if not page:
         return ""
     if session_factory is None:
         def session_factory():
             return aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
     try:
         async with session_factory() as session:
-            async with session.get(f"https://www.youtube.com/channel/{channel}/live") as resp:
+            async with session.get(page) as resp:
                 html = await resp.text()
+            match = re.search(r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([\w-]{11})"', html)
+            if not match:
+                log.info("YouTube /live is not showing a broadcast yet")
+                return ""
+            # maxres only exists when the uploaded thumbnail was 1280px or
+            # bigger; hqdefault always exists. Never *_live.jpg - that one
+            # is a frame grab of the stream, the very thing being replaced.
+            maxres = f"https://img.youtube.com/vi/{match.group(1)}/maxresdefault.jpg"
+            async with session.get(maxres) as img:
+                if img.status == 200:
+                    return maxres
+            return f"https://img.youtube.com/vi/{match.group(1)}/hqdefault.jpg"
     except Exception as e:
         log.warning(f"Could not read the YouTube live page: {e}")
         return ""
-    match = re.search(r'"videoId":"([\w-]{11})"', html)
-    if not match:
-        log.info("No live video id on the YouTube live page - not live there yet?")
-        return ""
-    # maxres only exists if the uploaded thumbnail was big enough; hqdefault
-    # always exists, so it is the safe one to hand Discord.
-    return f"https://img.youtube.com/vi/{match.group(1)}/maxresdefault.jpg"
 
 
 # ---------- source 1: the Twitch poll ----------

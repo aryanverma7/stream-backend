@@ -289,21 +289,28 @@ async def test_a_missing_thumbnail_file_does_not_block_the_post(monkeypatch, tmp
 
 
 class FakeGetSession(FakeSession):
-    def __init__(self, html=""):
+    def __init__(self, html="", maxres_status=200):
         super().__init__()
         self.html = html
+        self.maxres_status = maxres_status
 
     def get(self, url):
         self.posts.append(("GET", url))
+        if url.endswith("maxresdefault.jpg"):
+            return FakeResponse(self.maxres_status, "")
         return FakeResponse(200, self.html)
+
+
+LIVE_PAGE = '<link rel="canonical" href="https://www.youtube.com/watch?v=abcdefghijk">'
 
 
 @pytest.mark.asyncio
 async def test_youtube_thumbnail_is_read_off_the_live_page(monkeypatch, tmp_path):
     _enable(monkeypatch, tmp_path, youtube_channel_id="UC123")
-    session = FakeGetSession('{"videoId":"abcdefghijk","x":1}')
+    session = FakeGetSession(LIVE_PAGE)
     url = await discord_live.youtube_live_thumbnail(lambda: session)
     assert url == "https://img.youtube.com/vi/abcdefghijk/maxresdefault.jpg"
+    assert session.posts[0] == ("GET", "https://www.youtube.com/channel/UC123/live")
 
 
 @pytest.mark.asyncio
@@ -311,3 +318,71 @@ async def test_no_live_video_returns_nothing(monkeypatch, tmp_path):
     """Falls through to the next image source rather than failing the post."""
     _enable(monkeypatch, tmp_path, youtube_channel_id="UC123")
     assert await discord_live.youtube_live_thumbnail(lambda: FakeGetSession("no ids here")) == ""
+
+
+@pytest.mark.asyncio
+async def test_offline_channel_page_does_not_borrow_an_old_videos_thumbnail(monkeypatch, tmp_path):
+    """Offline, /live serves the channel page - full of other videos' ids."""
+    _enable(monkeypatch, tmp_path, youtube_channel_id="UC123")
+    page = ('<link rel="canonical" href="https://www.youtube.com/channel/UC123">'
+            '{"videoId":"oldvideo123"}{"videoId":"oldvideo456"}')
+    assert await discord_live.youtube_live_thumbnail(lambda: FakeGetSession(page)) == ""
+
+
+@pytest.mark.asyncio
+async def test_small_upload_falls_back_to_hqdefault(monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path, youtube_channel_id="UC123")
+    session = FakeGetSession(LIVE_PAGE, maxres_status=404)
+    url = await discord_live.youtube_live_thumbnail(lambda: session)
+    assert url == "https://img.youtube.com/vi/abcdefghijk/hqdefault.jpg"
+
+
+@pytest.mark.asyncio
+async def test_channel_falls_back_to_the_sites_youtube_link(monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path, social_links={"youtube": "https://www.youtube.com/@DualBladeX/"})
+    session = FakeGetSession(LIVE_PAGE)
+    await discord_live.youtube_live_thumbnail(lambda: session)
+    assert session.posts[0] == ("GET", "https://www.youtube.com/@DualBladeX/live")
+
+
+@pytest.mark.asyncio
+async def test_waits_for_youtube_to_go_live_after_twitch(monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path, youtube_channel_id="UC123")
+    answers = iter(["", "", "https://img.youtube.com/vi/x/maxresdefault.jpg"])
+    slept = []
+
+    async def fetch():
+        return next(answers)
+
+    async def sleep(seconds):
+        slept.append(seconds)
+
+    thumb = await discord_live._youtube_thumbnail_with_wait(fetch, sleep)
+    assert thumb.endswith("maxresdefault.jpg")
+    assert len(slept) == 2
+
+
+@pytest.mark.asyncio
+async def test_gives_up_on_youtube_and_uses_the_screenshot(monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path, youtube_channel_id="UC123", discord_live_youtube_wait_seconds=30)
+    calls = []
+
+    async def fetch():
+        calls.append(1)
+        return ""
+
+    async def sleep(seconds):
+        pass
+
+    assert await discord_live._youtube_thumbnail_with_wait(fetch, sleep) == ""
+    assert len(calls) == 3  # at 0s, 15s, 30s
+
+
+@pytest.mark.asyncio
+async def test_no_youtube_configured_means_no_wait(monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path)
+
+    async def fetch():
+        raise AssertionError("should not look")
+
+    assert await discord_live._youtube_thumbnail_with_wait(fetch) == ""
