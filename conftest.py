@@ -31,3 +31,23 @@ def pytest_sessionfinish(session, exitstatus):
     never delete a real config.json a developer might actually have in place."""
     if _CREATED_DUMMY and CONFIG_PATH.exists():
         CONFIG_PATH.unlink()
+
+
+# aioresponses (latest 0.7.9) predates aiohttp 3.14's required `stream_writer`
+# keyword on ClientResponse and builds its fake responses without it. Supply a
+# no-op default until aioresponses releases a fix; remove this then.
+import aioresponses.core as _ar_core
+from aiohttp import ClientResponse as _ClientResponse
+
+
+class _NoWriter:
+    output_size = 0
+
+
+class _CompatClientResponse(_ClientResponse):
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("stream_writer", _NoWriter())
+        super().__init__(*args, **kwargs)
+
+
+_ar_core.ClientResponse = _CompatClientResponse

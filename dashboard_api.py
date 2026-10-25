@@ -18,6 +18,7 @@ import points
 import roulette
 import spotify
 from config import config
+import config_schema
 from logger import LOG_FILE, get_logger
 from streamerbot_client import streamerbot
 from widget_hub import widget_hub
@@ -49,7 +50,11 @@ UPSTREAM_FAILED_STATUS = 424
 # ---------- Config editor ----------
 
 async def get_config(request: web.Request) -> web.Response:
-    return web.json_response(config.all())
+    return web.json_response(config_schema.masked(config.all()))
+
+
+async def get_config_schema(request: web.Request) -> web.Response:
+    return web.json_response(config_schema.schema_for(config.all()), headers={"Cache-Control": "no-store"})
 
 
 async def update_config(request: web.Request) -> web.Response:
@@ -68,7 +73,19 @@ async def update_config(request: web.Request) -> web.Response:
     if not isinstance(updates, dict):
         return web.json_response({"error": "Body must be a JSON object of key/value pairs"}, status=400)
 
+    # The mask means "unchanged" - the browser never held the real secret.
+    # Also drop anything equal to the stored value, so an older site PUTting the
+    # whole object (stored _comment* keys included) only submits real changes.
+    stored = config.all()
+    updates = {k: v for k, v in updates.items()
+               if v != config_schema.SECRET_MASK and not (k in stored and stored[k] == v)}
+    problem = config_schema.validate_update(updates, config.all())
+    if problem:
+        return web.json_response({"error": problem[1], "field": problem[0]}, status=400)
+
     for key, value in updates.items():
+        if key == "_custom_fields":
+            value = {**(config.get("_custom_fields") or {}), **value}
         config.set(key, value)
     config.save()
     log.info(f"Config updated: {list(updates.keys())}")
@@ -280,6 +297,7 @@ async def get_status(request: web.Request) -> web.Response:
 
 def register_routes(app: web.Application):
     app.router.add_get("/api/config", get_config)
+    app.router.add_get("/api/config/schema", get_config_schema)
     app.router.add_put("/api/config", update_config)
     app.router.add_get("/api/points/{username}", get_points_balance)
     app.router.add_post("/api/points/grant", grant_points_route)
