@@ -232,6 +232,7 @@ async def test_tape_files_marks_iterations_deleted_and_keeps_tape(drive):
     # nothing left: a second request still completes at its due time
     r2 = deletions.request_delete("tape_files", t["id"], "Ace clip", username="boss", role="admin", now=T0 + 4000)
     assert _files(r2["request_id"]) == []
+    deletions._prev_now = None  # the 30 s ticks in between are not simulated
     await deletions.run_due(T0 + 7600)
     assert _req(r2["request_id"])["status"] == "done"
 
@@ -239,13 +240,13 @@ async def test_tape_files_marks_iterations_deleted_and_keeps_tape(drive):
 @pytest.mark.asyncio
 async def test_project_deletes_folder_and_marks_project_deleted(drive):
     p = _project()
-    t = _tape_with_iterations(p["id"], uploading=True)
+    t = _tape_with_iterations(p["id"])
     deletions.request_delete("project", p["id"], "Ranked grind", username="boss", role="admin", now=T0)
     await deletions.run_due(T0 + 3600)
     assert drive.calls == ["PFOLDER", "VODFILE", "ITER1", "ITER2"]
     row = es.get_project(p["id"])
     assert row["deleted_at"] == T0 + 3600 and row["vod_status"] == "deleted"
-    assert [i["status"] for i in es.list_iterations(t["id"])] == ["deleted", "deleted", "uploading"]
+    assert [i["status"] for i in es.list_iterations(t["id"])] == ["deleted", "deleted"]
     assert es.list_projects() == []
 
 
@@ -300,6 +301,7 @@ async def test_first_sane_run_applies_boot_grace(drive):
     await deletions.run_due(real_now)
     assert drive.calls == []
     assert _req(r["request_id"])["delete_at"] == real_now + 3600
+    deletions._prev_now = None  # the 30 s ticks in between are not simulated
     await deletions.run_due(real_now + 3600)
     assert drive.calls == ["VODFILE"]
 
@@ -312,3 +314,63 @@ async def test_run_due_never_raises(drive, monkeypatch):
     await deletions.run_due(T0 + 3600)  # must not raise
     [f] = _files(1)
     assert f["status"] == "pending" and f["attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_forward_clock_jump_gives_a_fresh_hour(drive):
+    p = _project()
+    r = deletions.request_delete("vod", p["id"], "vod-1020.mp4", username="boss", role="admin", now=T0)
+    await deletions.run_due(T0 + 30)
+    jumped = T0 + 30 + 4000  # 30 s tick, but the clock moved 4000 s: past the delete's due time
+    await deletions.run_due(jumped)
+    assert drive.calls == []
+    assert _req(r["request_id"])["delete_at"] == jumped + 3600
+    await deletions.run_due(jumped + 30)
+    assert drive.calls == []
+
+
+def test_clamp_after_clock_reset_pulls_future_deletes_back():
+    p = _project()
+    t = _tape_with_iterations(p["id"])
+    future = T0 + 10 * 86400  # requested while the clock ran ten days fast
+    far = deletions.request_delete("vod", p["id"], "vod-1020.mp4", username="boss", role="admin", now=future)
+    near = deletions.request_delete("tape_files", t["id"], "Ace clip", username="boss", role="admin", now=T0 - 600)
+    assert deletions.clamp_after_clock_reset(T0) == 1
+    assert _req(far["request_id"])["delete_at"] == T0 + 3600
+    assert _req(near["request_id"])["delete_at"] == T0 + 3000
+    assert all(f["next_attempt_at"] <= T0 + 3600 for f in _files(far["request_id"]))
+
+
+def test_project_delete_refused_while_an_upload_is_running():
+    p = _project()
+    _tape_with_iterations(p["id"], uploading=True)
+    with pytest.raises(ValueError, match="Wait for the upload to finish first"):
+        deletions.request_delete("project", p["id"], "Ranked grind", username="boss", role="admin", now=T0)
+    assert deletions.pending(now=T0) == []
+
+
+def test_overlapping_project_and_child_deletes_are_refused():
+    p = _project()
+    t = _tape_with_iterations(p["id"])
+    r = deletions.request_delete("tape_files", t["id"], "Ace clip", username="boss", role="admin", now=T0)
+    with pytest.raises(ValueError, match="Another delete for this is already scheduled"):
+        deletions.request_delete("project", p["id"], "Ranked grind", username="boss", role="admin", now=T0)
+    deletions.undo(r["request_id"], username="boss", role="admin", now=T0)
+    r = deletions.request_delete("vod", p["id"], "vod-1020.mp4", username="boss", role="admin", now=T0)
+    with pytest.raises(ValueError, match="Another delete for this is already scheduled"):
+        deletions.request_delete("project", p["id"], "Ranked grind", username="boss", role="admin", now=T0)
+    deletions.undo(r["request_id"], username="boss", role="admin", now=T0)
+    deletions.request_delete("project", p["id"], "Ranked grind", username="boss", role="admin", now=T0)
+    for kind, tid, label in (("vod", p["id"], "vod-1020.mp4"), ("tape_files", t["id"], "Ace clip")):
+        with pytest.raises(ValueError, match="Another delete for this is already scheduled"):
+            deletions.request_delete(kind, tid, label, username="boss", role="admin", now=T0)
+
+
+def test_project_being_deleted_check():
+    p = _project()
+    deletions.ensure_project_not_deleting(p["id"])  # nothing scheduled: fine
+    r = deletions.request_delete("project", p["id"], "Ranked grind", username="boss", role="admin", now=T0)
+    with pytest.raises(ValueError, match="This project is being deleted"):
+        deletions.ensure_project_not_deleting(p["id"])
+    deletions.undo(r["request_id"], username="boss", role="admin", now=T0)
+    deletions.ensure_project_not_deleting(p["id"])

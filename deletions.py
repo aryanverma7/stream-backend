@@ -24,6 +24,8 @@ log = get_logger("Deletions")
 DELETE_GRACE_SECONDS = 3600
 
 _grace_applied = False
+_prev_now: "float | None" = None
+CLOCK_JUMP_SECONDS = 600  # run_due runs every 30 s tick; a bigger step is the clock (or a sleep), not time passing
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS delete_requests(
@@ -91,7 +93,10 @@ def _target(kind, target_id):
         if p["vod_file_id"] and p["vod_status"] != "deleted":
             files.append((p["vod_file_id"], "vod", p["id"], p["vod_status"]))
         for t in es.list_tapes(p["id"]):
-            files += _iteration_files(es.list_iterations(t["id"]))
+            its = es.list_iterations(t["id"])
+            if any(i["status"] == "uploading" for i in its):
+                raise ValueError("Wait for the upload to finish first")
+            files += _iteration_files(its)
         return p["name"], p["id"], None, files
     raise ValueError(f"unknown kind {kind!r}")
 
@@ -125,6 +130,8 @@ def request_delete(kind, target_id, confirm: str, *, username: str, role: str, n
         if conn.execute("SELECT 1 FROM delete_requests WHERE kind=? AND target_id=?"
                         " AND status IN ('pending','running')", (kind, target_id)).fetchone():
             raise ValueError("Already scheduled for deletion")
+        if _overlapping(conn, kind, target_id, project_id):
+            raise ValueError("Another delete for this is already scheduled")
         rid = conn.execute(
             "INSERT INTO delete_requests(kind, target_id, label, requested_by, requested_at, delete_at, status)"
             " VALUES(?,?,?,?,?,?,'pending')", (kind, target_id, label, username, now, delete_at)).lastrowid
@@ -139,6 +146,26 @@ def request_delete(kind, target_id, confirm: str, *, username: str, role: str, n
         es.record_event(username, "delete_scheduled", f"{username} scheduled deletion of {label}",
                         project_id=project_id, tape_id=tape_id, now=now)
     return {"request_id": rid, "delete_at": delete_at, "label": label}
+
+
+def _overlapping(conn, kind, target_id, project_id) -> bool:
+    """A project delete and a vod/tape_files delete inside it must never both be live."""
+    live = "status IN ('pending','running')"
+    if kind == "project":
+        return conn.execute(
+            f"SELECT 1 FROM delete_requests WHERE {live} AND ((kind='vod' AND target_id=?)"
+            " OR (kind='tape_files' AND target_id IN (SELECT id FROM tapes WHERE project_id=?)))",
+            (target_id, target_id)).fetchone() is not None
+    return conn.execute(f"SELECT 1 FROM delete_requests WHERE {live} AND kind='project' AND target_id=?",
+                        (project_id,)).fetchone() is not None
+
+
+def ensure_project_not_deleting(project_id) -> None:
+    """Raises ValueError while a project delete is pending or running. Call it synchronously
+    right before the write it guards, so no await separates the check from the write."""
+    if _c().execute("SELECT 1 FROM delete_requests WHERE kind='project' AND target_id=?"
+                    " AND status IN ('pending','running')", (project_id,)).fetchone():
+        raise ValueError("This project is being deleted")
 
 
 def _event_ids(req):
@@ -191,6 +218,22 @@ def apply_boot_grace(boot: float) -> int:
     return touched
 
 
+def clamp_after_clock_reset(now: float) -> int:
+    """
+    After the admin trusts a clock that was running fast, nothing waits more than
+    the grace from the corrected now: requests made under the fast clock would
+    otherwise sit until that future time comes round.
+    """
+    conn = _c()
+    cap = now + DELETE_GRACE_SECONDS
+    with db.transaction():
+        n = conn.execute("UPDATE delete_requests SET delete_at=? WHERE status='pending' AND delete_at>?",
+                         (cap, cap)).rowcount
+        conn.execute("UPDATE delete_files SET next_attempt_at=? WHERE status='pending' AND next_attempt_at>?",
+                     (cap, cap))
+    return n
+
+
 async def _delete_one(f, now):
     conn = db.get()
     with db.transaction():
@@ -238,7 +281,7 @@ def _finalize(req, now):
 
 async def run_due(now: float) -> None:
     """Scheduler job. Never raises: every failure is logged and retried on a later tick."""
-    global _grace_applied
+    global _grace_applied, _prev_now
     try:
         conn = _c()
         if not _grace_applied:
@@ -246,6 +289,12 @@ async def run_due(now: float) -> None:
             # runs jobs once the clock is sane, so the first run's `now` is the first trustworthy time.
             apply_boot_grace(now)
             _grace_applied = True
+        elif _prev_now is not None and now - _prev_now > CLOCK_JUMP_SECONDS:
+            # The clock jumped forward (NTP fixing a slow clock, or a sleep): what looks due may have had
+            # far less than its hour of undo in real time. Extra grace is always the safe direction.
+            log.info("Clock moved %.0f s since the last run; giving pending deletes a fresh hour", now - _prev_now)
+            apply_boot_grace(now)
+        _prev_now = now
         with db.transaction():
             conn.execute("UPDATE delete_requests SET status='running' WHERE status='pending' AND delete_at<=?",
                          (now,))
@@ -270,5 +319,6 @@ async def run_due(now: float) -> None:
 
 
 def _reset_for_tests() -> None:
-    global _grace_applied
+    global _grace_applied, _prev_now
     _grace_applied = False
+    _prev_now = None

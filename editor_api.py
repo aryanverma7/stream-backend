@@ -9,6 +9,7 @@ import binascii
 import functools
 import json
 import math
+import time
 
 from aiohttp import web
 
@@ -181,7 +182,7 @@ async def download_project(request, me):
 @_route
 async def create_tape(request, me):
     p = _project(_id(request))
-    return _ok(es.create_tape(p["id"], _text(await _body(request), "name")), 201)
+    return _ok(svc.create_tape(p["id"], _text(await _body(request), "name"), me["username"]), 201)
 
 
 # -- tapes --
@@ -385,7 +386,9 @@ async def storage(request, me):
 @_route
 async def reset_clock(request, me):
     _admin(me)
-    scheduler.reset_clock()
+    now = time.time()
+    scheduler.reset_clock(now)
+    deletions.clamp_after_clock_reset(now)  # here, not in scheduler: it must not import deletions
     return _ok(scheduler.status())
 
 

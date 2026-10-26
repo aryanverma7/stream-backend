@@ -195,3 +195,30 @@ async def test_complete_with_missing_tape_is_value_error(_env, monkeypatch):
     monkeypatch.setattr(es, "get_tape", lambda i: None)
     with pytest.raises(ValueError, match="No such tape"):
         await svc.complete_iteration_upload(iid, "fid", "x")
+
+
+async def _deleting_project(_env):
+    import deletions
+    t, iid = await _started(_env)
+    v = es.create_iteration(t["id"], "b.mp4", 10, "u")
+    es.abandon_iteration(v["id"])  # not 'uploading', so the project delete is allowed
+    es.abandon_iteration(iid)
+    p = es.get_project(t["project_id"])
+    deletions.request_delete("project", p["id"], p["name"], username="aryan", role="admin")
+    return p, t, iid
+
+
+@pytest.mark.asyncio
+async def test_no_new_work_lands_in_a_project_being_deleted(_env):
+    p, t, iid = await _deleting_project(_env)
+    with pytest.raises(ValueError, match="This project is being deleted"):
+        svc.create_tape(p["id"], "New", "aryan")
+    calls = (svc.start_iteration_upload(t["id"], "c.mp4", 10, "video/mp4"),
+             svc.complete_iteration_upload(iid, "fid", "x"),
+             svc.vod_ready(p["id"], "VOD", "x"))
+    for c in calls:
+        with pytest.raises(ValueError, match="This project is being deleted"):
+            await c
+    assert len(es.list_tapes(p["id"])) == 1 and _env["started"] == [_env["started"][0]] and _env["shared"] == []
+    assert es.get_iteration(iid)["status"] == "abandoned"
+    assert es.get_project(p["id"])["vod_status"] == "uploading"

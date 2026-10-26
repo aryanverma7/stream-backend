@@ -59,13 +59,29 @@ async def ensure_tape_folder(tape_id) -> str:
         return fid
 
 
-async def start_iteration_upload(tape_id, filename, size, mime) -> dict:
-    if es.get_tape(tape_id) is None:
+def create_tape(project_id, name, actor) -> dict:
+    deletions.ensure_project_not_deleting(project_id)
+    with db.transaction():
+        t = es.create_tape(project_id, name)
+        es.record_event(actor, "tape_created", f"{actor} added tape {name}", project_id=project_id, tape_id=t["id"])
+    return t
+
+
+def _project_of(tape_id) -> int:
+    t = es.get_tape(tape_id)
+    if t is None:
         raise ValueError("No such tape")
+    return t["project_id"]
+
+
+async def start_iteration_upload(tape_id, filename, size, mime) -> dict:
+    deletions.ensure_project_not_deleting(_project_of(tape_id))
     free = (await free_space())["free"]
     if free is not None and size > free:
         raise DriveFull(size, free)
     folder = await ensure_tape_folder(tape_id)
+    # Again after the awaits, with none before the insert: once the row exists, a project delete refuses.
+    deletions.ensure_project_not_deleting(_project_of(tape_id))
     it = es.create_iteration(tape_id, filename, size, "")
     try:
         url = await gdrive.start_resumable_upload(
@@ -92,6 +108,7 @@ async def complete_iteration_upload(iteration_id, file_id, actor) -> dict:
             or f.get("appProperties", {}).get("iteration_id") != str(iteration_id)
             or f.get("size") != it["size"]):
         raise ValueError("That file is not this iteration's upload")
+    deletions.ensure_project_not_deleting(tape["project_id"])  # after the await, right before the write
     row, changed = es.complete_iteration(iteration_id, file_id)
     if changed:
         editor_comments.carry_over(iteration_id)
@@ -108,9 +125,11 @@ async def vod_ready(project_id, file_id, actor) -> dict:
         raise ValueError("This VOD is being deleted")
     if p["vod_status"] == "ready":
         return p
+    deletions.ensure_project_not_deleting(project_id)
     email = config.get("editor_google_email", "")
     if email:
         await gdrive.share_with(file_id, email, "reader")
+    deletions.ensure_project_not_deleting(project_id)
     p = es.mark_vod_ready(project_id, file_id)
     es.record_event(actor, "vod_ready", f"{p['name']} VOD is ready", project_id=project_id)
     return p

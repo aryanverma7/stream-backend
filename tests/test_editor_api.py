@@ -302,3 +302,16 @@ async def test_only_the_author_edits_a_comment():
         assert status == 201
         assert (await a.admin("GET", "/api/editor/search?q=agreed"))[1]["hits"][0]["kind"] == "reply"
         assert (await a.editor("GET", "/api/editor/me"))[1] == {"username": "cutguy", "role": "editor"}
+
+
+@pytest.mark.asyncio
+async def test_reset_clock_clamps_pending_deletes():
+    import time
+    p, _, _, _ = _world()
+    r = deletions.request_delete("vod", p["id"], "vod.mp4", username="aryan", role="admin",
+                                 now=time.time() + 10 * 86400)  # scheduled while the clock ran fast
+    async with api() as a:
+        assert (await a.admin("POST", "/api/editor/scheduler/reset-clock"))[0] == 200
+    [row] = deletions.pending()
+    assert row["id"] == r["request_id"]
+    assert row["delete_at"] <= time.time() + deletions.DELETE_GRACE_SECONDS
