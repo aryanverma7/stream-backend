@@ -49,3 +49,41 @@ def test_a_repeat_ensure_does_not_commit_an_open_transaction(tmp_path):
     conn.execute("ROLLBACK")
     assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 0
     db.use_path_for_tests(tmp_path / "other.db")
+
+
+def test_bad_db_path_falls_back_to_default(tmp_path, monkeypatch):
+    from config import config
+    db.use_path_for_tests(tmp_path / "x.db")
+    db._path_override = None
+    monkeypatch.setitem(config._data, "app_db_path", str(tmp_path / "missing" / "x.db"))
+    monkeypatch.setattr(db, "DEFAULT_PATH", tmp_path / "fallback.db")
+    assert db.get().execute("select 1").fetchone()[0] == 1
+    assert (tmp_path / "fallback.db").exists()
+    db.use_path_for_tests(tmp_path / "other.db")
+
+
+def test_relative_db_path_resolves_next_to_the_module(tmp_path, monkeypatch):
+    from config import config
+    db.use_path_for_tests(tmp_path / "x.db")
+    db._path_override = None
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(config._data, "app_db_path", "rel_test.db")
+    target = Path(db.__file__).parent / "rel_test.db"
+    try:
+        db.get()
+        assert target.exists()
+        assert not (tmp_path / "rel_test.db").exists()
+    finally:
+        db.use_path_for_tests(tmp_path / "other.db")
+        for suffix in ("", "-wal", "-shm"):
+            Path(str(target) + suffix).unlink(missing_ok=True)
+
+
+def test_meta_roundtrip_and_upsert(tmp_path):
+    db.use_path_for_tests(tmp_path / "t.db")
+    db.meta_set("a", "1")
+    db.meta_set("a", "2")
+    assert db.meta_get("a") == "2"
+    assert db.meta_get("b", "x") == "x"
+    assert db.meta_get("b") is None
+    db.use_path_for_tests(tmp_path / "other.db")
