@@ -47,16 +47,29 @@ def _open(path: Path) -> sqlite3.Connection:
 def get() -> sqlite3.Connection:
     global _conn
     if _conn is None:
-        configured = _path_override or config.get("app_db_path")
+        if _path_override:
+            _conn = _open(_path_override)  # tests: never fall back onto the real app.db
+            return _conn
+        configured = config.get("app_db_path")
         if configured:
-            path = Path(configured)
-            if not path.is_absolute():
-                path = Path(__file__).parent / path
+            path = configured
             try:
+                path = Path(configured)
+                if not path.is_absolute():
+                    path = Path(__file__).parent / path
                 _conn = _open(path)
-            except sqlite3.Error:
-                # A bad setting must not lock the admin out of the dashboard that could fix it.
+            except (TypeError, ValueError):
+                get_logger("db").warning("app_db_path %r is not a usable path; using %s", path, DEFAULT_PATH)
+            except sqlite3.OperationalError as e:
+                # Only "cannot open" falls back; corruption or a lock must not silently swap in a fresh DB.
+                msg = str(e).lower()
+                if "unable to open" not in msg and "readonly" not in msg:
+                    get_logger("db").error("app_db_path %s failed: %s", path, e)
+                    raise
                 get_logger("db").warning("app_db_path %s cannot be opened; using %s", path, DEFAULT_PATH)
+            except sqlite3.Error as e:
+                get_logger("db").error("app_db_path %s failed: %s", path, e)
+                raise
         if _conn is None:
             _conn = _open(DEFAULT_PATH)
     return _conn

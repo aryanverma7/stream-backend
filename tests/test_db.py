@@ -87,3 +87,46 @@ def test_meta_roundtrip_and_upsert(tmp_path):
     assert db.meta_get("b", "x") == "x"
     assert db.meta_get("b") is None
     db.use_path_for_tests(tmp_path / "other.db")
+
+
+def _configured(tmp_path, monkeypatch, value):
+    from config import config
+    db.use_path_for_tests(tmp_path / "x.db")
+    db._path_override = None
+    monkeypatch.setitem(config._data, "app_db_path", value)
+    monkeypatch.setattr(db, "DEFAULT_PATH", tmp_path / "fallback.db")
+
+
+def test_corrupt_db_at_configured_path_raises_without_fallback(tmp_path, monkeypatch):
+    import pytest
+    bad = tmp_path / "bad.db"
+    bad.write_bytes(b"not a db" * 100)
+    _configured(tmp_path, monkeypatch, str(bad))
+    with pytest.raises(Exception):
+        db.get()
+    assert not (tmp_path / "fallback.db").exists()
+    db.use_path_for_tests(tmp_path / "other.db")
+
+
+def test_test_override_that_cannot_open_raises(tmp_path, monkeypatch):
+    import pytest
+    monkeypatch.setattr(db, "DEFAULT_PATH", tmp_path / "fallback.db")
+    db.use_path_for_tests(tmp_path / "missing" / "x.db")
+    with pytest.raises(Exception):
+        db.get()
+    assert not (tmp_path / "fallback.db").exists()
+    db.use_path_for_tests(tmp_path / "other.db")
+
+
+def test_non_string_db_path_falls_back(tmp_path, monkeypatch):
+    _configured(tmp_path, monkeypatch, 123)
+    db.get()
+    assert (tmp_path / "fallback.db").exists()
+    db.use_path_for_tests(tmp_path / "other.db")
+
+
+def test_nul_in_db_path_falls_back(tmp_path, monkeypatch):
+    _configured(tmp_path, monkeypatch, "a\0b.db")
+    db.get()
+    assert (tmp_path / "fallback.db").exists()
+    db.use_path_for_tests(tmp_path / "other.db")
