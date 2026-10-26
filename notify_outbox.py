@@ -39,6 +39,11 @@ def _c():
     return db.get()
 
 
+def ensure_schema() -> None:
+    """Callers that enqueue inside their own transaction call this first: db.ensure raises inside one."""
+    _c()
+
+
 def enqueue(recipient_role: str, content: str, dedupe_key: str, now: "float | None" = None) -> bool:
     """False when dedupe_key already exists. One statement, no transaction of its own, so it joins the
     caller's. While notifications are off the row is stored 'dropped' (key kept): no stale replay later."""

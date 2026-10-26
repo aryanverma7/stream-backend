@@ -379,3 +379,20 @@ async def test_complete_refused_while_tape_files_delete_is_live(_env):
     with pytest.raises(ValueError, match="This tape's files are being deleted"):
         await svc.complete_iteration_upload(iid, "fid", "x")
     assert es.get_iteration(iid)["status"] == "uploading"
+
+
+def _cold_restart(tmp_path):
+    db.use_path_for_tests(tmp_path / "x.db")  # same file, nothing ensured yet: a process restart
+
+
+def test_create_tape_on_a_cold_start(_env, tmp_path):
+    p = es.create_project("Ace", "2026-10-20", "", "v.mp4", 5, now=1.0)
+    _cold_restart(tmp_path)
+    assert svc.create_tape(p["id"], "Cut", "ed")["name"] == "Cut"
+
+
+@pytest.mark.asyncio
+async def test_vod_ready_on_a_cold_start(_env, tmp_path):
+    p = es.create_project("Ace", "2026-10-20", "", "v.mp4", 5, now=1.0)
+    _cold_restart(tmp_path)
+    assert (await svc.vod_ready(p["id"], "vf", "system"))["vod_status"] == "ready"
