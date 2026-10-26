@@ -34,3 +34,7 @@ clips/
 # Editor
 .vscode/
 .idea/
+# App database (sessions; later editor data). Never commit: holds live login sessions.
+app.db
+app.db-wal
+app.db-shm

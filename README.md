@@ -32,6 +32,9 @@ pip install -r requirements.txt
 cp config.example.json config.json
 ```
 
+Sessions are stored in `app.db` (created on first start, never commit it). Login cookies are
+`Secure`, so sign in through the HTTPS hostname, not the plain-HTTP LAN address.
+
 Open `config.json` and fill in real values. Only `http_host`, `http_port`,
 and `streamerbot_ws_url` actually matter for this task specifically — the
 rest are placeholders for later tasks, left there so this stays one evolving

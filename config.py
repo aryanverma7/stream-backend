@@ -5,6 +5,7 @@ Per the project notes (Section 3): secrets live in a single local file that's
 never committed anywhere, loaded once at startup. This is intentionally simple
 for a single-user personal project - no secrets vault needed at this scale.
 """
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -36,9 +37,20 @@ class Config:
             self._data = json.load(f)
 
     def save(self):
-        """Used by the admin dashboard (Task #4) to persist edits made in the UI."""
-        with open(self._path, "w") as f:
-            json.dump(self._data, f, indent=2)
+        """Used by the admin dashboard (Task #4) to persist edits made in the UI.
+        Atomic (write .tmp, fsync + F_FULLFSYNC on macOS, replace) so a power cut mid-save never leaves a truncated config.json."""
+        tmp = self._path.with_name(self._path.name + ".tmp")
+        try:
+            with open(tmp, "w") as f:
+                json.dump(self._data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+                if hasattr(fcntl, "F_FULLFSYNC"):  # macOS: fsync alone leaves the data in the drive's cache
+                    fcntl.fcntl(f.fileno(), fcntl.F_FULLFSYNC)
+            os.replace(tmp, self._path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def get(self, key: str, default=None):
         return self._data.get(key, default)

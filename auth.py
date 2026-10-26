@@ -18,15 +18,20 @@ to "/", which meant the hidden dragon gesture opened the login flow and
 then dropped the person back on the homepage with a valid session but no
 dashboard - so the gesture had to be repeated to get anywhere.
 
-Session storage is a simple in-memory set - appropriate for a single-admin
-personal tool in one process, no need for anything heavier.
+Sessions live in the `sessions` table of the app database (db.py), so a
+power cut on the Mac Mini does not log anyone out. Each row expires
+SESSION_MAX_AGE_SECONDS after login and is deleted when found expired or on
+POST /auth/logout. Pending logins stay in memory: one in flight across a
+restart is already handled by "start over".
 """
 import secrets
+import time
 from urllib.parse import urlencode
 
 import aiohttp
 from aiohttp import web
 
+import db
 from config import config
 from logger import get_logger
 
@@ -38,8 +43,51 @@ GITHUB_USER_URL = "https://api.github.com/user"
 
 SESSION_COOKIE_NAME = "dashboard_session"
 
-# In-memory session store. Fine for this scale - one admin, one process.
-_valid_sessions: set[str] = set()
+SESSION_MAX_AGE_SECONDS = 2592000  # 30 days
+
+_SESSIONS_DDL = """
+CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    username TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('admin','editor')),
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL
+);
+"""
+
+
+def create_session(username: str, role: str, now: float | None = None) -> str:
+    now = time.time() if now is None else now
+    db.ensure(_SESSIONS_DDL)
+    token = secrets.token_urlsafe(32)
+    db.get().execute(
+        "INSERT INTO sessions (token, username, role, created_at, expires_at) VALUES (?,?,?,?,?)",
+        (token, username, role, now, now + SESSION_MAX_AGE_SECONDS),
+    )
+    return token
+
+
+def session_for(request: web.Request, now: float | None = None) -> dict | None:
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
+        return None
+    now = time.time() if now is None else now
+    db.ensure(_SESSIONS_DDL)
+    row = db.get().execute(
+        "SELECT username, role, expires_at FROM sessions WHERE token = ?", (token,)
+    ).fetchone()
+    if row is None:
+        return None
+    if row["expires_at"] <= now:
+        db.get().execute("DELETE FROM sessions WHERE token = ?", (token,))
+        return None
+    # Roles are re-derived from config on every request, so removing an
+    # account revokes its live sessions and a demotion/promotion applies at once.
+    role = role_for_username(row["username"])
+    if role is None:
+        db.get().execute("DELETE FROM sessions WHERE token = ?", (token,))
+        return None
+    return {"username": row["username"], "role": role}
 
 # Logins in flight, keyed by the random `state` value handed to GitHub and
 # mapping to the path the person was originally trying to reach. This does
@@ -141,31 +189,83 @@ async def handle_callback(request: web.Request) -> web.Response:
             user_data = await resp.json()
             github_username = user_data.get("login", "")
 
-    authorized_usernames = config.get("authorized_github_usernames", [])
-    if not authorized_usernames:
-        log.warning("authorized_github_usernames is empty in config.json - rejecting all logins")
-        return web.Response(status=403, text="Dashboard not yet configured with any authorized accounts")
-
-    authorized_lower = [u.lower() for u in authorized_usernames]
-    if github_username.lower() not in authorized_lower:
+    role = role_for_username(github_username)
+    if role is None:
+        if not config.get("authorized_github_usernames", []) and not config.get("editor_github_username", ""):
+            log.warning("No authorized accounts in config.json - rejecting all logins")
+            return web.Response(status=403, text="Dashboard not yet configured with any authorized accounts")
         log.warning(f"Rejected login attempt from unauthorized GitHub account: {github_username}")
         return web.Response(status=403, text="This GitHub account is not authorized for this dashboard")
+    if role == "editor" and not any(path_matches(next_path.split("?")[0], p) for p in EDITOR_PATHS):
+        next_path = "/editor"
 
-    session_token = secrets.token_urlsafe(32)
-    _valid_sessions.add(session_token)
+    session_token = create_session(github_username, role)
     log.info(f"Dashboard login successful: {github_username}")
 
     # Back to whatever they were trying to open, not the homepage. Sending
     # them to "/" meant the hidden gesture had to be performed a second
     # time before /admin would actually open.
     response = web.HTTPFound(next_path)
-    response.set_cookie(SESSION_COOKIE_NAME, session_token, httponly=True, samesite="Lax")
+    response.set_cookie(
+        SESSION_COOKIE_NAME, session_token, httponly=True, samesite="Lax",
+        secure=True, max_age=SESSION_MAX_AGE_SECONDS,
+    )
     raise response
 
 
 def is_authenticated(request: web.Request) -> bool:
+    return session_for(request) is not None
+
+
+async def handle_logout(request: web.Request) -> web.Response:
     token = request.cookies.get(SESSION_COOKIE_NAME)
-    return token is not None and token in _valid_sessions
+    if token:
+        db.ensure(_SESSIONS_DDL)
+        db.get().execute("DELETE FROM sessions WHERE token = ?", (token,))
+    response = web.HTTPFound("/")
+    response.del_cookie(SESSION_COOKIE_NAME)
+    return response
+
+
+def role_for_username(username: str) -> str | None:
+    name = username.lower()
+    if name in [u.lower() for u in config.get("authorized_github_usernames", [])]:
+        return "admin"
+    editor = config.get("editor_github_username", "")
+    if editor and name == editor.lower():
+        return "editor"
+    return None
+
+
+def path_matches(path: str, prefix: str) -> bool:
+    """Whole-segment prefix: /clips matches /clips/a.mp4 but not /clipsadmin."""
+    return path == prefix or path.startswith(prefix + "/")
+
+
+OPEN_PATHS = (
+    "/health", "/ws/widgets",
+    "/auth/login", "/auth/callback",
+    "/api/public", "/clips",
+    "/_next",       # the site's own JS/CSS bundles
+    "/favicon.ico", # sits at the out/ root, not under /_next
+    "/dragon-original.js",  # same reason - a root-level public/ asset,
+                             # not caught by the /_next prefix match
+    "/api/ocr/credit-report",  # gated by its OWN shared-secret check
+                                # (X-Agent-Secret) instead - the
+                                # gaming-PC agent that calls this has
+                                # no GitHub session to provide, so
+                                # this must be exempt from THIS
+                                # middleware for its own auth to ever
+                                # be reached at all.
+    "/api/ocr/reset",  # same reasoning as above - also called by the agent, no GitHub session
+    "/api/ocr/heartbeat",  # and again - the agent's liveness ping, same X-Agent-Secret check
+    "/api/game/state",  # the Overwolf app on the gaming PC, same X-Agent-Secret
+                        # check and the same reason: it has no GitHub session
+                        # either, so without this line its own auth never runs.
+    "/",
+)
+
+EDITOR_PATHS = ("/editor", "/api/editor", "/auth/logout")
 
 
 @web.middleware
@@ -183,39 +283,21 @@ async def auth_middleware(request: web.Request, handler):
     where the actual protected dashboard UI will live once the frontend
     exists - anything not explicitly open defaults to requiring auth.
     """
-    open_paths = (
-        "/health", "/ws/widgets",
-        "/auth/login", "/auth/callback",
-        "/api/public", "/clips",
-        "/_next",       # the site's own JS/CSS bundles
-        "/favicon.ico", # sits at the out/ root, not under /_next
-        "/dragon-original.js",  # same reason - a root-level public/ asset,
-                                 # not caught by the /_next prefix match
-        "/api/ocr/credit-report",  # gated by its OWN shared-secret check
-                                    # (X-Agent-Secret) instead - the
-                                    # gaming-PC agent that calls this has
-                                    # no GitHub session to provide, so
-                                    # this must be exempt from THIS
-                                    # middleware for its own auth to ever
-                                    # be reached at all.
-        "/api/ocr/reset",  # same reasoning as above - also called by the agent, no GitHub session
-        "/api/ocr/heartbeat",  # and again - the agent's liveness ping, same X-Agent-Secret check
-        "/api/game/state",  # the Overwolf app on the gaming PC, same X-Agent-Secret
-                            # check and the same reason: it has no GitHub session
-                            # either, so without this line its own auth never runs.
-        "/",
-    )
-    if request.path in open_paths or any(
-        request.path.startswith(p) for p in open_paths if p != "/"
-    ):
+    # aiohttp does not collapse dot segments, so "/_next/../admin" would match
+    # an open prefix while a proxy or the static handler resolves it elsewhere.
+    if any(seg in (".", "..") for seg in request.path.split("/")):
+        return web.Response(status=400, text="Bad path")
+
+    if request.path == "/" or any(path_matches(request.path, p) for p in OPEN_PATHS if p != "/"):
         return await handler(request)
 
-    if not is_authenticated(request):
-        # Visiting /admin itself (not an API call) without a session should
-        # smoothly redirect into the login flow rather than show a bare
-        # 401 - someone who just did the hidden gesture is expecting to
-        # land somewhere, not read an error.
-        if request.path == "/admin":
+    session = session_for(request)
+    if session is None:
+        # Visiting /admin or /editor itself (not an API call) without a
+        # session should smoothly redirect into the login flow rather than
+        # show a bare 401 - someone who just did the hidden gesture is
+        # expecting to land somewhere, not read an error.
+        if path_matches(request.path, "/admin") or path_matches(request.path, "/editor"):
             raise web.HTTPFound(f"/auth/login?{urlencode({'next': request.path_qs})}")
 
         # An /api/ caller gets JSON, because it is code that will call
@@ -235,4 +317,11 @@ async def auth_middleware(request: web.Request, handler):
             )
         return web.Response(status=401, text="Not authenticated - visit /auth/login first")
 
-    return await handler(request)
+    if session["role"] == "admin" or any(path_matches(request.path, p) for p in EDITOR_PATHS):
+        return await handler(request)
+
+    # An editor anywhere else: JSON for code, a bounce to their own pages
+    # for a browser.
+    if request.path.startswith("/api/"):
+        return web.json_response({"error": "This account can only use the editor pages."}, status=403)
+    raise web.HTTPFound("/editor")

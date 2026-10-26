@@ -55,6 +55,8 @@ def build_app() -> web.Application:
     app.router.add_get("/ws/widgets", handle_widget_ws)
     app.router.add_get("/auth/login", auth.handle_login)
     app.router.add_get("/auth/callback", auth.handle_callback)
+    # NOT in open_paths: logging out needs a session to log out of.
+    app.router.add_post("/auth/logout", auth.handle_logout)
     # Streamlabs OAuth (Task #5) - deliberately NOT added to auth.py's
     # open_paths. Only an already-authenticated admin (via the GitHub OAuth
     # session above) should ever be able to trigger a Streamlabs connection

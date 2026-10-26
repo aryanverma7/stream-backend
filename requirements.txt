@@ -2,7 +2,7 @@
 # dependencies given the Mac Mini's age (2012 model). aiohttp alone covers
 # HTTP server, WebSocket server, AND outbound WebSocket client - no need for
 # a second library for any of this.
-aiohttp==3.10.11
+aiohttp==3.14.5
 
 # Task #6 exception to the above: Streamlabs' real-time Socket API uses the
 # Socket.IO PROTOCOL (its own handshake/framing on top of WebSocket), not
@@ -17,14 +17,15 @@ python-socketio==4.6.1
 
 # Task #8's next-round-credit detection - the pytesseract Python wrapper
 # needs the NATIVE tesseract binary installed separately on the Mac Mini
-# itself (not something pip can install): `brew install tesseract`.
+# itself (not something pip can install): MacPorts, installed at
+# /opt/local/bin (Homebrew's formula fails on this Catalina config).
 pytesseract==0.3.13
-# Pinned to 12.3.0, NOT an older release - genuinely confirmed the hard
+# Pinned to 13.0.0, NOT an older release - genuinely confirmed the hard
 # way: Pillow only started publishing pre-built wheels for Python 3.14
 # starting with 12.0.0 (Oct 2025). An earlier pin like 11.0.0 predates
 # Python 3.14's existence entirely, so pip falls back to building from
 # source, which then fails on missing native jpeg headers. Verified this
 # specific version+platform combination has a real, correctly-tagged
-# wheel available (pillow-12.3.0-cp314-cp314-macosx_10_15_x86_64.whl) by
+# wheel available (pillow-13.0.0-cp314-cp314-macosx_10_15_x86_64.whl) by
 # actually downloading it, not just checking release notes.
-Pillow==12.3.0
+Pillow==13.0.0
