@@ -28,6 +28,7 @@ import health_checks
 import public_api
 import site_server
 import spotify_oauth
+import gdrive_oauth
 import streamlabs_oauth
 from logger import get_logger
 from widget_hub import widget_hub
@@ -67,6 +68,8 @@ def build_app() -> web.Application:
     # same reason for it.
     app.router.add_get("/auth/spotify/login", spotify_oauth.spotify_login)
     app.router.add_get("/auth/spotify/callback", spotify_oauth.spotify_callback)
+    app.router.add_get("/auth/gdrive/login", gdrive_oauth.gdrive_login)
+    app.router.add_get("/auth/gdrive/callback", gdrive_oauth.gdrive_callback)
     # Task #8's credit OCR reporting - IS in auth.py's open_paths (exempt
     # from the GitHub OAuth admin check), gated instead by its own
     # shared-secret check inside the handler - the gaming-PC agent calling
