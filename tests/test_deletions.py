@@ -374,3 +374,20 @@ def test_project_being_deleted_check():
         deletions.ensure_project_not_deleting(p["id"])
     deletions.undo(r["request_id"], username="boss", role="admin", now=T0)
     deletions.ensure_project_not_deleting(p["id"])
+
+
+def test_project_delete_refused_for_clip_holding_combined_reel(drive):
+    import editor_service as svc
+    a = es.create_project("Clip A", "2026-10-20", "", "a.mp4", 1, now=T0, duration_s=20.0)
+    b = es.create_project("Clip B", "2026-10-20", "", "b.mp4", 1, now=T0, duration_s=20.0)
+    reel = svc.combine_clips([a["id"], b["id"]], "Duo", "aryan")
+    with pytest.raises(ValueError, match="This clip holds a combined reel - delete the reel's files first"):
+        deletions.request_delete("project", a["id"], "Clip A", username="aryan", role="admin", now=T0)
+    # The other source holds no reel of its own and is deleted normally.
+    deletions.request_delete("project", b["id"], "Clip B", username="aryan", role="admin", now=T0)
+    deletions.request_delete("tape_files", reel["id"], "Duo", username="aryan", role="admin", now=T0)
+    import asyncio
+    asyncio.run(deletions.run_due(T0 + deletions.DELETE_GRACE_SECONDS + 1))
+    assert es.get_tape(reel["id"])["files_deleted_at"] is not None
+    assert deletions.request_delete("project", a["id"], "Clip A", username="aryan", role="admin",
+                                    now=T0 + 7200)["label"] == "Clip A"

@@ -67,6 +67,73 @@ def create_tape(project_id, name, actor) -> dict:
     return t
 
 
+def _has_versions(tape_id) -> bool:
+    return db.get().execute("SELECT 1 FROM iterations WHERE tape_id=? LIMIT 1", (tape_id,)).fetchone() is not None
+
+
+def combine_clips(project_ids, name, actor, now=None) -> dict:
+    """
+    Merges 2+ clips into the first clip's reel, renamed to `name`; the other reels (empty) are deleted.
+    Every clip already on an involved reel must be listed, so no clip ends up in two reels and no
+    reel is left half-emptied. Refused once any involved reel has a version (even an unfinished upload).
+    """
+    now = time.time() if now is None else now
+    ids = list(dict.fromkeys(project_ids))
+    if len(ids) < 2:
+        raise ValueError("Pick at least two clips to combine")
+    deletions._c()  # tables before the transaction: ensure() COMMITs
+    with db.transaction() as conn:
+        reels = []
+        for pid in ids:
+            p = es.get_project(pid)
+            if p is None or p["deleted_at"] is not None or p["kind"] != "clip":
+                raise ValueError("Only clips can be combined")
+            deletions.ensure_project_not_deleting(pid)
+            reel = es.reel_for_clip(pid)
+            if reel["id"] not in [r["id"] for r in reels]:
+                reels.append(reel)
+        for r in reels:
+            if _has_versions(r["id"]):
+                raise ValueError(f"{r['name']} already has a version - clips can only be combined before that")
+            if not set(r["source_project_ids"]) <= set(ids):
+                raise ValueError(f"{r['name']} holds other clips too - include them all, or uncombine it first")
+        keep = reels[0]["id"]
+        conn.execute("UPDATE reel_sources SET tape_id=? WHERE tape_id IN (%s)" % ",".join("?" * len(reels)),
+                     (keep, *(r["id"] for r in reels)))
+        for r in reels[1:]:
+            conn.execute("DELETE FROM tapes WHERE id=?", (r["id"],))
+        conn.execute("UPDATE tapes SET name=?, updated_at=? WHERE id=?", (name, now, keep))
+        es.record_event(actor, "reels_combined", f"{actor} combined {len(ids)} clips into {name}",
+                        project_id=reels[0]["project_id"], tape_id=keep, now=now)
+    return es.get_tape(keep)
+
+
+def uncombine(tape_id, actor, now=None) -> list[dict]:
+    """Gives every clip on a combined reel its own reel back; the hosting clip keeps this one."""
+    now = time.time() if now is None else now
+    deletions._c()  # tables before the transaction: ensure() COMMITs
+    with db.transaction() as conn:
+        t = es.get_tape(tape_id)
+        if t is None or t["kind"] != "reel" or len(t["source_project_ids"]) < 2:
+            raise ValueError("That is not a combined reel")
+        if _has_versions(tape_id):
+            raise ValueError(f"{t['name']} already has a version - it can only be uncombined before that")
+        host = es.get_project(t["project_id"])
+        conn.execute("UPDATE tapes SET name=?, updated_at=? WHERE id=?", (host["name"], now, tape_id))
+        out = [tape_id]
+        for pid in t["source_project_ids"]:
+            if pid == host["id"]:
+                continue
+            p = es.get_project(pid)
+            conn.execute("DELETE FROM reel_sources WHERE project_id=?", (pid,))
+            if p["deleted_at"] is None:  # a deleted clip just leaves the reel
+                deletions.ensure_project_not_deleting(pid)
+                out.append(es.insert_reel(conn, pid, p["name"], now))
+        es.record_event(actor, "reels_uncombined", f"{actor} uncombined {t['name']}",
+                        project_id=host["id"], tape_id=tape_id, now=now)
+    return [es.get_tape(i) for i in out]
+
+
 def _project_of(tape_id) -> int:
     t = es.get_tape(tape_id)
     if t is None:

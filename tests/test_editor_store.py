@@ -139,3 +139,38 @@ def test_complete_iteration_is_atomic():
 def test_download_click_bumps_updated_at():
     p = _proj()
     assert es.record_download_click(p["id"], now=500.0)["updated_at"] == 500.0
+
+
+# -- clips and reels --
+
+def _clip(name="Ace", duration_s=42.0, now=100.0):
+    return es.create_project(name, "2026-10-20", "", f"{name}.mp4", 10, now=now, duration_s=duration_s)
+
+
+def test_short_upload_becomes_a_clip_with_one_reel():
+    c = _clip(duration_s=299)
+    assert c["kind"] == "clip" and c["duration_s"] == 299
+    [reel] = es.list_tapes(c["id"])
+    assert (reel["kind"], reel["name"], reel["source_project_ids"]) == ("reel", "Ace", [c["id"]])
+    assert c["reel_tape_id"] == reel["id"] and es.reel_for_clip(c["id"])["id"] == reel["id"]
+    assert es.get_tape(reel["id"])["source_project_ids"] == [c["id"]]
+    for d in (300, None):
+        v = _clip(f"Vod{d}", duration_s=d)
+        assert v["kind"] == "vod" and v["reel_tape_id"] is None and es.list_tapes(v["id"]) == []
+        assert es.reel_for_clip(v["id"]) is None
+    assert es.CLIP_MAX_SECONDS == 300
+
+
+def test_second_reel_on_a_clip_is_refused():
+    c = _clip()
+    with pytest.raises(ValueError, match="A clip has exactly one reel"):
+        es.create_tape(c["id"], "another")
+    assert len(es.list_tapes(c["id"])) == 1
+    t = es.create_tape(_proj()["id"], "ordinary")
+    assert t["kind"] == "tape" and t["source_project_ids"] == []
+
+
+def test_a_clip_cannot_be_in_two_reels():
+    a, b = _clip("A"), _clip("B")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.get().execute("INSERT INTO reel_sources(tape_id, project_id) VALUES(?,?)", (b["reel_tape_id"], a["id"]))

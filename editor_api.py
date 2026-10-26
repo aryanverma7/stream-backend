@@ -221,6 +221,23 @@ async def create_tape(request, me):
     return _ok(svc.create_tape(p["id"], _text(await _body(request), "name"), me["username"]), 201)
 
 
+# -- clips and reels --
+
+@_route
+async def combine_clips(request, me):
+    body = await _body(request)
+    ids = body.get("project_ids")
+    if not isinstance(ids, list) or not all(isinstance(i, int) and not isinstance(i, bool) for i in ids):
+        raise _Fail(400, "project_ids must be a list of whole numbers")
+    return _ok(svc.combine_clips(ids, _text(body, "name"), me["username"]))
+
+
+@_route
+async def uncombine(request, me):
+    t = _tape(_id(request))
+    return _ok({"reels": svc.uncombine(t["id"], me["username"])})
+
+
 # -- tapes --
 
 @_route
@@ -263,6 +280,13 @@ async def complete_iteration(request, me):
     if not _FILE_ID.fullmatch(file_id):
         raise _Fail(400, "file_id is not a Drive file id")
     return _ok(_iteration_view(await svc.complete_iteration_upload(it["id"], file_id, me["username"])))
+
+
+@_route
+async def start_over(request, me):
+    _admin(me)
+    it = _iteration(_id(request))
+    return _ok({"resolved": ec.start_over(it["id"], me["username"])})
 
 
 @_route
@@ -453,10 +477,13 @@ def register_routes(app: web.Application) -> None:
     r.add_patch(f"{p}/projects/{{id:{_ID}}}", rename_project)
     r.add_post(f"{p}/projects/{{id:{_ID}}}/download", download_project)
     r.add_post(f"{p}/projects/{{id:{_ID}}}/tapes", create_tape)
+    r.add_post(f"{p}/clips/combine", combine_clips)
+    r.add_post(f"{p}/tapes/{{id:{_ID}}}/uncombine", uncombine)
     r.add_get(f"{p}/tapes/{{id:{_ID}}}", get_tape)
     r.add_patch(f"{p}/tapes/{{id:{_ID}}}", update_tape)
     r.add_post(f"{p}/tapes/{{id:{_ID}}}/iterations", start_iteration)
     r.add_post(f"{p}/iterations/{{id:{_ID}}}/complete", complete_iteration)
+    r.add_post(f"{p}/iterations/{{id:{_ID}}}/start-over", start_over)
     r.add_get(f"{p}/iterations/{{id:{_ID}}}", get_iteration)
     r.add_get(f"{p}/iterations/{{id:{_ID}}}/thumbnail", get_thumbnail)
     r.add_put(f"{p}/iterations/{{id:{_ID}}}/media", put_media)

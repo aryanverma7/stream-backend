@@ -97,6 +97,8 @@ def _target(kind, target_id):
         if p["vod_file_id"] and p["vod_status"] != "deleted":
             files.append((p["vod_file_id"], "vod", p["id"], p["vod_status"]))
         for t in es.list_tapes(p["id"]):
+            if len(t["source_project_ids"]) >= 2 and t["files_deleted_at"] is None:
+                raise ValueError("This clip holds a combined reel - delete the reel's files first")
             its = es.list_iterations(t["id"])
             if any(i["status"] == "uploading" for i in its):
                 raise ValueError("Wait for the upload to finish first")

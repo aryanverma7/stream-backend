@@ -266,3 +266,106 @@ async def test_abandoned_upload_with_verified_file_recovers(_env):
     _, iid = await _started(_env)
     es.abandon_iteration(iid)
     assert (await svc.complete_iteration_upload(iid, "fid", "x"))["status"] == "ready"
+
+
+# -- clips and reels --
+
+def _clip(name, now=1.0):
+    return es.create_project(name, "2026-10-20", "", f"{name}.mp4", 5, now=now, duration_s=30.0)
+
+
+def _events(kind):
+    return [e for e in es.events_since(0) if e["kind"] == kind]
+
+
+def test_combine_two_clips_replaces_their_reels():
+    a, b, c = _clip("A", 1.0), _clip("B", 2.0), _clip("C", 3.0)
+    reel = svc.combine_clips([b["id"], a["id"]], "Best of", "cutguy")
+    assert (reel["id"], reel["name"], reel["kind"]) == (b["reel_tape_id"], "Best of", "reel")
+    assert reel["source_project_ids"] == [a["id"], b["id"]]  # oldest clip first
+    assert es.get_tape(a["reel_tape_id"]) is None  # the other reel is gone
+    assert es.get_project(a["id"])["reel_tape_id"] == es.get_project(b["id"])["reel_tape_id"] == reel["id"]
+    assert es.list_tapes(a["id"]) == [] and es.reel_for_clip(c["id"])["id"] == c["reel_tape_id"]
+    [ev] = _events("reels_combined")
+    assert (ev["actor"], ev["tape_id"]) == ("cutguy", reel["id"])
+    # Extending needs every clip already on the reel; a clip is never in two reels.
+    with pytest.raises(ValueError):
+        svc.combine_clips([c["id"], a["id"]], "x", "cutguy")
+    assert svc.combine_clips([c["id"], a["id"], b["id"]], "All", "aryan")["source_project_ids"] == \
+        [a["id"], b["id"], c["id"]]
+
+
+def test_combine_refused_for_bad_input():
+    a, b = _clip("A"), _clip("B")
+    vod = es.create_project("V", "2026-10-20", "", "v.mp4", 5, duration_s=4000.0)
+    for ids in ([a["id"]], [a["id"], a["id"]], [a["id"], vod["id"]], [a["id"], 999]):
+        with pytest.raises(ValueError):
+            svc.combine_clips(ids, "x", "aryan")
+    db.get().execute("UPDATE projects SET deleted_at=9 WHERE id=?", (b["id"],))
+    with pytest.raises(ValueError):
+        svc.combine_clips([a["id"], b["id"]], "x", "aryan")
+    assert len(es.list_tapes(a["id"])) == 1 and _events("reels_combined") == []
+
+
+def test_combine_refused_when_a_reel_has_a_version():
+    a, b = _clip("A"), _clip("B")
+    es.create_iteration(b["reel_tape_id"], "f.mp4", 1, "u")  # even an unfinished upload counts
+    with pytest.raises(ValueError, match="version"):
+        svc.combine_clips([a["id"], b["id"]], "x", "aryan")
+    assert es.reel_for_clip(a["id"])["source_project_ids"] == [a["id"]]
+
+
+def test_uncombine_restores_own_reels():
+    a, b, c = _clip("A", 1.0), _clip("B", 2.0), _clip("C", 3.0)
+    reel = svc.combine_clips([a["id"], b["id"], c["id"]], "Trio", "cutguy")
+    reels = svc.uncombine(reel["id"], "aryan")
+    assert [(r["name"], r["source_project_ids"]) for r in reels] == [("A", [a["id"]]), ("B", [b["id"]]),
+                                                                     ("C", [c["id"]])]
+    assert reels[0]["id"] == reel["id"] and all(r["kind"] == "reel" for r in reels)
+    for clip, r in zip((a, b, c), reels):
+        assert r["project_id"] == clip["id"] and es.get_project(clip["id"])["reel_tape_id"] == r["id"]
+    [ev] = _events("reels_uncombined")
+    assert (ev["actor"], ev["tape_id"]) == ("aryan", reel["id"])
+    with pytest.raises(ValueError):
+        svc.uncombine(reel["id"], "aryan")  # only one source now
+    t = es.create_tape(es.create_project("V", "d", "", "v.mp4", 5)["id"], "plain")
+    with pytest.raises(ValueError):
+        svc.uncombine(t["id"], "aryan")
+
+
+def test_uncombine_refused_after_a_version():
+    a, b = _clip("A"), _clip("B")
+    reel = svc.combine_clips([a["id"], b["id"]], "Duo", "cutguy")
+    es.create_iteration(reel["id"], "f.mp4", 1, "u")
+    with pytest.raises(ValueError, match="version"):
+        svc.uncombine(reel["id"], "aryan")
+    assert es.get_tape(reel["id"])["source_project_ids"] == [a["id"], b["id"]]
+
+
+def test_no_combine_into_a_project_being_deleted():
+    import deletions
+    a, b = _clip("A"), _clip("B")
+    deletions.request_delete("project", b["id"], "B", username="aryan", role="admin")
+    with pytest.raises(ValueError, match="being deleted"):
+        svc.combine_clips([a["id"], b["id"]], "x", "aryan")
+
+
+@pytest.mark.asyncio
+async def test_reel_works_like_a_tape(_env):
+    import editor_comments as ec
+    c = _clip("Medal")
+    reel_id = c["reel_tape_id"]
+    with pytest.raises(ValueError, match="exactly one reel"):
+        svc.create_tape(c["id"], "second", "aryan")
+    ids = []
+    for _ in range(2):
+        r = await svc.start_iteration_upload(reel_id, "r.mp4", 10, "video/mp4")
+        _env["file"] = {"parents": [es.get_tape(reel_id)["drive_folder_id"]],
+                        "appProperties": {"iteration_id": str(r["iteration_id"])}, "size": 10}
+        await svc.complete_iteration_upload(r["iteration_id"], f"fid{r['version']}", "cutguy")
+        ids.append(r["iteration_id"])
+        if len(ids) == 1:
+            com = ec.add_comment(ids[0], "aryan", "fix", "louder")
+    assert [i["version"] for i in es.list_iterations(reel_id)] == [1, 2]
+    [carried] = ec.comments_for_iteration(ids[1])
+    assert carried["id"] == com["id"] and carried["carried"] and es.get_tape(reel_id)["status"] == "in_review"

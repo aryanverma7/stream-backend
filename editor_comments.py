@@ -121,6 +121,19 @@ def set_resolved(comment_id, iteration_id, resolved, by, now=None):
     return _one("SELECT * FROM comment_state WHERE comment_id=? AND iteration_id=?", (comment_id, iteration_id))
 
 
+def start_over(iteration_id, by, now=None) -> int:
+    """Resolves every open comment on this iteration only (earlier versions keep their state)."""
+    now = time.time() if now is None else now
+    _cc()
+    project_id, tape_id = _ctx(iteration_id)
+    with db.transaction() as conn:
+        n = conn.execute("UPDATE comment_state SET resolved=1, resolved_by=?, resolved_at=?"
+                         " WHERE iteration_id=? AND resolved=0", (by, now, iteration_id)).rowcount
+        es.record_event(by, "start_over", f"{by} started over, resolving {n} comment{'' if n == 1 else 's'}",
+                        project_id=project_id, tape_id=tape_id, iteration_id=iteration_id, now=now)
+    return n
+
+
 def comments_for_iteration(iteration_id):
     _cc()
     rows = _all(

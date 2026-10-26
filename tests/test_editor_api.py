@@ -390,3 +390,50 @@ async def test_undo_of_missing_request_is_404_and_tape_creation_is_logged():
         assert status == 201
     [ev] = [e for e in es.events_since(0) if e["kind"] == "tape_created"]
     assert (ev["actor"], ev["tape_id"], ev["project_id"]) == ("cutguy", t["id"], p["id"])
+
+
+def _clips(*names):
+    return [es.create_project(n, "2026-10-20", "", f"{n}.mp4", 5, now=float(i), duration_s=30.0)
+            for i, n in enumerate(names)]
+
+
+@pytest.mark.asyncio
+async def test_clip_payloads_combine_and_uncombine_over_the_api():
+    a, b = _clips("A", "B")
+    async with api() as x:
+        status, body = await x.editor("GET", f"/api/editor/projects/{a['id']}")
+        assert status == 200 and body["project"]["kind"] == "clip" and body["project"]["duration_s"] == 30.0
+        assert body["project"]["reel_tape_id"] == a["reel_tape_id"]
+        assert [(t["kind"], t["source_project_ids"]) for t in body["tapes"]] == [("reel", [a["id"]])]
+        status, body = await x.editor("GET", "/api/editor/projects")
+        assert {p["kind"] for p in body["projects"]} == {"clip"}
+        status, reel = await x.editor("POST", "/api/editor/clips/combine",
+                                      {"project_ids": [a["id"], b["id"]], "name": "Duo"})
+        assert status == 200 and reel["source_project_ids"] == [a["id"], b["id"]] and reel["name"] == "Duo"
+        status, body = await x.admin("GET", f"/api/editor/tapes/{reel['id']}")
+        assert body["tape"]["kind"] == "reel" and body["tape"]["source_project_ids"] == [a["id"], b["id"]]
+        for bad in ({"project_ids": [a["id"]], "name": "x"}, {"project_ids": "1,2", "name": "x"},
+                    {"project_ids": [a["id"], True], "name": "x"}, {"project_ids": [a["id"], b["id"]]}):
+            assert (await x.editor("POST", "/api/editor/clips/combine", bad))[0] == 400, bad
+        status, body = await x.editor("POST", f"/api/editor/tapes/{reel['id']}/uncombine")
+        assert status == 200 and [r["source_project_ids"] for r in body["reels"]] == [[a["id"]], [b["id"]]]
+        assert (await x.editor("POST", f"/api/editor/tapes/{reel['id']}/uncombine"))[0] == 400
+
+
+@pytest.mark.asyncio
+async def test_second_reel_on_a_clip_is_refused_over_the_api():
+    [a] = _clips("A")
+    async with api() as x:
+        assert await x.admin("POST", f"/api/editor/projects/{a['id']}/tapes", {"name": "Two"}) == \
+            (400, {"error": "A clip has exactly one reel"})
+
+
+@pytest.mark.asyncio
+async def test_editor_cannot_start_over():
+    p, t, it, c = _world()
+    async with api() as x:
+        assert await x.editor("POST", f"/api/editor/iterations/{it['id']}/start-over") == (403, FORBIDDEN)
+        assert not ec.comments_for_iteration(it["id"])[0]["resolved"]
+        assert await x.admin("POST", f"/api/editor/iterations/{it['id']}/start-over") == (200, {"resolved": 1})
+        assert ec.comments_for_iteration(it["id"])[0]["resolved"]
+        assert (await x.admin("POST", "/api/editor/iterations/999/start-over"))[0] == 404

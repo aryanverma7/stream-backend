@@ -114,3 +114,25 @@ def test_search_finds_reply_text_and_escapes_wildcards():
     assert len(ec.search("%")) == 1 and len(ec.search("_")) == 1 and ec.search("\\") == []
     assert ec.search("  ") == [] and ec.search("") == []
     assert len(ec.search("a", limit=1)) == 1
+
+
+def test_start_over_resolves_all_open_comments_on_that_version_only():
+    t = _tape()
+    v1 = _ready(t["id"])
+    a = ec.add_comment(v1["id"], "cutguy", "fix", "one", now=3.0)
+    b = ec.add_comment(v1["id"], "cutguy", "fix", "two", now=3.0)
+    ec.set_resolved(b["id"], v1["id"], True, "aryan", now=4.0)
+    v2 = _ready(t["id"])
+    ec.carry_over(v2["id"])
+    c = ec.add_comment(v2["id"], "cutguy", "question", "three", now=5.0)
+    assert ec.start_over(v2["id"], "aryan", now=6.0) == 2
+    on_v2 = {r["id"]: r for r in ec.comments_for_iteration(v2["id"])}
+    assert set(on_v2) == {a["id"], c["id"]} and all(r["resolved"] for r in on_v2.values())
+    assert on_v2[c["id"]]["resolved_by"] == "aryan" and on_v2[c["id"]]["resolved_at"] == 6.0
+    on_v1 = {r["id"]: r["resolved"] for r in ec.comments_for_iteration(v1["id"])}
+    assert on_v1 == {a["id"]: False, b["id"]: True}
+    [ev] = [e for e in es.events_since(0) if e["kind"] == "start_over"]
+    assert (ev["actor"], ev["iteration_id"], ev["tape_id"]) == ("aryan", v2["id"], t["id"])
+    assert ec.start_over(v2["id"], "aryan", now=7.0) == 0
+    with pytest.raises(ValueError):
+        ec.start_over(999, "aryan")
