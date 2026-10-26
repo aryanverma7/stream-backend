@@ -102,3 +102,53 @@ async def test_start_stop_and_boot_time():
     assert scheduler.boot_time() == t
     await scheduler.stop()
     await scheduler.stop()
+
+
+@pytest.mark.asyncio
+async def test_garbage_meta_value_runs_jobs_and_logs_error(caplog):
+    ran = []
+
+    async def job(now):
+        ran.append(now)
+
+    scheduler.register("j", job)
+    db.meta_set("clock_last_seen", "garbage")
+    with caplog.at_level("ERROR"):
+        assert await scheduler.tick(5) is True
+    assert ran == [5]
+    assert any(r.levelname == "ERROR" for r in caplog.records)
+    assert float(db.meta_get("clock_last_seen")) == 5
+
+
+@pytest.mark.asyncio
+async def test_now_equal_to_last_is_sane():
+    await scheduler.tick(1000)
+    assert await scheduler.tick(1000) is True
+
+
+@pytest.mark.asyncio
+async def test_blocked_tick_keeps_last_seen():
+    await scheduler.tick(1000)
+    await scheduler.tick(900)
+    assert float(db.meta_get("clock_last_seen")) == 1000
+
+
+@pytest.mark.asyncio
+async def test_status_shows_paused_since():
+    assert scheduler.status() == {"sane": True, "last_seen": None, "paused_since": None}
+    await scheduler.tick(1000)
+    await scheduler.tick(900)
+    await scheduler.tick(950)
+    s = scheduler.status()
+    assert s["paused_since"] == 900 and s["last_seen"] == 1000 and s["sane"] is False
+    await scheduler.tick(1001)
+    assert scheduler.status()["paused_since"] is None
+
+
+@pytest.mark.asyncio
+async def test_reset_clock_unblocks():
+    await scheduler.tick(5000)
+    assert await scheduler.tick(100) is False
+    scheduler.reset_clock(100)
+    assert scheduler.status()["paused_since"] is None
+    assert await scheduler.tick(101) is True
