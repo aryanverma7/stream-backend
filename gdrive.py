@@ -8,15 +8,15 @@ Never logs a token or a secret: errors carry the status and Google's
 """
 import asyncio
 import json
-import logging
 import time
 from pathlib import Path
 
 import aiohttp
 
 from config import config
+from logger import get_logger
 
-log = logging.getLogger(__name__)
+log = get_logger("GDrive")
 
 SCOPE = "https://www.googleapis.com/auth/drive.file"
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"

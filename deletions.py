@@ -11,15 +11,15 @@ outcome. A row left 'deleting' by a power cut is retried; gdrive.delete_file
 treats a 404 as success, so the retry is idempotent. Deletes are permanent
 (Drive DELETE), never Trash.
 """
-import logging
 import time
 
 import db
 import editor_store as es
 import gdrive
 import scheduler
+from logger import get_logger
 
-log = logging.getLogger(__name__)
+log = get_logger("Deletions")
 
 DELETE_GRACE_SECONDS = 3600
 

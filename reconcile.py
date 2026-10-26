@@ -8,7 +8,7 @@ import gdrive
 import scheduler
 from logger import get_logger
 
-log = get_logger("reconcile")
+log = get_logger("Reconcile")
 
 ABANDON_AFTER_SECONDS = 8 * 86400
 

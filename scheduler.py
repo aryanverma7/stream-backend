@@ -8,13 +8,13 @@ tick() therefore refuses to run any job until the clock passes
 meta["clock_last_seen"].
 """
 import asyncio
-import logging
 import time
 from typing import Awaitable, Callable
 
 import db
+from logger import get_logger
 
-log = logging.getLogger(__name__)
+log = get_logger("Scheduler")
 
 TICK_SECONDS = 30
 _LAST_SEEN_KEY = "clock_last_seen"
