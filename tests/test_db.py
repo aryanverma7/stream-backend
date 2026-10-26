@@ -3,6 +3,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import pytest
+
 import db
 
 
@@ -147,4 +149,21 @@ def test_transaction_rolls_back_on_error(tmp_path):
     with db.transaction() as c:
         c.execute("INSERT INTO tx VALUES(2)")
     assert conn.execute("SELECT COUNT(*) FROM tx").fetchone()[0] == 1
+    db.use_path_for_tests(tmp_path / "other.db")
+
+
+def test_meta_delete(tmp_path):
+    db.use_path_for_tests(tmp_path / "t.db")
+    db.meta_set("a", "1")
+    db.meta_delete("a")
+    db.meta_delete("never-existed")
+    assert db.meta_get("a") is None
+    db.use_path_for_tests(tmp_path / "other.db")
+
+
+def test_ensure_inside_transaction_raises(tmp_path):
+    db.use_path_for_tests(tmp_path / "t.db")
+    with pytest.raises(RuntimeError):
+        with db.transaction():
+            db.ensure("CREATE TABLE IF NOT EXISTS late(x)")
     db.use_path_for_tests(tmp_path / "other.db")

@@ -369,3 +369,30 @@ async def test_reel_works_like_a_tape(_env):
     assert [i["version"] for i in es.list_iterations(reel_id)] == [1, 2]
     [carried] = ec.comments_for_iteration(ids[1])
     assert carried["id"] == com["id"] and carried["carried"] and es.get_tape(reel_id)["status"] == "in_review"
+
+
+@pytest.mark.asyncio
+async def test_complete_refused_while_tape_files_delete_is_live(_env):
+    t, iid = await _started(_env)
+    db.get().execute("INSERT INTO delete_requests(kind, target_id, label, requested_by, requested_at, delete_at,"
+                     " status) VALUES ('tape_files', ?, 'Cut', 'aryan', 1, 2, 'pending')", (t["id"],))
+    with pytest.raises(ValueError, match="This tape's files are being deleted"):
+        await svc.complete_iteration_upload(iid, "fid", "x")
+    assert es.get_iteration(iid)["status"] == "uploading"
+
+
+def _cold_restart(tmp_path):
+    db.use_path_for_tests(tmp_path / "x.db")  # same file, nothing ensured yet: a process restart
+
+
+def test_create_tape_on_a_cold_start(_env, tmp_path):
+    p = es.create_project("Ace", "2026-10-20", "", "v.mp4", 5, now=1.0)
+    _cold_restart(tmp_path)
+    assert svc.create_tape(p["id"], "Cut", "ed")["name"] == "Cut"
+
+
+@pytest.mark.asyncio
+async def test_vod_ready_on_a_cold_start(_env, tmp_path):
+    p = es.create_project("Ace", "2026-10-20", "", "v.mp4", 5, now=1.0)
+    _cold_restart(tmp_path)
+    assert (await svc.vod_ready(p["id"], "vf", "system"))["vod_status"] == "ready"

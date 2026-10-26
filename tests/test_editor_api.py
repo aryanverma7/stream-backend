@@ -448,3 +448,35 @@ async def test_start_over_only_on_the_latest_version():
             (400, {"error": "Start over works on the latest version"})
         assert not ec.comments_for_iteration(it["id"])[0]["resolved"]
         assert await x.admin("POST", f"/api/editor/iterations/{v2['id']}/start-over") == (200, {"resolved": 0})
+
+
+@pytest.mark.asyncio
+async def test_storage_includes_discord_status():
+    async with api() as a:
+        status, got = await a.admin("GET", "/api/editor/storage")
+    assert status == 200
+    assert got["discord"] == {"enabled": False, "pending": 0, "sending": 0, "dropped": 0,
+                              "last_error": None, "last_sent_at": None}
+
+
+@pytest.mark.asyncio
+async def test_notifications_route_uses_session_identity():
+    by_editor = es.record_event("cutguy", "tape_created", "cutguy added tape", now=1.0)
+    by_admin = es.record_event("aryan", "tape_created", "aryan added tape", now=2.0)
+    db.meta_set("bell_seen_aryan", str(by_editor))
+    async with api() as a:
+        status, got = await a.editor("GET", "/api/editor/notifications?username=aryan")
+        assert status == 200
+        assert ([i["id"] for i in got["items"]], got["unseen"]) == ([by_admin], 1)
+        status, got = await a.editor("POST", "/api/editor/notifications/seen",
+                                     {"up_to_id": by_admin, "username": "aryan"})
+        assert status == 200
+        assert db.meta_get("bell_seen_cutguy") == str(by_admin)
+        assert db.meta_get("bell_seen_aryan") == str(by_editor)
+        status, got = await a.admin("GET", "/api/editor/notifications")
+        assert (status, [i["id"] for i in got["items"]], got["unseen"]) == (200, [by_editor], 0)
+        assert (await a.admin("GET", f"/api/editor/notifications?after={by_editor}"))[1]["items"] == []
+        assert (await a.admin("GET", "/api/editor/notifications?after=x"))[0] == 400
+        for bad in ({}, {"up_to_id": "3"}, {"up_to_id": True}, {"up_to_id": -1},
+                    {"up_to_id": 10**19}):
+            assert (await a.admin("POST", "/api/editor/notifications/seen", bad))[0] == 400, bad

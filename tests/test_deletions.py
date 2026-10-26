@@ -400,3 +400,21 @@ def test_empty_tape_files_delete_is_refused(drive):
     with pytest.raises(ValueError, match="Nothing to delete"):
         deletions.request_delete("tape_files", t["id"], "Empty", username="boss", role="admin", now=T0)
     assert deletions.pending(now=T0) == [] and es.get_tape(t["id"])["files_deleted_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_slow_tick_is_not_a_clock_jump(drive):
+    p = _project()
+    r = deletions.request_delete("vod", p["id"], "vod-1020.mp4", username="boss", role="admin", now=T0)
+    await deletions.run_due(T0 + 30, mono=1000.0)
+    await deletions.run_due(T0 + 930, mono=1900.0)  # loop stalled 900 s: wall and monotonic agree
+    assert _req(r["request_id"])["delete_at"] == T0 + 3600
+
+
+@pytest.mark.asyncio
+async def test_wall_jump_without_monotonic_is_a_jump(drive):
+    p = _project()
+    r = deletions.request_delete("vod", p["id"], "vod-1020.mp4", username="boss", role="admin", now=T0)
+    await deletions.run_due(T0 + 30, mono=1000.0)
+    await deletions.run_due(T0 + 930, mono=1030.0)  # wall +900, monotonic +30
+    assert _req(r["request_id"])["delete_at"] == T0 + 930 + 3600

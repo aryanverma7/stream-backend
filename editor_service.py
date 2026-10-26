@@ -170,12 +170,14 @@ async def complete_iteration_upload(iteration_id, file_id, actor) -> dict:
     tape = es.get_tape(it["tape_id"])
     if tape is None:
         raise ValueError("No such tape")
+    deletions.ensure_tape_not_deleting(it["tape_id"])
     f = await gdrive.get_file(file_id)
     if (not tape["drive_folder_id"] or tape["drive_folder_id"] not in f.get("parents", [])
             or f.get("appProperties", {}).get("iteration_id") != str(iteration_id)
             or f.get("size") != it["size"]):
         raise ValueError("That file is not this iteration's upload")
     deletions.ensure_project_not_deleting(tape["project_id"])  # after the await, right before the write
+    deletions.ensure_tape_not_deleting(it["tape_id"])
     row, _ = es.complete_iteration(iteration_id, file_id, actor=actor)  # records iteration_ready atomically
     # Every time, not only on the transition: idempotent, so a retry after a crash here still carries over.
     editor_comments.carry_over(iteration_id)

@@ -17,12 +17,14 @@ from aiohttp import web
 import auth
 import db
 import deletions
+import editor_bell
 import editor_comments as ec
 import editor_personal as ep
 import editor_service as svc
 import editor_store as es
 import gdrive
 import gdrive_oauth
+import notify_outbox
 import scheduler
 
 ONLY_STREAMER = "Only the streamer can do this."
@@ -388,6 +390,30 @@ async def search(request, me):
     return _ok({"hits": ec.search(request.query.get("q", ""))})
 
 
+# -- notification bell (both roles; whose bell is always the session's, never a parameter) --
+
+def _non_negative_int(v):
+    if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v < 10**18:  # 18 digits, as _ID
+        raise _Fail(400, "Expected a non-negative integer id")
+    return v
+
+
+@_route
+async def notifications(request, me):
+    after = request.query.get("after")
+    if after is not None:
+        if not after.isdigit() or len(after) > 18:
+            raise _Fail(400, "after must be an event id")
+        after = int(after)
+    return _ok(editor_bell.feed(me["username"], after_id=after))
+
+
+@_route
+async def notifications_seen(request, me):
+    editor_bell.mark_seen(me["username"], _non_negative_int((await _body(request)).get("up_to_id")))
+    return _ok({"ok": True})
+
+
 # -- to-dos (owner only: another user's id is simply not found) --
 
 @_route
@@ -443,7 +469,8 @@ async def pending_deletes(request, me):
 @_route
 async def storage(request, me):
     _admin(me)
-    return _ok({**await svc.storage_view(), "scheduler": scheduler.status()})
+    return _ok({**await svc.storage_view(), "scheduler": scheduler.status(),
+                "discord": notify_outbox.status()})
 
 
 @_route
@@ -494,6 +521,8 @@ def register_routes(app: web.Application) -> None:
     r.add_post(f"{p}/comments/{{id:{_ID}}}/replies", add_reply)
     r.add_put(f"{p}/iterations/{{iid:{_ID}}}/comments/{{cid:{_ID}}}/resolved", set_resolved)
     r.add_get(f"{p}/search", search)
+    r.add_get(f"{p}/notifications", notifications)
+    r.add_post(f"{p}/notifications/seen", notifications_seen)
     r.add_get(f"{p}/todos", list_todos)
     r.add_post(f"{p}/todos", add_todo)
     r.add_patch(f"{p}/todos/{{id:{_ID}}}", update_todo)
