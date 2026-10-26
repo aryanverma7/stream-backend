@@ -21,9 +21,12 @@ import deletions
 import discord_live
 import game_events
 import health_checks
+import notifier
+import notify_outbox
 import points_cloudbot
 import greeter
 import reconcile
+import reminders
 import roulette
 import scheduler
 import spotify
@@ -73,6 +76,19 @@ async def main():
     scheduler.register("deletions", deletions.run_due)
     scheduler.register("backup", backup.run_if_due)
     scheduler.register("reconcile", reconcile.run_if_due)
+
+    # Discord DMs for the editor app. Events become outbox rows, reminders
+    # add theirs, and only then does deliver_due send, so a DM written this
+    # tick goes out this tick. A row left 'sending' by a power cut goes
+    # back to 'pending' first: one possible duplicate beats a lost DM.
+    # The previous process's last tick is read BEFORE start(), because the
+    # first tick overwrites it - that gap is what "back online" reports.
+    notify_outbox.reset_stuck_sending()
+    notifier.set_boot_last_seen(scheduler.last_seen())
+    scheduler.register("notifier", notifier.run)
+    scheduler.register("reminders", reminders.run)
+    scheduler.register("dm_outbox", notify_outbox.deliver_due)
+    scheduler.register("back_online", notifier.back_online_once)
     await scheduler.start()
 
     # Outbound connection to Streamer.bot (Section 18's hybrid architecture)

@@ -55,6 +55,11 @@ def _last_seen() -> float | None:
     return None
 
 
+def last_seen() -> float | None:
+    """meta["clock_last_seen"]; read before start() it is when the previous process last ticked."""
+    return _last_seen()
+
+
 def clock_is_sane(now: float) -> bool:
     last = _last_seen()
     return last is None or now >= last

@@ -12,9 +12,12 @@ from logger import get_logger
 log = get_logger("Notifier")
 
 DIGEST_QUIET_SECONDS = 600
+OUTAGE_SECONDS = 600
 _CURSOR = "notify_cursor"
 _OTHER = {"admin": "editor", "editor": "streamer"}
 _DIGEST_KINDS = ("comment_added", "reply_added", "comment_resolved", "start_over")
+_boot_last_seen: "float | None" = None
+_back_online_done = False
 _DDL = """
 CREATE TABLE IF NOT EXISTS digest_pending(
   recipient_role TEXT NOT NULL, event_id INTEGER NOT NULL UNIQUE, actor TEXT NOT NULL, at REAL NOT NULL);
@@ -118,3 +121,29 @@ async def run(now: float) -> None:
         _flush(now)
     except Exception:
         log.exception("Notifier run failed")
+
+
+def set_boot_last_seen(prev: "float | None") -> None:
+    """main.py passes scheduler.last_seen() read BEFORE scheduler.start(): the first tick overwrites it."""
+    global _boot_last_seen
+    _boot_last_seen = prev
+
+
+async def back_online_once(now: float) -> None:
+    """Scheduler job (so only on sane ticks), effective once per process: after an outage longer
+    than OUTAGE_SECONDS the editor is told the site is back. The key dedupes a crash-loop of restarts."""
+    global _back_online_done
+    if _back_online_done:
+        return
+    prev = _boot_last_seen
+    if prev is not None and now - prev > OUTAGE_SECONDS:
+        notify_outbox.enqueue(
+            "editor", f"The editor site is back online (it was down for about {round((now - prev) / 60)} min).",
+            f"back_online:{int(prev)}", now)
+    _back_online_done = True  # after enqueue: a failed write retries next tick
+
+
+def _reset_for_tests() -> None:
+    global _boot_last_seen, _back_online_done
+    _boot_last_seen = None
+    _back_online_done = False

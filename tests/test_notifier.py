@@ -155,3 +155,31 @@ async def test_event_for_a_missing_row_is_skipped_not_wedged():
     es.record_event("ed", "iteration_ready", "s", iteration_id=999, now=T)
     await notifier.run(T)
     assert outbox() == [] and db.meta_get("notify_cursor") == "2"
+
+
+@pytest.mark.asyncio
+async def test_back_online_dm_after_long_gap_only_once():
+    notifier._reset_for_tests()
+    notifier.set_boot_last_seen(T)
+    now = T + notifier.OUTAGE_SECONDS + 1500
+    await notifier.back_online_once(now)
+    await notifier.back_online_once(now + 30)
+    assert outbox() == [{"recipient_role": "editor",
+                         "content": "The editor site is back online (it was down for about 35 min).",
+                         "dedupe_key": f"back_online:{int(T)}"}]
+    notifier._reset_for_tests()  # a second process with the same prev: deduped by key
+    notifier.set_boot_last_seen(T)
+    await notifier.back_online_once(now + 60)
+    assert len(outbox()) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_back_online_for_short_restart():
+    notifier._reset_for_tests()
+    notifier.set_boot_last_seen(T)
+    await notifier.back_online_once(T + notifier.OUTAGE_SECONDS)
+    notifier._reset_for_tests()
+    notifier.set_boot_last_seen(None)
+    await notifier.back_online_once(T + 99999)
+    notifier.notify_outbox.ensure_schema()
+    assert outbox() == []
