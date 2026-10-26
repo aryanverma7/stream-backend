@@ -3,7 +3,8 @@ Two-step deletes with a one-hour undo, executed against Google Drive.
 
 Nothing is deleted without typing the exact name, and every delete waits
 DELETE_GRACE_SECONDS with Undo. The Mac Mini loses power often, so the boot
-calls apply_boot_grace() to give every pending delete a full hour again, and
+calls apply_boot_grace(), and the first run_due() of a process calls it again
+with the first sane time, to give every pending delete a full hour again, and
 each Drive call is bracketed by its own short transactions: mark the file row
 'deleting', commit, await Drive outside any transaction, then record the
 outcome. A row left 'deleting' by a power cut is retried; gdrive.delete_file
@@ -21,6 +22,8 @@ import scheduler
 log = logging.getLogger(__name__)
 
 DELETE_GRACE_SECONDS = 3600
+
+_grace_applied = False
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS delete_requests(
@@ -74,16 +77,28 @@ def _target(kind, target_id):
         t = es.get_tape(target_id)
         if t is None:
             raise ValueError("No such tape")
-        files = [(i["drive_file_id"], "iteration", i["id"], i["status"])
-                 for i in es.list_iterations(t["id"]) if i["drive_file_id"] and i["status"] != "deleted"]
-        return t["name"], t["project_id"], t["id"], files
+        its = es.list_iterations(t["id"])
+        if any(i["status"] == "uploading" for i in its):
+            raise ValueError("Wait for the upload to finish first")
+        return t["name"], t["project_id"], t["id"], _iteration_files(its)
     if kind == "project":
         p = es.get_project(target_id)
         if p is None or p["deleted_at"] is not None:
             raise ValueError("No such project")
+        # The folder delete takes its children, but every file also gets its own row: the folder may be
+        # missing or a file may live outside it, and a target is only marked deleted by its own row.
         files = [(p["drive_folder_id"], "folder", p["id"], None)] if p["drive_folder_id"] else []
+        if p["vod_file_id"] and p["vod_status"] != "deleted":
+            files.append((p["vod_file_id"], "vod", p["id"], p["vod_status"]))
+        for t in es.list_tapes(p["id"]):
+            files += _iteration_files(es.list_iterations(t["id"]))
         return p["name"], p["id"], None, files
     raise ValueError(f"unknown kind {kind!r}")
+
+
+def _iteration_files(iterations):
+    return [(i["drive_file_id"], "iteration", i["id"], i["status"])
+            for i in iterations if i["drive_file_id"] and i["status"] != "deleted"]
 
 
 def _check_allowed(kind, target_id, role):
@@ -103,6 +118,8 @@ def request_delete(kind, target_id, confirm: str, *, username: str, role: str, n
     delete_at = now + DELETE_GRACE_SECONDS
     with db.transaction():
         label, project_id, tape_id, files = _target(kind, target_id)
+        if not label.strip():
+            raise ValueError("Nothing to confirm against - rename it first")
         if (confirm or "").strip() != label:
             raise ConfirmMismatch("Type the name exactly to confirm")
         if conn.execute("SELECT 1 FROM delete_requests WHERE kind=? AND target_id=?"
@@ -202,21 +219,17 @@ def _finalize(req, now):
                         (req["id"],)).fetchone():
             return
         kind, tid = req["kind"], req["target_id"]
-        if kind == "vod":
-            conn.execute("UPDATE projects SET vod_status='deleted', updated_at=? WHERE id=?", (now, tid))
-        elif kind == "tape_files":
-            conn.execute("UPDATE iterations SET status='deleted', updated_at=? WHERE id IN"
-                         " (SELECT target_id FROM delete_files WHERE request_id=? AND target_kind='iteration')",
-                         (now, req["id"]))
+        # A target is marked deleted only through its own file row, which has succeeded by now.
+        conn.execute("UPDATE projects SET vod_status='deleted', updated_at=? WHERE id IN"
+                     " (SELECT target_id FROM delete_files WHERE request_id=? AND target_kind='vod')",
+                     (now, req["id"]))
+        conn.execute("UPDATE iterations SET status='deleted', updated_at=? WHERE id IN"
+                     " (SELECT target_id FROM delete_files WHERE request_id=? AND target_kind='iteration')",
+                     (now, req["id"]))
+        if kind == "tape_files":
             conn.execute("UPDATE tapes SET files_deleted_at=?, updated_at=? WHERE id=?", (now, now, tid))
-        else:
-            # The folder took its children with it; mark them so nothing lists files that are gone.
-            conn.execute("UPDATE projects SET deleted_at=?, vod_status='deleted', updated_at=? WHERE id=?",
-                         (now, now, tid))
-            conn.execute("UPDATE iterations SET status='deleted', updated_at=? WHERE status<>'deleted'"
-                         " AND tape_id IN (SELECT id FROM tapes WHERE project_id=?)", (now, tid))
-            conn.execute("UPDATE tapes SET files_deleted_at=COALESCE(files_deleted_at, ?), updated_at=?"
-                         " WHERE project_id=?", (now, now, tid))
+        elif kind == "project":
+            conn.execute("UPDATE projects SET deleted_at=?, updated_at=? WHERE id=?", (now, now, tid))
         conn.execute("UPDATE delete_requests SET status='done' WHERE id=?", (req["id"],))
         project_id, tape_id = _event_ids(req)
         es.record_event("system", "delete_done", f"Deleted {req['label']}",
@@ -225,8 +238,14 @@ def _finalize(req, now):
 
 async def run_due(now: float) -> None:
     """Scheduler job. Never raises: every failure is logged and retried on a later tick."""
+    global _grace_applied
     try:
         conn = _c()
+        if not _grace_applied:
+            # The boot-time grace may have used a wrong clock (e.g. 2001 before NTP). The scheduler only
+            # runs jobs once the clock is sane, so the first run's `now` is the first trustworthy time.
+            apply_boot_grace(now)
+            _grace_applied = True
         with db.transaction():
             conn.execute("UPDATE delete_requests SET status='running' WHERE status='pending' AND delete_at<=?",
                          (now,))
@@ -248,3 +267,8 @@ async def run_due(now: float) -> None:
             _finalize(req, now)
         except Exception:
             log.exception("Finalizing delete request %s failed", req["id"])
+
+
+def _reset_for_tests() -> None:
+    global _grace_applied
+    _grace_applied = False

@@ -16,6 +16,10 @@ T0 = 1_000_000.0
 @pytest.fixture(autouse=True)
 def _fresh(tmp_path):
     db.use_path_for_tests(tmp_path / "d.db")
+    deletions._reset_for_tests()
+    deletions._grace_applied = True  # most tests are mid-process; the grace test resets this
+    yield
+    deletions._reset_for_tests()
 
 
 @pytest.fixture
@@ -44,13 +48,14 @@ def _project(downloaded=True):
     return es.get_project(p["id"])
 
 
-def _tape_with_iterations(project_id):
+def _tape_with_iterations(project_id, uploading=False):
     t = es.create_tape(project_id, "Ace clip", now=T0)
     i1 = es.create_iteration(t["id"], "a.mp4", 1, "u", now=T0)
     es.complete_iteration(i1["id"], "ITER1", now=T0)
     i2 = es.create_iteration(t["id"], "b.mp4", 1, "u", now=T0)
     es.complete_iteration(i2["id"], "ITER2", now=T0)
-    es.create_iteration(t["id"], "c.mp4", 1, "u", now=T0)  # still uploading, no file id
+    if uploading:
+        es.create_iteration(t["id"], "c.mp4", 1, "u", now=T0)  # still uploading, no file id
     return t
 
 
@@ -116,10 +121,10 @@ async def test_undo_restores_statuses_and_blocks_deletion(drive):
     p = _project()
     t = _tape_with_iterations(p["id"])
     r = deletions.request_delete("tape_files", t["id"], "Ace clip", username="boss", role="admin", now=T0)
-    assert [i["status"] for i in es.list_iterations(t["id"])] == ["deleting", "deleting", "uploading"]
+    assert [i["status"] for i in es.list_iterations(t["id"])] == ["deleting", "deleting"]
     assert [f["drive_file_id"] for f in _files(r["request_id"])] == ["ITER1", "ITER2"]
     deletions.undo(r["request_id"], username="boss", role="admin", now=T0 + 10)
-    assert [i["status"] for i in es.list_iterations(t["id"])] == ["ready", "ready", "uploading"]
+    assert [i["status"] for i in es.list_iterations(t["id"])] == ["ready", "ready"]
     assert _req(r["request_id"])["status"] == "cancelled"
     assert deletions.pending(now=T0 + 10) == []
     await deletions.run_due(T0 + 7200)
@@ -219,7 +224,7 @@ async def test_tape_files_marks_iterations_deleted_and_keeps_tape(drive):
     r = deletions.request_delete("tape_files", t["id"], "Ace clip", username="boss", role="admin", now=T0)
     await deletions.run_due(T0 + 3600)
     assert sorted(drive.calls) == ["ITER1", "ITER2"]
-    assert [i["status"] for i in es.list_iterations(t["id"])] == ["deleted", "deleted", "uploading"]
+    assert [i["status"] for i in es.list_iterations(t["id"])] == ["deleted", "deleted"]
     tape = es.get_tape(t["id"])
     assert tape is not None and tape["files_deleted_at"] == T0 + 3600
     assert _req(r["request_id"])["status"] == "done"
@@ -234,13 +239,69 @@ async def test_tape_files_marks_iterations_deleted_and_keeps_tape(drive):
 @pytest.mark.asyncio
 async def test_project_deletes_folder_and_marks_project_deleted(drive):
     p = _project()
-    _tape_with_iterations(p["id"])
+    t = _tape_with_iterations(p["id"], uploading=True)
     deletions.request_delete("project", p["id"], "Ranked grind", username="boss", role="admin", now=T0)
     await deletions.run_due(T0 + 3600)
-    assert drive.calls == ["PFOLDER"]
+    assert drive.calls == ["PFOLDER", "VODFILE", "ITER1", "ITER2"]
     row = es.get_project(p["id"])
     assert row["deleted_at"] == T0 + 3600 and row["vod_status"] == "deleted"
+    assert [i["status"] for i in es.list_iterations(t["id"])] == ["deleted", "deleted", "uploading"]
     assert es.list_projects() == []
+
+
+@pytest.mark.asyncio
+async def test_project_without_folder_still_deletes_its_files(drive):
+    p = es.create_project("No folder", "2026-10-21", "t", "v.mp4", 1, now=T0)
+    es.mark_vod_ready(p["id"], "VODONLY", now=T0)
+    deletions.request_delete("project", p["id"], "No folder", username="boss", role="admin", now=T0)
+    await deletions.run_due(T0 + 3600)
+    assert drive.calls == ["VODONLY"]
+    assert es.get_project(p["id"])["vod_status"] == "deleted"
+
+
+@pytest.mark.asyncio
+async def test_project_failed_vod_delete_is_not_marked_deleted(drive, monkeypatch):
+    p = _project()
+
+    async def fail_vod(file_id):
+        drive.calls.append(file_id)
+        if file_id == "VODFILE":
+            raise gdrive.DriveError("boom", 500)
+
+    monkeypatch.setattr(gdrive, "delete_file", fail_vod)
+    r = deletions.request_delete("project", p["id"], "Ranked grind", username="boss", role="admin", now=T0)
+    await deletions.run_due(T0 + 3600)
+    assert _req(r["request_id"])["status"] == "running"
+    row = es.get_project(p["id"])
+    assert row["vod_status"] == "deleting" and row["deleted_at"] is None
+
+
+def test_empty_label_cannot_be_confirmed():
+    p = es.create_project("", "2026-10-21", "t", "v.mp4", 1, now=T0)
+    with pytest.raises(ValueError, match="Nothing to confirm against"):
+        deletions.request_delete("project", p["id"], "", username="boss", role="admin", now=T0)
+
+
+def test_tape_files_refused_while_an_upload_is_running():
+    p = _project()
+    t = _tape_with_iterations(p["id"], uploading=True)
+    with pytest.raises(ValueError, match="Wait for the upload to finish first"):
+        deletions.request_delete("tape_files", t["id"], "Ace clip", username="boss", role="admin", now=T0)
+    assert [i["status"] for i in es.list_iterations(t["id"])] == ["ready", "ready", "uploading"]
+
+
+@pytest.mark.asyncio
+async def test_first_sane_run_applies_boot_grace(drive):
+    real_now = T0 + 50 * 60
+    p = _project()
+    r = deletions.request_delete("vod", p["id"], "vod-1020.mp4", username="boss", role="admin", now=T0 - 50 * 60)
+    # due at T0+10min; the process booted with a wrong clock, so no grace was applied at boot
+    deletions._reset_for_tests()
+    await deletions.run_due(real_now)
+    assert drive.calls == []
+    assert _req(r["request_id"])["delete_at"] == real_now + 3600
+    await deletions.run_due(real_now + 3600)
+    assert drive.calls == ["VODFILE"]
 
 
 @pytest.mark.asyncio
