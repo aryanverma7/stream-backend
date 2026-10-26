@@ -155,7 +155,11 @@ def list_iterations(tape_id):
 
 
 def complete_iteration(id, file_id, now=None):
-    """Returns (row, changed); changed is True only on the uploading -> ready transition."""
+    """
+    Returns (row, changed); changed is True only on the uploading/abandoned -> ready
+    transition. An abandoned upload whose file turns up (and was verified by the
+    caller) is recovered rather than refused.
+    """
     now = time.time() if now is None else now
     _c()
     with db.transaction() as conn:
@@ -164,13 +168,24 @@ def complete_iteration(id, file_id, now=None):
             raise ValueError(f"no iteration {id}")
         if row["status"] == "ready":
             return row, False
-        if row["status"] != "uploading":
+        if row["status"] not in ("uploading", "abandoned"):
             raise ValueError(f"cannot complete an iteration that is {row['status']}")
         conn.execute("UPDATE iterations SET status='ready', drive_file_id=?, uploaded_at=?, updated_at=?"
                      " WHERE id=?", (file_id, now, now, id))
         conn.execute("UPDATE tapes SET status='in_review', updated_at=?"
                      " WHERE id=? AND status IN ('cutting','changes_asked')", (now, row["tape_id"]))
     return get_iteration(id), True
+
+
+def abandon_iteration(id, now=None) -> bool:
+    """uploading -> abandoned; False if it had already moved on (e.g. completed meanwhile)."""
+    now = time.time() if now is None else now
+    return _c().execute("UPDATE iterations SET status='abandoned', updated_at=? WHERE id=? AND status='uploading'",
+                        (now, id)).rowcount == 1
+
+
+def any_uploading() -> bool:
+    return _c().execute("SELECT 1 FROM iterations WHERE status='uploading' LIMIT 1").fetchone() is not None
 
 
 def set_iteration_media(id, *, checks_json=None, thumbnail=None):

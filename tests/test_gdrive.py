@@ -35,9 +35,9 @@ async def test_refresh_caches_token_until_near_expiry():
     with aioresponses() as m:
         m.post(gdrive.TOKEN_URL, payload=TOKEN, repeat=True)
         assert await gdrive.access_token(now=1000.0) == "tok"
-        assert await gdrive.access_token(now=1000.0 + 3500) == "tok"
+        assert await gdrive.access_token(now=1000.0 + 2999) == "tok"
         assert len(calls(m, "POST", gdrive.TOKEN_URL)) == 1
-        await gdrive.access_token(now=1000.0 + 3550)  # inside the 60 s margin
+        await gdrive.access_token(now=1000.0 + 3001)  # inside the 600 s margin left for media links
         assert len(calls(m, "POST", gdrive.TOKEN_URL)) == 2
 
 

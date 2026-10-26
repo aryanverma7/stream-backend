@@ -1,7 +1,13 @@
-"""Boot-time recovery: finish uploads the editor's browser completed while we were off."""
+"""
+Recovery: finish uploads the editor's browser completed while we were off, or
+whose /complete call never arrived. A scheduler job: runs on the first sane
+tick after boot, then only while an iteration is `uploading`, at most every
+RECONCILE_EVERY_SECONDS.
+"""
 import time
 from collections import defaultdict
 
+import db
 import editor_service
 import editor_store as es
 import gdrive
@@ -11,6 +17,23 @@ from logger import get_logger
 log = get_logger("Reconcile")
 
 ABANDON_AFTER_SECONDS = 8 * 86400
+RECONCILE_EVERY_SECONDS = 600
+_LAST_RUN_KEY = "reconcile_last_run"
+
+_ran_since_boot = False
+
+
+async def run_if_due(now: float) -> None:
+    global _ran_since_boot
+    if _ran_since_boot:
+        if not es.any_uploading():
+            return
+        since = now - float(db.meta_get(_LAST_RUN_KEY) or 0)
+        if 0 <= since < RECONCILE_EVERY_SECONDS:  # negative: stamped by a clock that later moved back
+            return
+    _ran_since_boot = True
+    db.meta_set(_LAST_RUN_KEY, str(now))
+    await run_once(now)
 
 
 async def run_once(now: "float | None" = None) -> dict:
@@ -29,7 +52,7 @@ async def run_once(now: "float | None" = None) -> dict:
             if folder:
                 try:
                     files = await gdrive.list_folder(folder)
-                except (gdrive.DriveError, gdrive.DriveNotConnected) as e:
+                except gdrive.DriveError as e:
                     log.warning(f"reconcile: cannot list tape {tape_id}: {e}")
             for it in its:
                 found = None if files is None else next(
@@ -38,13 +61,15 @@ async def run_once(now: "float | None" = None) -> dict:
                     try:
                         await editor_service.complete_iteration_upload(it["id"], found["id"], "system")
                         counts["completed"] += 1
-                    except ValueError as e:
+                    except (ValueError, gdrive.DriveError) as e:
                         log.warning(f"reconcile: iteration {it['id']} not completed: {e}")
                 elif (files is not None and now - it["created_at"] > ABANDON_AFTER_SECONDS
                       and scheduler.clock_is_sane(now)):
-                    es._set("iterations", it["id"], now, status="abandoned")
-                    counts["abandoned"] += 1
+                    if es.abandon_iteration(it["id"], now):
+                        counts["abandoned"] += 1
             # Unknown files in the folder are left alone, never deleted.
-    except Exception as e:  # boot must not fail on recovery
+    except gdrive.DriveNotConnected:
+        pass  # nothing to reconcile against until Drive is connected; the next due run tries again
+    except Exception as e:  # a scheduler job must not fail on recovery
         log.error(f"reconcile failed: {e}")
     return counts

@@ -152,3 +152,19 @@ async def test_reset_clock_unblocks():
     scheduler.reset_clock(100)
     assert scheduler.status()["paused_since"] is None
     assert await scheduler.tick(101) is True
+
+
+@pytest.mark.asyncio
+async def test_non_finite_last_seen_is_garbage_and_logged_once(caplog):
+    ran = []
+
+    async def job(now):
+        ran.append(now)
+
+    scheduler.register("j", job)
+    with caplog.at_level("ERROR"):
+        for bad in ("nan", "inf", "garbage"):
+            db.meta_set("clock_last_seen", bad)
+            assert await scheduler.tick(5) is True
+    assert ran == [5, 5, 5]
+    assert len([r for r in caplog.records if r.levelname == "ERROR"]) == 1

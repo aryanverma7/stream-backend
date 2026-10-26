@@ -8,6 +8,7 @@ tick() therefore refuses to run any job until the clock passes
 meta["clock_last_seen"].
 """
 import asyncio
+import math
 import time
 from typing import Awaitable, Callable
 
@@ -24,6 +25,7 @@ _task: asyncio.Task | None = None
 _boot_time: float | None = None
 _insane = False
 _paused_since: float | None = None
+_garbage_logged = False
 
 
 def backoff_seconds(attempts: int) -> float:
@@ -36,15 +38,21 @@ def register(name: str, job: Callable[[float], Awaitable[None]]) -> None:
 
 
 def _last_seen() -> float | None:
+    global _garbage_logged
     raw = db.meta_get(_LAST_SEEN_KEY)
     if raw is None:
         return None
     try:
-        return float(raw)
+        v = float(raw)
     except ValueError:
-        # Treated as absent; the next sane tick rewrites it.
+        v = math.nan
+    if math.isfinite(v):
+        return v
+    # Treated as absent; the next sane tick rewrites it. (nan/inf would pause every job forever.)
+    if not _garbage_logged:
+        _garbage_logged = True
         log.error("Unparseable %s %r; ignoring it", _LAST_SEEN_KEY, raw)
-        return None
+    return None
 
 
 def clock_is_sane(now: float) -> bool:
@@ -128,8 +136,9 @@ async def stop() -> None:
 
 
 def _reset_for_tests() -> None:
-    global _boot_time, _insane, _paused_since
+    global _boot_time, _insane, _paused_since, _garbage_logged
     _jobs.clear()
+    _garbage_logged = False
     _boot_time = None
     _insane = False
     _paused_since = None

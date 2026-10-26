@@ -77,9 +77,18 @@ def test_complete_moves_tape_to_in_review():
 def test_complete_rejects_dead_statuses():
     t = es.create_tape(_proj()["id"], "a")
     i = es.create_iteration(t["id"], "a.mp4", 1, "u")
-    db.get().execute("UPDATE iterations SET status='abandoned' WHERE id=?", (i["id"],))
-    with pytest.raises(ValueError):
-        es.complete_iteration(i["id"], "F")
+    for dead in ("deleting", "deleted"):
+        db.get().execute("UPDATE iterations SET status=? WHERE id=?", (dead, i["id"]))
+        with pytest.raises(ValueError):
+            es.complete_iteration(i["id"], "F")
+
+
+def test_abandoned_iteration_found_later_becomes_ready():
+    t = es.create_tape(_proj()["id"], "a")
+    i = es.create_iteration(t["id"], "a.mp4", 1, "u", now=1.0)
+    assert es.abandon_iteration(i["id"], now=2.0) is True
+    row, changed = es.complete_iteration(i["id"], "F", now=3.0)
+    assert changed and row["status"] == "ready" and row["drive_file_id"] == "F"
 
 
 def test_unknown_status_rejected():

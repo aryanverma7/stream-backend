@@ -24,7 +24,8 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 API = "https://www.googleapis.com/drive/v3"
 UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files"
 
-_TOKEN_EXPIRY_MARGIN_SECONDS = 60
+# Media links hand this token to the browser; leave it ten minutes of life when we do.
+_TOKEN_EXPIRY_MARGIN_SECONDS = 600
 _TIMEOUT = aiohttp.ClientTimeout(total=60)
 # A backup PUT on a slow home uplink can legitimately take minutes: bound the
 # stalls, not the total.
