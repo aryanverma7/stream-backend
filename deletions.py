@@ -25,6 +25,7 @@ DELETE_GRACE_SECONDS = 3600
 
 _grace_applied = False
 _prev_now: "float | None" = None
+_prev_mono: "float | None" = None
 CLOCK_JUMP_SECONDS = 600  # run_due runs every 30 s tick; a bigger step is the clock (or a sleep), not time passing
 
 _DDL = """
@@ -177,6 +178,13 @@ def ensure_project_not_deleting(project_id) -> None:
         raise ValueError("This project is being deleted")
 
 
+def ensure_tape_not_deleting(tape_id) -> None:
+    """Raises ValueError while a tape_files delete for this tape is pending or running."""
+    if _c().execute("SELECT 1 FROM delete_requests WHERE kind='tape_files' AND target_id=?"
+                    " AND status IN ('pending','running')", (tape_id,)).fetchone():
+        raise ValueError("This tape's files are being deleted")
+
+
 def _event_ids(req):
     """(project_id, tape_id) for a request's events."""
     if req["kind"] == "tape_files":
@@ -288,9 +296,10 @@ def _finalize(req, now):
                         project_id=project_id, tape_id=tape_id, now=now)
 
 
-async def run_due(now: float) -> None:
+async def run_due(now: float, mono: "float | None" = None) -> None:
     """Scheduler job. Never raises: every failure is logged and retried on a later tick."""
-    global _grace_applied, _prev_now
+    global _grace_applied, _prev_now, _prev_mono
+    mono = time.monotonic() if mono is None else mono
     try:
         conn = _c()
         if not _grace_applied:
@@ -298,12 +307,13 @@ async def run_due(now: float) -> None:
             # runs jobs once the clock is sane, so the first run's `now` is the first trustworthy time.
             apply_boot_grace(now)
             _grace_applied = True
-        elif _prev_now is not None and now - _prev_now > CLOCK_JUMP_SECONDS:
+        elif _prev_now is not None and (now - _prev_now) - (mono - _prev_mono) > CLOCK_JUMP_SECONDS:
+            # wall delta minus monotonic delta: a slow tick (loop stalled) moves both, only a clock step moves one
             # The clock jumped forward (NTP fixing a slow clock, or a sleep): what looks due may have had
             # far less than its hour of undo in real time. Extra grace is always the safe direction.
             log.info("Clock moved %.0f s since the last run; giving pending deletes a fresh hour", now - _prev_now)
             apply_boot_grace(now)
-        _prev_now = now
+        _prev_now, _prev_mono = now, mono
         with db.transaction():
             conn.execute("UPDATE delete_requests SET status='running' WHERE status='pending' AND delete_at<=?",
                          (now,))
@@ -328,6 +338,6 @@ async def run_due(now: float) -> None:
 
 
 def _reset_for_tests() -> None:
-    global _grace_applied, _prev_now
+    global _grace_applied, _prev_now, _prev_mono
     _grace_applied = False
-    _prev_now = None
+    _prev_now = _prev_mono = None
