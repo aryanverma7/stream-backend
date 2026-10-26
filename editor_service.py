@@ -1,5 +1,6 @@
 """Drive-backed editor flows. Video bytes never touch this machine: we open a
 resumable-upload session and hand the browser its URL."""
+import asyncio
 import time
 
 from config import config
@@ -24,7 +25,10 @@ async def free_space() -> dict:
     return {"limit": limit, "usage": usage, "free": None if limit is None else max(0, limit - usage)}
 
 
-async def ensure_project_folder(project_id) -> str:
+_folder_lock = asyncio.Lock()
+
+
+async def _project_folder(project_id) -> str:
     p = es.get_project(project_id)
     if p is None:
         raise ValueError("No such project")
@@ -38,28 +42,39 @@ async def ensure_project_folder(project_id) -> str:
     return fid
 
 
+async def ensure_project_folder(project_id) -> str:
+    async with _folder_lock:
+        return await _project_folder(project_id)
+
+
 async def ensure_tape_folder(tape_id) -> str:
-    t = es.get_tape(tape_id)
-    if t is None:
-        raise ValueError("No such tape")
-    if t["drive_folder_id"]:
-        return t["drive_folder_id"]
-    parent = await ensure_project_folder(t["project_id"])
-    fid = await gdrive.create_folder(t["name"], parent)
-    es.set_tape_folder(tape_id, fid)
-    return fid
+    async with _folder_lock:  # re-read inside the lock so a racing caller sees the saved id
+        t = es.get_tape(tape_id)
+        if t is None:
+            raise ValueError("No such tape")
+        if t["drive_folder_id"]:
+            return t["drive_folder_id"]
+        fid = await gdrive.create_folder(t["name"], await _project_folder(t["project_id"]))
+        es.set_tape_folder(tape_id, fid)
+        return fid
 
 
 async def start_iteration_upload(tape_id, filename, size, mime) -> dict:
-    folder = await ensure_tape_folder(tape_id)
+    if es.get_tape(tape_id) is None:
+        raise ValueError("No such tape")
     free = (await free_space())["free"]
     if free is not None and size > free:
         raise DriveFull(size, free)
+    folder = await ensure_tape_folder(tape_id)
     it = es.create_iteration(tape_id, filename, size, "")
-    # ponytail: a failure below leaves an 'uploading' row; the abandon sweep reaps it.
-    url = await gdrive.start_resumable_upload(
-        f"v{it['version']} - {filename}", folder, size, mime,
-        {"iteration_id": str(it["id"])}, config.get("public_base_url") or None)
+    try:
+        url = await gdrive.start_resumable_upload(
+            f"v{it['version']} - {filename}", folder, size, mime,
+            {"iteration_id": str(it["id"])}, config.get("public_base_url") or None)
+    except BaseException:
+        with db.transaction() as conn:
+            conn.execute("DELETE FROM iterations WHERE id=?", (it["id"],))
+        raise
     with db.transaction() as conn:
         conn.execute("UPDATE iterations SET upload_url=? WHERE id=?", (url, it["id"]))
     return {"iteration_id": it["id"], "version": it["version"], "upload_url": url}
@@ -87,6 +102,8 @@ async def vod_ready(project_id, file_id, actor) -> dict:
     p = es.get_project(project_id)
     if p is None:
         raise ValueError("No such project")
+    if p["vod_status"] in ("deleting", "deleted"):
+        raise ValueError("This VOD is being deleted")
     if p["vod_status"] == "ready":
         return p
     email = config.get("editor_google_email", "")

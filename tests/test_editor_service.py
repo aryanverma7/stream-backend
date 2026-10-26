@@ -20,6 +20,7 @@ def _env(tmp_path, monkeypatch):
         return s_["quota"]
 
     async def create_folder(name, parent):
+        await __import__("asyncio").sleep(0)
         s_["folders"].append((name, parent))
         return f"F{len(s_['folders'])}"
 
@@ -75,8 +76,9 @@ async def _started(_env):
 @pytest.mark.asyncio
 async def test_complete_rejects_a_foreign_file(_env):
     _, iid = await _started(_env)
+    base = dict(_env["file"])
     for bad in ({"parents": ["other"]}, {"appProperties": {"iteration_id": "99"}}, {"size": 11}):
-        _env["file"] = {**_env["file"], **bad}
+        _env["file"] = {**base, **bad}
         with pytest.raises(ValueError, match="not this iteration"):
             await svc.complete_iteration_upload(iid, "fid", "x")
 
@@ -140,3 +142,48 @@ async def test_storage_view_lists_ready_and_deleting(_env):
     v = await svc.storage_view()
     assert sorted(f["label"] for f in v["files"]) == ["Ace — VOD", "Cut v1"]
     assert v["pending_deletes"] == [] and v["quota"]["free"] == 1000
+
+
+@pytest.mark.asyncio
+async def test_concurrent_tape_folder_creates_once(_env):
+    import asyncio
+    _, t = _tape()
+    a, b = await asyncio.gather(svc.ensure_tape_folder(t["id"]), svc.ensure_tape_folder(t["id"]))
+    assert a == b and len(_env["folders"]) == 2  # project + tape, once each
+
+
+@pytest.mark.asyncio
+async def test_failed_session_start_leaves_no_row_and_frees_version(_env, monkeypatch):
+    _, t = _tape()
+    async def boom(*a, **k): raise gdrive.DriveError("x", 500)
+    monkeypatch.setattr(gdrive, "start_resumable_upload", boom)
+    with pytest.raises(gdrive.DriveError):
+        await svc.start_iteration_upload(t["id"], "a.mp4", 10, "video/mp4")
+    assert es.list_iterations(t["id"]) == []
+    async def ok(*a, **k): return "u"
+    monkeypatch.setattr(gdrive, "start_resumable_upload", ok)
+    r = await svc.start_iteration_upload(t["id"], "a.mp4", 10, "video/mp4")
+    assert r["version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_refused_upload_makes_no_folder_or_row(_env):
+    _, t = _tape()
+    _env["quota"] = {"limit": 10, "usage": 10}
+    with pytest.raises(svc.DriveFull):
+        await svc.start_iteration_upload(t["id"], "a.mp4", 5, "video/mp4")
+    assert _env["folders"] == [] and es.list_iterations(t["id"]) == []
+
+
+@pytest.mark.asyncio
+async def test_missing_tape_is_value_error(_env):
+    with pytest.raises(ValueError):
+        await svc.start_iteration_upload(999, "a.mp4", 5, "video/mp4")
+
+
+@pytest.mark.asyncio
+async def test_vod_ready_refuses_deleting_vod(_env):
+    p, _ = _tape()
+    es._set("projects", p["id"], None, vod_status="deleting")
+    with pytest.raises(ValueError, match="being deleted"):
+        await svc.vod_ready(p["id"], "vf", "sys")
