@@ -52,6 +52,10 @@ def forget_token() -> None:
     _token_expires_at = 0.0
 
 
+def token_expires_at() -> float:
+    return _token_expires_at
+
+
 async def access_token(now: "float | None" = None) -> str:
     global _token, _token_expires_at
     now = time.time() if now is None else now
