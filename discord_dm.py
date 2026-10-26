@@ -84,7 +84,7 @@ async def send_dm(user_id: str, content: str) -> str:
         channel = await _create_channel(user_id, token)
     status, data = await _post(f"{API}/channels/{channel}/messages", {"content": content}, token)
     if status == 404 and cached:
-        db.get().execute("DELETE FROM meta WHERE key=?", (key,))
+        db.meta_delete(key)
         channel = await _create_channel(user_id, token)
         status, data = await _post(f"{API}/channels/{channel}/messages", {"content": content}, token)
     if status >= 400 or not data.get("id"):

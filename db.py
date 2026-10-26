@@ -106,6 +106,11 @@ def meta_set(key: str, value: str) -> None:
     )
 
 
+def meta_delete(key: str) -> None:
+    ensure(_META_DDL)
+    get().execute("DELETE FROM meta WHERE key=?", (key,))
+
+
 def ensure(ddl: str) -> None:
     """Run idempotent CREATE TABLE IF NOT EXISTS statements; each module calls this once for its own tables."""
     if ddl not in _ensured:
