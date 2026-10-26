@@ -341,3 +341,9 @@ def _reset_for_tests() -> None:
     global _grace_applied, _prev_now, _prev_mono
     _grace_applied = False
     _prev_now = _prev_mono = None
+
+
+def has_live_request(kind, target_id) -> bool:
+    """True while a delete request of this kind for this target is pending or running."""
+    return _c().execute("SELECT 1 FROM delete_requests WHERE kind=? AND target_id=?"
+                        " AND status IN ('pending','running')", (kind, target_id)).fetchone() is not None
