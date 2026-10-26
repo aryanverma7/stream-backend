@@ -85,6 +85,8 @@ async def complete_iteration_upload(iteration_id, file_id, actor) -> dict:
     if it is None:
         raise ValueError("No such iteration")
     tape = es.get_tape(it["tape_id"])
+    if tape is None:
+        raise ValueError("No such tape")
     f = await gdrive.get_file(file_id)
     if (not tape["drive_folder_id"] or tape["drive_folder_id"] not in f.get("parents", [])
             or f.get("appProperties", {}).get("iteration_id") != str(iteration_id)

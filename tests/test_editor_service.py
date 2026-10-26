@@ -187,3 +187,11 @@ async def test_vod_ready_refuses_deleting_vod(_env):
     es._set("projects", p["id"], None, vod_status="deleting")
     with pytest.raises(ValueError, match="being deleted"):
         await svc.vod_ready(p["id"], "vf", "sys")
+
+
+@pytest.mark.asyncio
+async def test_complete_with_missing_tape_is_value_error(_env, monkeypatch):
+    _, iid = await _started(_env)
+    monkeypatch.setattr(es, "get_tape", lambda i: None)
+    with pytest.raises(ValueError, match="No such tape"):
+        await svc.complete_iteration_upload(iid, "fid", "x")
