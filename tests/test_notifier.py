@@ -19,6 +19,8 @@ def setup(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "_data", {"discord_notifications_enabled": True,
                                           "authorized_github_usernames": ["Aryan"],
                                           "editor_github_username": "ed"})
+    db.ensure(db._META_DDL)
+    db.meta_set("notify_cursor", "0")  # an existing install: the first-run baseline is tested separately
 
 
 def outbox():
@@ -143,7 +145,7 @@ async def test_failure_stops_at_event_and_never_raises(monkeypatch):
     real = es.get_project
     monkeypatch.setattr(es, "get_project", lambda i: (_ for _ in ()).throw(RuntimeError("boom")))
     await notifier.run(T)
-    assert db.meta_get("notify_cursor") is None
+    assert db.meta_get("notify_cursor") == "0"
     monkeypatch.setattr(es, "get_project", real)
     await notifier.run(T)
     assert len(outbox()) == 1 and db.meta_get("notify_cursor") == str(e1 + 1)
@@ -183,3 +185,15 @@ async def test_no_back_online_for_short_restart():
     await notifier.back_online_once(T + 99999)
     notifier.notify_outbox.ensure_schema()
     assert outbox() == []
+
+
+@pytest.mark.asyncio
+async def test_first_run_baselines_cursor_and_skips_history():
+    db.get().execute("DELETE FROM meta WHERE key='notify_cursor'")
+    p = es.create_project("Ace", "2026-10-20", "", "v.mp4", 5, now=1.0)
+    old = es.record_event("system", "vod_ready", "s", project_id=p["id"], now=T)
+    await notifier.run(T)
+    assert outbox() == [] and db.meta_get("notify_cursor") == str(old)
+    es.record_event("system", "vod_ready", "s", project_id=p["id"], now=T)
+    await notifier.run(T + 1)
+    assert len(outbox()) == 1

@@ -107,6 +107,9 @@ async def deliver_due(now: float) -> None:
     """Scheduler job. Never raises."""
     try:
         if not config.get("discord_notifications_enabled", False):
+            with db.transaction():  # rows pending at switch-off must not replay when it is switched back on
+                _c().execute("UPDATE dm_outbox SET status='dropped', last_error='notifications disabled'"
+                             " WHERE status='pending'")
             return
         rows = _c().execute(
             "SELECT * FROM dm_outbox WHERE status='pending' AND next_attempt_at<=? ORDER BY id LIMIT ?",

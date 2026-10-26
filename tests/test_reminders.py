@@ -105,3 +105,26 @@ async def test_clip_wording_and_no_click_no_reminder():
     es.record_download_click(p["id"], now=at(9))
     await reminders.run(at(15))
     assert "clip" in db.get().execute("SELECT content FROM dm_outbox").fetchone()[0]
+
+
+@pytest.mark.asyncio
+async def test_recovery_after_discord_outage_delivers_one_reminder(monkeypatch):
+    import discord_dm
+    import notify_outbox
+    sent = []
+
+    async def fail(uid, text):
+        raise discord_dm.DiscordError("down")
+
+    async def ok(uid, text):
+        sent.append(text)
+    project(at(9))
+    monkeypatch.setattr(discord_dm, "send_dm", fail)
+    for h in range(12, 18):
+        await reminders.run(at(h))
+        await notify_outbox.deliver_due(at(h))
+    assert sent == []
+    monkeypatch.setattr(discord_dm, "send_dm", ok)
+    await reminders.run(at(18))
+    await notify_outbox.deliver_due(at(18) + 1)
+    assert len(sent) == 1

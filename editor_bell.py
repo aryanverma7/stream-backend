@@ -8,7 +8,7 @@ import editor_store as es
 from notifier import label
 
 _FIELDS = "id, at, actor, kind, summary, project_id, tape_id, iteration_id"
-_WHERE = "lower(actor)<>lower(?) AND actor<>'system'"
+_WHERE = ("lower(actor)<>lower(?) AND (actor<>'system' OR kind='iteration_ready')")  # recovered uploads
 _LABELS = {"comment_added": "commented on", "reply_added": "replied on"}
 
 

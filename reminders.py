@@ -49,6 +49,9 @@ async def run(now: float) -> None:
                         f"Reminder: you downloaded the clip {p['name']} — delete it from the editor page "
                         f"so it stops using Drive space.")
                 with db.transaction():
+                    db.get().execute(  # a backlog from an outage must not arrive as a burst
+                        "UPDATE dm_outbox SET status='dropped', last_error='superseded'"
+                        " WHERE status='pending' AND dedupe_key LIKE ?", (f"reminder:{p['id']}:%",))
                     notify_outbox.enqueue("editor", text, f"reminder:{p['id']}:{int(now // 3600)}", now)
                     db.meta_set(key, str(now + REMINDER_EVERY_SECONDS))
             except Exception:

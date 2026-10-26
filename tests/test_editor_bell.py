@@ -63,3 +63,13 @@ def test_mark_seen_clamps_to_newest_event():
     assert db.meta_get("bell_seen_aryan") == str(a)
     b = es.record_event("ed", "tape_created", "y", now=2.0)
     assert editor_bell.feed("aryan")["unseen"] == 1 and b > a
+
+
+def test_bell_shows_system_iteration_ready_only():
+    p, t, it = _world()
+    a = es.record_event("system", "iteration_ready", "recovered", project_id=p["id"], tape_id=t["id"],
+                        iteration_id=it["id"], now=2.0)
+    es.record_event("system", "delete_done", "Deleted x", now=3.0)
+    for who in ("aryan", "ed"):
+        assert [i["id"] for i in editor_bell.feed(who)["items"]] == [a]
+        assert editor_bell.feed(who)["unseen"] == 1

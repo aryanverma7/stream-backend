@@ -33,6 +33,7 @@ def _handle(ev: dict, now: float) -> None:
     if kind == "vod_ready":
         p = es.get_project(ev["project_id"])
         if p is None:  # row gone: skip it, never wedge the cursor on it
+            log.warning("Event %s: row gone, skipped", ev["id"])
             return
         what = "clip" if p["kind"] == "clip" else "VOD"
         notify_outbox.enqueue("editor", f"New {what} ready: {p['name']}. Open the editor page to download it.",
@@ -42,6 +43,7 @@ def _handle(ev: dict, now: float) -> None:
             it = es.get_iteration(ev["iteration_id"])
             tape = it and es.get_tape(it["tape_id"])
             if tape is None:
+                log.warning("Event %s: row gone, skipped", ev["id"])
                 return
             notify_outbox.enqueue("streamer", f"{tape['name']} v{it['version']} is ready to review.",
                                   f"iteration_ready:{it['id']}", now)
@@ -108,8 +110,13 @@ async def run(now: float) -> None:
         # Every schema before any transaction: db.ensure raises inside one.
         notify_outbox.ensure_schema()
         es._c()
-        cursor = int(db.meta_get(_CURSOR) or 0)
         db.ensure(_DDL)
+        raw = db.meta_get(_CURSOR)
+        if raw is None:  # first run on an existing database: don't DM history
+            raw = str(es._c().execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0])
+            with db.transaction():
+                db.meta_set(_CURSOR, raw)
+        cursor = int(raw)
         for ev in es.events_since(cursor):
             try:
                 with db.transaction():

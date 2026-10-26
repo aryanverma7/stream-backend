@@ -182,3 +182,14 @@ async def test_at_most_20_oldest_first(setup):
         ob.enqueue("editor", str(i), f"k{i}", now=1)
     await ob.deliver_due(5)
     assert [c for _, c in setup] == [str(i) for i in range(20)]
+
+
+@pytest.mark.asyncio
+async def test_switching_off_drops_rows_already_pending(setup, monkeypatch):
+    assert ob.enqueue("editor", "hi", "k", now=1) is True
+    monkeypatch.setitem(config._data, "discord_notifications_enabled", False)
+    await ob.deliver_due(5)
+    assert (row()["status"], row()["last_error"]) == ("dropped", "notifications disabled")
+    monkeypatch.setitem(config._data, "discord_notifications_enabled", True)
+    await ob.deliver_due(10)
+    assert setup == []
