@@ -57,9 +57,67 @@ async def test_sends_and_marks_sent(setup):
 @pytest.mark.asyncio
 async def test_disabled_sends_nothing(setup, monkeypatch):
     monkeypatch.setitem(config._data, "discord_notifications_enabled", False)
-    ob.enqueue("editor", "hi", "k", now=1)
+    assert ob.enqueue("editor", "hi", "k", now=1) is True
+    assert (row()["status"], row()["last_error"]) == ("dropped", "notifications disabled")
     await ob.deliver_due(5)
-    assert setup == [] and row()["status"] == "pending" and ob.status()["enabled"] is False
+    assert setup == [] and ob.status()["enabled"] is False
+    monkeypatch.setitem(config._data, "discord_notifications_enabled", True)
+    assert ob.enqueue("editor", "hi", "k", now=9) is False  # key kept: no stale replay
+    await ob.deliver_due(10)
+    assert setup == []
+
+
+def test_enqueue_joins_callers_transaction():
+    ob.status()  # ensures the DDL; ensure() refuses to run inside a transaction
+    with db.transaction():
+        ob.enqueue("editor", "a", "k1", now=1)
+    with pytest.raises(ZeroDivisionError):
+        with db.transaction():
+            ob.enqueue("editor", "b", "k2", now=1)
+            1 / 0
+    assert [r["dedupe_key"] for r in db.get().execute("SELECT * FROM dm_outbox")] == ["k1"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_deliver_sends_each_once(monkeypatch):
+    import asyncio
+    sent = []
+
+    async def slow(uid, content):
+        await asyncio.sleep(0)
+        sent.append(content)
+        return "m"
+    monkeypatch.setattr(discord_dm, "send_dm", slow)
+    for i in range(3):
+        ob.enqueue("editor", str(i), f"k{i}", now=1)
+    await asyncio.gather(ob.deliver_due(5), ob.deliver_due(5))
+    assert sorted(sent) == ["0", "1", "2"]
+
+
+@pytest.mark.asyncio
+async def test_unexpected_exception_goes_back_to_pending(monkeypatch):
+    async def bad(uid, content):
+        raise ValueError("secret detail")
+    monkeypatch.setattr(discord_dm, "send_dm", bad)
+    ob.enqueue("editor", "hi", "k", now=1)
+    await ob.deliver_due(100)
+    r = row()
+    assert (r["status"], r["attempts"], r["last_error"]) == ("pending", 1, "ValueError")
+    assert ob.status()["sending"] == 0
+
+
+@pytest.mark.asyncio
+async def test_crash_while_sending_replays_once(setup, tmp_path):
+    ob.enqueue("editor", "hi", "k", now=1)
+    db.get().execute("UPDATE dm_outbox SET status='sending'")
+    db.use_path_for_tests(tmp_path / "t.db")
+    assert ob.reset_stuck_sending() == 1
+    await ob.deliver_due(5)
+    assert len(setup) == 1
+    db.use_path_for_tests(tmp_path / "t.db")
+    assert ob.reset_stuck_sending() == 0
+    await ob.deliver_due(50)
+    assert len(setup) == 1
 
 
 @pytest.mark.asyncio

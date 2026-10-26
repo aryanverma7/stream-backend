@@ -114,7 +114,10 @@ def meta_delete(key: str) -> None:
 def ensure(ddl: str) -> None:
     """Run idempotent CREATE TABLE IF NOT EXISTS statements; each module calls this once for its own tables."""
     if ddl not in _ensured:
-        get().executescript(ddl)
+        conn = get()
+        if conn.in_transaction:  # executescript would COMMIT the caller's transaction
+            raise RuntimeError("db.ensure called inside a transaction")
+        conn.executescript(ddl)
         _ensured.add(ddl)
 
 

@@ -34,24 +34,28 @@ _logged_roles: set[str] = set()
 
 
 def _c():
+    db.ensure(db._META_DDL)  # meta_set/meta_delete run inside transactions; ensure first
     db.ensure(_DDL)
     return db.get()
 
 
 def enqueue(recipient_role: str, content: str, dedupe_key: str, now: "float | None" = None) -> bool:
-    """False when dedupe_key already exists."""
+    """False when dedupe_key already exists. One statement, no transaction of its own, so it joins the
+    caller's. While notifications are off the row is stored 'dropped' (key kept): no stale replay later."""
     now = time.time() if now is None else now
-    conn = _c()
-    with db.transaction():
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO dm_outbox(recipient_role, content, dedupe_key, status, next_attempt_at, created_at)"
-            " VALUES(?,?,?,'pending',?,?)", (recipient_role, content, dedupe_key, now, now))
+    off = not config.get("discord_notifications_enabled", False)
+    cur = _c().execute(
+        "INSERT OR IGNORE INTO dm_outbox(recipient_role, content, dedupe_key, status, next_attempt_at,"
+        " created_at, last_error) VALUES(?,?,?,?,?,?,?)",
+        (recipient_role, content, dedupe_key, "dropped" if off else "pending", now, now,
+         "notifications disabled" if off else None))
     return cur.rowcount == 1
 
 
 def reset_stuck_sending() -> int:
     """Startup: 'sending' -> 'pending'. Accepted duplicate: Discord may have taken the message and the
-    power died before the row was marked sent, so that one DM can arrive twice. Rare; losing it is worse."""
+    power died before the row was marked sent, so that one DM can arrive twice. A second path: our client
+    timed out after Discord had accepted the message. Rare; losing a DM is worse."""
     conn = _c()
     with db.transaction():
         cur = conn.execute("UPDATE dm_outbox SET status='pending' WHERE status='sending'")
@@ -70,12 +74,18 @@ async def _deliver_one(row, now: float) -> None:
             conn.execute("UPDATE dm_outbox SET status='dropped', last_error=? WHERE id=?",
                          (f"no Discord id for {role}", row["id"]))
         return
-    with db.transaction():
-        conn.execute("UPDATE dm_outbox SET status='sending' WHERE id=?", (row["id"],))
+    with db.transaction():  # conditional claim: an overlapping deliver_due must not send it too
+        claimed = conn.execute("UPDATE dm_outbox SET status='sending' WHERE id=? AND status='pending'",
+                               (row["id"],)).rowcount
+    if not claimed:
+        return
     try:
         await discord_dm.send_dm(user_id, row["content"])
-    except (discord_dm.DiscordError, discord_dm.DiscordNotConfigured) as e:
-        err = str(e)[:300]
+    except Exception as e:
+        known = isinstance(e, (discord_dm.DiscordError, discord_dm.DiscordNotConfigured))
+        err = str(e)[:300] if known else type(e).__name__
+        if not known:
+            log.exception("Unexpected error sending DM row %s", row["id"])
         wait = max(backoff_seconds(row["attempts"]), getattr(e, "retry_after", None) or 0)
         with db.transaction():
             conn.execute("UPDATE dm_outbox SET status='pending', attempts=attempts+1, next_attempt_at=?,"
@@ -113,5 +123,5 @@ def status() -> dict:
         return conn.execute("SELECT COUNT(*) FROM dm_outbox WHERE status=?", (s,)).fetchone()[0]
     last = conn.execute("SELECT MAX(sent_at) FROM dm_outbox").fetchone()[0]
     return {"enabled": bool(config.get("discord_notifications_enabled", False)),
-            "pending": n("pending"), "dropped": n("dropped"),
+            "pending": n("pending"), "sending": n("sending"), "dropped": n("dropped"),
             "last_error": db.meta_get(_ERR_KEY), "last_sent_at": last}
