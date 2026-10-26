@@ -23,6 +23,7 @@ import auth
 import break_timer
 import credit_ocr
 import dashboard_api
+import editor_api
 import game_events
 import health_checks
 import public_api
@@ -86,6 +87,9 @@ def build_app() -> web.Application:
     break_timer.register_routes(app)
     public_api.register_public_routes(app)
     dashboard_api.register_routes(app)
+    # The editor app. Both roles reach /api/editor/* through auth.py's
+    # EDITOR_PATHS; streamer-only actions are refused inside the handlers.
+    editor_api.register_routes(app)
 
     # Registered LAST, deliberately - confirmed by testing that aiohttp
     # resolves the more specific routes above before falling through to

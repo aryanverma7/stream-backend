@@ -14,14 +14,18 @@ them. The actual logic for each piece lives in its own module.
 import asyncio
 import signal
 
+import backup
 import break_timer
 import credit_ocr
+import deletions
 import discord_live
 import game_events
 import health_checks
 import points_cloudbot
 import greeter
+import reconcile
 import roulette
+import scheduler
 import spotify
 import valorant_rank
 from config import config
@@ -59,6 +63,18 @@ async def main():
     # Started after the server is listening, since the very first probe
     # goes out to Cloudflare and comes straight back into the route above.
     await health_checks.start()
+
+    # The editor app's timed work: two-step deletes and the nightly DB
+    # backup. No boot grace here - run_due gives every pending delete a
+    # fresh hour on its first run, which only happens once the scheduler
+    # trusts the clock (a boot-time grace could be computed from 2001).
+    scheduler.register("deletions", deletions.run_due)
+    scheduler.register("backup", backup.run_if_due)
+    await scheduler.start()
+
+    # One-shot: finish uploads the editor's browser completed while we were
+    # off. Never raises, and never holds up the rest of startup on Drive.
+    reconcile_task = asyncio.create_task(reconcile.run_once())  # kept: an unreferenced task can be collected
 
     # Outbound connection to Streamer.bot (Section 18's hybrid architecture)
     streamerbot.on_event(forward_chat_to_widgets)
@@ -171,6 +187,7 @@ async def main():
     await break_timer.stop_broadcaster()
     await spotify.stop_now_playing_poller()
     await stop_tips_listener()
+    await scheduler.stop()
     await health_checks.stop()
     await streamerbot.stop()
     await runner.cleanup()
