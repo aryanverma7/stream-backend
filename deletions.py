@@ -86,7 +86,10 @@ def _target(kind, target_id):
         its = es.list_iterations(t["id"])
         if any(i["status"] == "uploading" for i in its):
             raise ValueError("Wait for the upload to finish first")
-        return t["name"], t["project_id"], t["id"], _iteration_files(its)
+        files = _iteration_files(its)
+        if not files:  # an empty request would still set files_deleted_at, which unlocks a host clip's delete
+            raise ValueError("Nothing to delete")
+        return t["name"], t["project_id"], t["id"], files
     if kind == "project":
         p = es.get_project(target_id)
         if p is None or p["deleted_at"] is not None:

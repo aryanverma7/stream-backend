@@ -437,3 +437,14 @@ async def test_editor_cannot_start_over():
         assert await x.admin("POST", f"/api/editor/iterations/{it['id']}/start-over") == (200, {"resolved": 1})
         assert ec.comments_for_iteration(it["id"])[0]["resolved"]
         assert (await x.admin("POST", "/api/editor/iterations/999/start-over"))[0] == 404
+
+
+@pytest.mark.asyncio
+async def test_start_over_only_on_the_latest_version():
+    p, t, it, c = _world()
+    v2 = es.create_iteration(t["id"], "b.mp4", 10, "", now=5.0)  # still uploading, but it is the latest
+    async with api() as x:
+        assert await x.admin("POST", f"/api/editor/iterations/{it['id']}/start-over") == \
+            (400, {"error": "Start over works on the latest version"})
+        assert not ec.comments_for_iteration(it["id"])[0]["resolved"]
+        assert await x.admin("POST", f"/api/editor/iterations/{v2['id']}/start-over") == (200, {"resolved": 0})

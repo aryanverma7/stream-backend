@@ -229,12 +229,9 @@ async def test_tape_files_marks_iterations_deleted_and_keeps_tape(drive):
     assert tape is not None and tape["files_deleted_at"] == T0 + 3600
     assert _req(r["request_id"])["status"] == "done"
     assert es.get_project(p["id"])["vod_status"] == "ready"
-    # nothing left: a second request still completes at its due time
-    r2 = deletions.request_delete("tape_files", t["id"], "Ace clip", username="boss", role="admin", now=T0 + 4000)
-    assert _files(r2["request_id"]) == []
-    deletions._prev_now = None  # the 30 s ticks in between are not simulated
-    await deletions.run_due(T0 + 7600)
-    assert _req(r2["request_id"])["status"] == "done"
+    # nothing left: a second request is refused rather than "completing" an empty delete
+    with pytest.raises(ValueError, match="Nothing to delete"):
+        deletions.request_delete("tape_files", t["id"], "Ace clip", username="boss", role="admin", now=T0 + 4000)
 
 
 @pytest.mark.asyncio
@@ -381,6 +378,8 @@ def test_project_delete_refused_for_clip_holding_combined_reel(drive):
     a = es.create_project("Clip A", "2026-10-20", "", "a.mp4", 1, now=T0, duration_s=20.0)
     b = es.create_project("Clip B", "2026-10-20", "", "b.mp4", 1, now=T0, duration_s=20.0)
     reel = svc.combine_clips([a["id"], b["id"]], "Duo", "aryan")
+    it = es.create_iteration(reel["id"], "duo.mp4", 1, "u", now=T0)
+    es.complete_iteration(it["id"], "DUO1", now=T0)
     with pytest.raises(ValueError, match="This clip holds a combined reel - delete the reel's files first"):
         deletions.request_delete("project", a["id"], "Clip A", username="aryan", role="admin", now=T0)
     # The other source holds no reel of its own and is deleted normally.
@@ -391,3 +390,13 @@ def test_project_delete_refused_for_clip_holding_combined_reel(drive):
     assert es.get_tape(reel["id"])["files_deleted_at"] is not None
     assert deletions.request_delete("project", a["id"], "Clip A", username="aryan", role="admin",
                                     now=T0 + 7200)["label"] == "Clip A"
+
+
+def test_empty_tape_files_delete_is_refused(drive):
+    # An empty "files delete" would set files_deleted_at and unlock the host clip's project delete
+    # while the combined reel is still the only reel of its other clips.
+    p = _project()
+    t = es.create_tape(p["id"], "Empty", now=T0)
+    with pytest.raises(ValueError, match="Nothing to delete"):
+        deletions.request_delete("tape_files", t["id"], "Empty", username="boss", role="admin", now=T0)
+    assert deletions.pending(now=T0) == [] and es.get_tape(t["id"])["files_deleted_at"] is None

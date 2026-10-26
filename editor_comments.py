@@ -122,10 +122,12 @@ def set_resolved(comment_id, iteration_id, resolved, by, now=None):
 
 
 def start_over(iteration_id, by, now=None) -> int:
-    """Resolves every open comment on this iteration only (earlier versions keep their state)."""
+    """Resolves every open comment on the tape's latest iteration (earlier versions keep their state)."""
     now = time.time() if now is None else now
     _cc()
     project_id, tape_id = _ctx(iteration_id)
+    if es.get_iteration(iteration_id)["version"] != es.next_version(tape_id) - 1:
+        raise ValueError("Start over works on the latest version")
     with db.transaction() as conn:
         n = conn.execute("UPDATE comment_state SET resolved=1, resolved_by=?, resolved_at=?"
                          " WHERE iteration_id=? AND resolved=0", (by, now, iteration_id)).rowcount
