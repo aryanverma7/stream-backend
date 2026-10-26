@@ -62,7 +62,7 @@ def _count(kind: str, n: int) -> str:
     return "started over" if n == 1 else f"started over {n} times"
 
 
-def _label(tape_id, iteration_id) -> str:
+def label(tape_id, iteration_id) -> str:
     tape = es.get_tape(tape_id) if tape_id is not None else None
     it = es.get_iteration(iteration_id) if iteration_id is not None else None
     name = tape["name"] if tape else "a deleted tape"
@@ -77,7 +77,7 @@ def _digest(rows) -> str:
         group[r["kind"]] = group.get(r["kind"], 0) + 1
     lines = []
     for actor, groups in by_actor.items():
-        parts = [", ".join(_count(k, c[k]) for k in _DIGEST_KINDS if k in c) + " on " + _label(*key)
+        parts = [", ".join(_count(k, c[k]) for k in _DIGEST_KINDS if k in c) + " on " + label(*key)
                  for key, c in groups.items()]
         lines.append(f"{display_name(actor)}: " + "; ".join(parts))
     return "; ".join(lines) + "."

@@ -55,3 +55,11 @@ def test_bell_unseen_and_mark_seen():
     assert editor_bell.feed("aryan")["unseen"] == 0
     assert db.meta_get("bell_seen_aryan") == str(b)
     assert editor_bell.feed("ed")["unseen"] == 0
+
+
+def test_mark_seen_clamps_to_newest_event():
+    a = es.record_event("ed", "tape_created", "x", now=1.0)
+    editor_bell.mark_seen("aryan", a + 1000)
+    assert db.meta_get("bell_seen_aryan") == str(a)
+    b = es.record_event("ed", "tape_created", "y", now=2.0)
+    assert editor_bell.feed("aryan")["unseen"] == 1 and b > a

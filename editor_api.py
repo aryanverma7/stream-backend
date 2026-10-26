@@ -393,7 +393,7 @@ async def search(request, me):
 # -- notification bell (both roles; whose bell is always the session's, never a parameter) --
 
 def _non_negative_int(v):
-    if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+    if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v < 10**18:  # 18 digits, as _ID
         raise _Fail(400, "Expected a non-negative integer id")
     return v
 

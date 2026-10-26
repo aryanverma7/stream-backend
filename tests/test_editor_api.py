@@ -477,5 +477,6 @@ async def test_notifications_route_uses_session_identity():
         assert (status, [i["id"] for i in got["items"]], got["unseen"]) == (200, [by_editor], 0)
         assert (await a.admin("GET", f"/api/editor/notifications?after={by_editor}"))[1]["items"] == []
         assert (await a.admin("GET", "/api/editor/notifications?after=x"))[0] == 400
-        for bad in ({}, {"up_to_id": "3"}, {"up_to_id": True}, {"up_to_id": -1}):
+        for bad in ({}, {"up_to_id": "3"}, {"up_to_id": True}, {"up_to_id": -1},
+                    {"up_to_id": 10**19}):
             assert (await a.admin("POST", "/api/editor/notifications/seen", bad))[0] == 400, bad
