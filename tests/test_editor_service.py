@@ -84,14 +84,14 @@ async def test_complete_rejects_a_foreign_file(_env):
 
 
 @pytest.mark.asyncio
-async def test_complete_twice_carries_over_once_and_logs_one_event(_env, monkeypatch):
+async def test_complete_twice_logs_one_event_and_carry_over_is_rerun(_env, monkeypatch):
     import editor_comments
     calls = []
     monkeypatch.setattr(editor_comments, "carry_over", lambda i: calls.append(i))
     _, iid = await _started(_env)
     await svc.complete_iteration_upload(iid, "fid", "x")
     r = await svc.complete_iteration_upload(iid, "fid", "x")
-    assert r["status"] == "ready" and calls == [iid]
+    assert r["status"] == "ready" and calls == [iid, iid]  # carry_over is idempotent; re-running is the retry path
     n = db.get().execute("SELECT COUNT(*) FROM events WHERE kind='iteration_ready'").fetchone()[0]
     assert n == 1
 
@@ -222,3 +222,47 @@ async def test_no_new_work_lands_in_a_project_being_deleted(_env):
     assert len(es.list_tapes(p["id"])) == 1 and _env["started"] == [_env["started"][0]] and _env["shared"] == []
     assert es.get_iteration(iid)["status"] == "abandoned"
     assert es.get_project(p["id"])["vod_status"] == "uploading"
+
+
+@pytest.mark.asyncio
+async def test_retry_after_carry_over_crash_carries_over_and_logs_once(_env, monkeypatch):
+    import editor_comments
+    calls = []
+
+    def flaky(i):
+        calls.append(i)
+        if len(calls) == 1:
+            raise RuntimeError("power cut")
+
+    monkeypatch.setattr(editor_comments, "carry_over", flaky)
+    _, iid = await _started(_env)
+    with pytest.raises(RuntimeError):
+        await svc.complete_iteration_upload(iid, "fid", "x")
+    await svc.complete_iteration_upload(iid, "fid", "x")
+    assert calls == [iid, iid]
+    n = db.get().execute("SELECT COUNT(*) FROM events WHERE kind='iteration_ready'").fetchone()[0]
+    assert n == 1
+
+
+@pytest.mark.asyncio
+async def test_ready_and_its_event_commit_together(_env, monkeypatch):
+    _, iid = await _started(_env)
+    p = es.create_project("B", "2026-10-21", "", "v.mp4", 5)
+
+    def boom(*a, **k):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(es, "record_event", boom)
+    with pytest.raises(RuntimeError):
+        await svc.complete_iteration_upload(iid, "fid", "x")
+    with pytest.raises(RuntimeError):
+        await svc.vod_ready(p["id"], "VOD", "x")
+    assert es.get_iteration(iid)["status"] == "uploading"
+    assert es.get_project(p["id"])["vod_status"] == "uploading"
+
+
+@pytest.mark.asyncio
+async def test_abandoned_upload_with_verified_file_recovers(_env):
+    _, iid = await _started(_env)
+    es.abandon_iteration(iid)
+    assert (await svc.complete_iteration_upload(iid, "fid", "x"))["status"] == "ready"

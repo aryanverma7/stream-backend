@@ -53,6 +53,10 @@ class NotAllowed(PermissionError):
     pass
 
 
+class NotFound(ValueError):
+    pass
+
+
 def _c():
     # Both DDLs before any transaction: executescript COMMITs, which would end one early.
     es._c()
@@ -182,7 +186,7 @@ def undo(request_id, *, username, role, now=None) -> dict:
     with db.transaction():
         req = conn.execute("SELECT * FROM delete_requests WHERE id=?", (request_id,)).fetchone()
         if req is None:
-            raise ValueError("No such delete request")
+            raise NotFound("No such delete request")
         if role != "admin" and req["requested_by"] != username:
             raise NotAllowed("Only the streamer can undo someone else's delete.")
         if req["status"] != "pending":

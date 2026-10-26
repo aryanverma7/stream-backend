@@ -154,11 +154,12 @@ def list_iterations(tape_id):
                 " FROM iterations WHERE tape_id=? ORDER BY version", (tape_id,))
 
 
-def complete_iteration(id, file_id, now=None):
+def complete_iteration(id, file_id, now=None, actor=None):
     """
     Returns (row, changed); changed is True only on the uploading/abandoned -> ready
     transition. An abandoned upload whose file turns up (and was verified by the
-    caller) is recovered rather than refused.
+    caller) is recovered rather than refused. With an actor, the iteration_ready
+    event is recorded in the same transaction, so it exists exactly when the status does.
     """
     now = time.time() if now is None else now
     _c()
@@ -174,6 +175,10 @@ def complete_iteration(id, file_id, now=None):
                      " WHERE id=?", (file_id, now, now, id))
         conn.execute("UPDATE tapes SET status='in_review', updated_at=?"
                      " WHERE id=? AND status IN ('cutting','changes_asked')", (now, row["tape_id"]))
+        if actor is not None:
+            tape = get_tape(row["tape_id"])
+            record_event(actor, "iteration_ready", f"{tape['name']} v{row['version']} is ready",
+                         project_id=tape["project_id"], tape_id=tape["id"], iteration_id=id, now=now)
     return get_iteration(id), True
 
 

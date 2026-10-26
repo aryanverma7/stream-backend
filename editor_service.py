@@ -109,11 +109,9 @@ async def complete_iteration_upload(iteration_id, file_id, actor) -> dict:
             or f.get("size") != it["size"]):
         raise ValueError("That file is not this iteration's upload")
     deletions.ensure_project_not_deleting(tape["project_id"])  # after the await, right before the write
-    row, changed = es.complete_iteration(iteration_id, file_id)
-    if changed:
-        editor_comments.carry_over(iteration_id)
-        es.record_event(actor, "iteration_ready", f"{tape['name']} v{row['version']} is ready",
-                        project_id=tape["project_id"], tape_id=tape["id"], iteration_id=iteration_id)
+    row, _ = es.complete_iteration(iteration_id, file_id, actor=actor)  # records iteration_ready atomically
+    # Every time, not only on the transition: idempotent, so a retry after a crash here still carries over.
+    editor_comments.carry_over(iteration_id)
     return row
 
 
@@ -130,8 +128,9 @@ async def vod_ready(project_id, file_id, actor) -> dict:
     if email:
         await gdrive.share_with(file_id, email, "reader")
     deletions.ensure_project_not_deleting(project_id)
-    p = es.mark_vod_ready(project_id, file_id)
-    es.record_event(actor, "vod_ready", f"{p['name']} VOD is ready", project_id=project_id)
+    with db.transaction():
+        p = es.mark_vod_ready(project_id, file_id)
+        es.record_event(actor, "vod_ready", f"{p['name']} VOD is ready", project_id=project_id)
     return p
 
 

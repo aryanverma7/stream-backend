@@ -9,6 +9,7 @@ import binascii
 import functools
 import json
 import math
+import re
 import time
 
 from aiohttp import web
@@ -54,6 +55,8 @@ def _route(handler):
             return web.json_response({"error": NOT_CONNECTED}, status=503)
         except gdrive.DriveError:
             return web.json_response({"error": DRIVE_PROBLEM}, status=502)
+        except deletions.NotFound as e:
+            return web.json_response({"error": str(e)}, status=404)
         except deletions.ConfirmMismatch:
             return web.json_response({"error": "Type the name exactly to confirm"}, status=400)
         except PermissionError as e:  # includes deletions.NotAllowed
@@ -68,8 +71,12 @@ def _admin(me):
         raise _Fail(403, ONLY_STREAMER)
 
 
+_ID = r"\d{1,18}"  # fits SQLite's signed 64-bit INTEGER; longer is simply not found
+_FILE_ID = re.compile(r"[A-Za-z0-9_-]{1,200}")
+
+
 def _id(request, key="id"):
-    return int(request.match_info[key])  # routes only match digits
+    return int(request.match_info[key])  # routes only match _ID
 
 
 def _found(row):
@@ -121,12 +128,41 @@ def _project(id):
     return _found(None if p is None or p["deleted_at"] is not None else p)
 
 
+def _project_view(p):
+    return {k: v for k, v in p.items() if k != "vod_upload_url"}
+
+
+def _tape(id):
+    """A tape, 404 if it or its project is gone."""
+    t = _found(es.get_tape(id))
+    _project(t["project_id"])
+    return t
+
+
+def _iteration(id):
+    it = _found(es.get_iteration(id))
+    _tape(it["tape_id"])
+    return it
+
+
+def _comment(id):
+    c = _found(ec._comment(id))
+    _iteration(c["iteration_id"])
+    return c
+
+
+def _no_store(resp):
+    resp.headers["Cache-Control"] = "no-store"  # carries a live access token
+    return resp
+
+
 def _latest_ready(tape_id):
     return next((i for i in reversed(es.list_iterations(tape_id)) if i["status"] == "ready"), None)
 
 
-def _iteration_view(it):
-    view = {k: v for k, v in it.items() if k != "thumbnail"}
+def _iteration_view(it, with_upload_url=False):
+    """The upload URL is a bearer credential for the upload: only the single-iteration GET carries it."""
+    view = {k: v for k, v in it.items() if k != "thumbnail" and (with_upload_url or k != "upload_url")}
     view["has_thumbnail"] = it.get("thumbnail") is not None
     view["checks"] = json.loads(it["checks_json"]) if it.get("checks_json") else None
     return view
@@ -143,7 +179,7 @@ async def me(request, me):
 
 @_route
 async def list_projects(request, me):
-    projects = [{**p, "has_new": any(ep.tape_has_new(me["username"], t["id"]) for t in es.list_tapes(p["id"]))}
+    projects = [{**_project_view(p), "has_new": any(ep.tape_has_new(me["username"], t["id"]) for t in es.list_tapes(p["id"]))}
                 for p in es.list_projects()]
     return _ok({"projects": projects})
 
@@ -159,14 +195,14 @@ async def get_project(request, me):
         tapes.append({**t, "has_new": ep.tape_has_new(me["username"], t["id"]),
                       "latest_version": latest and latest["version"],
                       "latest_iteration_id": latest and latest["id"], "open_comments": open_comments})
-    return _ok({"project": p, "tapes": tapes})
+    return _ok({"project": _project_view(p), "tapes": tapes})
 
 
 @_route
 async def rename_project(request, me):
     _admin(me)
     p = _project(_id(request))
-    return _ok(es.rename_project(p["id"], _text(await _body(request), "name")))
+    return _ok(_project_view(es.rename_project(p["id"], _text(await _body(request), "name"))))
 
 
 @_route
@@ -176,7 +212,7 @@ async def download_project(request, me):
     # Only the editor's click counts: it is what lets the editor delete the VOD afterwards.
     if me["role"] == "editor":
         es.record_download_click(p["id"])
-    return _ok(link)
+    return _no_store(_ok(link))
 
 
 @_route
@@ -189,14 +225,14 @@ async def create_tape(request, me):
 
 @_route
 async def get_tape(request, me):
-    t = _found(es.get_tape(_id(request)))
+    t = _tape(_id(request))
     ep.mark_tape_seen(me["username"], t["id"])
-    return _ok({"tape": t, "iterations": es.list_iterations(t["id"])})
+    return _ok({"tape": t, "iterations": [_iteration_view(i) for i in es.list_iterations(t["id"])]})
 
 
 @_route
 async def update_tape(request, me):
-    t = _found(es.get_tape(_id(request)))
+    t = _tape(_id(request))
     body = await _body(request)
     status = body.get("status")
     # Finalising, or undoing a final, is the streamer's call.
@@ -210,7 +246,7 @@ async def update_tape(request, me):
 
 @_route
 async def start_iteration(request, me):
-    t = _found(es.get_tape(_id(request)))
+    t = _tape(_id(request))
     body = await _body(request)
     size = _int(body, "size")
     if size <= 0:
@@ -222,27 +258,30 @@ async def start_iteration(request, me):
 
 @_route
 async def complete_iteration(request, me):
-    it = _found(es.get_iteration(_id(request)))
+    it = _iteration(_id(request))
     file_id = _text(await _body(request), "file_id")
+    if not _FILE_ID.fullmatch(file_id):
+        raise _Fail(400, "file_id is not a Drive file id")
     return _ok(_iteration_view(await svc.complete_iteration_upload(it["id"], file_id, me["username"])))
 
 
 @_route
 async def get_iteration(request, me):
-    it = _found(es.get_iteration(_id(request)))
-    return _ok({"iteration": _iteration_view(it), "comments": ec.comments_for_iteration(it["id"]),
+    it = _iteration(_id(request))
+    return _ok({"iteration": _iteration_view(it, with_upload_url=True), "comments": ec.comments_for_iteration(it["id"]),
                 "position_s": ep.get_position(me["username"], it["id"])})
 
 
 @_route
 async def get_thumbnail(request, me):
-    it = _found(es.get_iteration(_id(request)))
-    return web.Response(body=_found(it["thumbnail"]), content_type="image/jpeg")
+    it = _iteration(_id(request))
+    return web.Response(body=_found(it["thumbnail"]), content_type="image/jpeg",
+                        headers={"X-Content-Type-Options": "nosniff"})
 
 
 @_route
 async def put_media(request, me):
-    it = _found(es.get_iteration(_id(request)))
+    it = _iteration(_id(request))
     body = await _body(request)
     checks_json = thumbnail = None
     if body.get("checks") is not None:
@@ -261,13 +300,13 @@ async def put_media(request, me):
 
 @_route
 async def media_link(request, me):
-    it = _found(es.get_iteration(_id(request)))
-    return _ok(await svc.media_link(iteration_id=it["id"]))
+    it = _iteration(_id(request))
+    return _no_store(_ok(await svc.media_link(iteration_id=it["id"])))
 
 
 @_route
 async def put_position(request, me):
-    it = _found(es.get_iteration(_id(request)))
+    it = _iteration(_id(request))
     pos = _seconds((await _body(request)).get("position_s"))
     if pos is None or pos < 0:
         raise _Fail(400, "position_s must be a number of seconds")
@@ -279,7 +318,7 @@ async def put_position(request, me):
 
 @_route
 async def add_comment(request, me):
-    it = _found(es.get_iteration(_id(request)))
+    it = _iteration(_id(request))
     body = await _body(request)
     if body.get("kind") not in ec.KINDS:
         raise _Fail(400, "kind must be one of fix, keep, question")
@@ -292,7 +331,7 @@ async def add_comment(request, me):
 
 @_route
 async def edit_comment(request, me):
-    c = _found(ec._comment(_id(request)))
+    c = _comment(_id(request))
     body = await _body(request)
     for key in ("body", "kind"):
         if body.get(key) is not None and not isinstance(body[key], str):
@@ -302,7 +341,7 @@ async def edit_comment(request, me):
 
 @_route
 async def add_reply(request, me):
-    c = _found(ec._comment(_id(request)))
+    c = _comment(_id(request))
     text = (await _body(request)).get("body")
     if not isinstance(text, str):
         raise _Fail(400, "body must be a string")
@@ -312,7 +351,7 @@ async def add_reply(request, me):
 @_route
 async def set_resolved(request, me):
     _admin(me)
-    it = _found(es.get_iteration(_id(request, "iid")))
+    it = _iteration(_id(request, "iid"))
     resolved = (await _body(request)).get("resolved")
     if not isinstance(resolved, bool):
         raise _Fail(400, "resolved must be true or false")
@@ -410,31 +449,31 @@ def register_routes(app: web.Application) -> None:
     p = "/api/editor"
     r.add_get(f"{p}/me", me)
     r.add_get(f"{p}/projects", list_projects)
-    r.add_get(f"{p}/projects/{{id:\\d+}}", get_project)
-    r.add_patch(f"{p}/projects/{{id:\\d+}}", rename_project)
-    r.add_post(f"{p}/projects/{{id:\\d+}}/download", download_project)
-    r.add_post(f"{p}/projects/{{id:\\d+}}/tapes", create_tape)
-    r.add_get(f"{p}/tapes/{{id:\\d+}}", get_tape)
-    r.add_patch(f"{p}/tapes/{{id:\\d+}}", update_tape)
-    r.add_post(f"{p}/tapes/{{id:\\d+}}/iterations", start_iteration)
-    r.add_post(f"{p}/iterations/{{id:\\d+}}/complete", complete_iteration)
-    r.add_get(f"{p}/iterations/{{id:\\d+}}", get_iteration)
-    r.add_get(f"{p}/iterations/{{id:\\d+}}/thumbnail", get_thumbnail)
-    r.add_put(f"{p}/iterations/{{id:\\d+}}/media", put_media)
-    r.add_get(f"{p}/iterations/{{id:\\d+}}/media-link", media_link)
-    r.add_put(f"{p}/iterations/{{id:\\d+}}/position", put_position)
-    r.add_post(f"{p}/iterations/{{id:\\d+}}/comments", add_comment)
-    r.add_patch(f"{p}/comments/{{id:\\d+}}", edit_comment)
-    r.add_post(f"{p}/comments/{{id:\\d+}}/replies", add_reply)
-    r.add_put(f"{p}/iterations/{{iid:\\d+}}/comments/{{cid:\\d+}}/resolved", set_resolved)
+    r.add_get(f"{p}/projects/{{id:{_ID}}}", get_project)
+    r.add_patch(f"{p}/projects/{{id:{_ID}}}", rename_project)
+    r.add_post(f"{p}/projects/{{id:{_ID}}}/download", download_project)
+    r.add_post(f"{p}/projects/{{id:{_ID}}}/tapes", create_tape)
+    r.add_get(f"{p}/tapes/{{id:{_ID}}}", get_tape)
+    r.add_patch(f"{p}/tapes/{{id:{_ID}}}", update_tape)
+    r.add_post(f"{p}/tapes/{{id:{_ID}}}/iterations", start_iteration)
+    r.add_post(f"{p}/iterations/{{id:{_ID}}}/complete", complete_iteration)
+    r.add_get(f"{p}/iterations/{{id:{_ID}}}", get_iteration)
+    r.add_get(f"{p}/iterations/{{id:{_ID}}}/thumbnail", get_thumbnail)
+    r.add_put(f"{p}/iterations/{{id:{_ID}}}/media", put_media)
+    r.add_get(f"{p}/iterations/{{id:{_ID}}}/media-link", media_link)
+    r.add_put(f"{p}/iterations/{{id:{_ID}}}/position", put_position)
+    r.add_post(f"{p}/iterations/{{id:{_ID}}}/comments", add_comment)
+    r.add_patch(f"{p}/comments/{{id:{_ID}}}", edit_comment)
+    r.add_post(f"{p}/comments/{{id:{_ID}}}/replies", add_reply)
+    r.add_put(f"{p}/iterations/{{iid:{_ID}}}/comments/{{cid:{_ID}}}/resolved", set_resolved)
     r.add_get(f"{p}/search", search)
     r.add_get(f"{p}/todos", list_todos)
     r.add_post(f"{p}/todos", add_todo)
-    r.add_patch(f"{p}/todos/{{id:\\d+}}", update_todo)
-    r.add_delete(f"{p}/todos/{{id:\\d+}}", delete_todo)
+    r.add_patch(f"{p}/todos/{{id:{_ID}}}", update_todo)
+    r.add_delete(f"{p}/todos/{{id:{_ID}}}", delete_todo)
     r.add_get(f"{p}/deletions", pending_deletes)
     r.add_post(f"{p}/deletions", request_delete)
-    r.add_post(f"{p}/deletions/{{id:\\d+}}/undo", undo_delete)
+    r.add_post(f"{p}/deletions/{{id:{_ID}}}/undo", undo_delete)
     r.add_get(f"{p}/storage", storage)
     r.add_post(f"{p}/scheduler/reset-clock", reset_clock)
     r.add_get(f"{p}/drive/status", drive_status)

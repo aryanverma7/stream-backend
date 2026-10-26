@@ -315,3 +315,78 @@ async def test_reset_clock_clamps_pending_deletes():
     [row] = deletions.pending()
     assert row["id"] == r["request_id"]
     assert row["delete_at"] <= time.time() + deletions.DELETE_GRACE_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_editor_cannot_delete_a_project():
+    p, _, _, _ = _world()
+    async with api() as a:
+        status, got = await a.editor("POST", "/api/editor/deletions",
+                                     {"kind": "project", "target_id": p["id"], "confirm": "Ace"})
+    assert (status, got) == (403, FORBIDDEN)
+    assert deletions.pending() == []
+
+
+@pytest.mark.asyncio
+async def test_ids_and_file_ids_are_bounded():
+    _, _, it, _ = _world()
+    async with api() as a:
+        assert (await a.admin("GET", "/api/editor/projects/" + "9" * 19))[0] == 404
+        assert (await a.admin("GET", "/api/editor/iterations/" + "9" * 19))[0] == 404
+        for bad in ("../etc", "a b", "x" * 201, "id?alt=media"):
+            status, got = await a.editor("POST", f"/api/editor/iterations/{it['id']}/complete", {"file_id": bad})
+            assert (status, got) == (400, {"error": "file_id is not a Drive file id"}), bad
+
+
+@pytest.mark.asyncio
+async def test_media_links_are_not_cached_and_thumbnail_is_nosniff():
+    p, _, it, _ = _world()
+    es.set_iteration_media(it["id"], thumbnail=b"\xff\xd8")
+    async with api() as a:
+        for path in (f"/api/editor/iterations/{it['id']}/media-link", f"/api/editor/projects/{p['id']}/download"):
+            method = "GET" if path.endswith("media-link") else "POST"
+            resp = await a.client.request(method, path, headers={
+                "Cookie": f"{auth.SESSION_COOKIE_NAME}={a.tokens['editor']}"})
+            assert resp.status == 200 and resp.headers.get("Cache-Control") == "no-store", path
+        resp = await a.client.get(f"/api/editor/iterations/{it['id']}/thumbnail",
+                                  headers={"Cookie": f"{auth.SESSION_COOKIE_NAME}={a.tokens['editor']}"})
+        assert resp.status == 200 and resp.headers.get("X-Content-Type-Options") == "nosniff"
+
+
+@pytest.mark.asyncio
+async def test_upload_urls_only_on_the_single_iteration_get(drive):
+    p, t, it, _ = _world()
+    es.set_vod_upload(p["id"], "https://upload/vod")
+    db.get().execute("UPDATE iterations SET upload_url='https://upload/it' WHERE id=?", (it["id"],))
+    async with api() as a:
+        assert all("vod_upload_url" not in x for x in (await a.admin("GET", "/api/editor/projects"))[1]["projects"])
+        assert "vod_upload_url" not in (await a.admin("GET", f"/api/editor/projects/{p['id']}"))[1]["project"]
+        assert "vod_upload_url" not in (await a.admin("PATCH", f"/api/editor/projects/{p['id']}", {"name": "N"}))[1]
+        assert all("upload_url" not in i for i in (await a.admin("GET", f"/api/editor/tapes/{t['id']}"))[1]["iterations"])
+        got = (await a.admin("GET", f"/api/editor/iterations/{it['id']}"))[1]["iteration"]
+        assert got["upload_url"] == "https://upload/it"
+
+
+@pytest.mark.asyncio
+async def test_deleted_projects_tapes_and_iterations_are_404():
+    p, t, it, c = _world()
+    db.get().execute("UPDATE projects SET deleted_at=9 WHERE id=?", (p["id"],))
+    async with api() as a:
+        for method, path in (("GET", f"/api/editor/tapes/{t['id']}"),
+                             ("POST", f"/api/editor/tapes/{t['id']}/iterations"),
+                             ("GET", f"/api/editor/iterations/{it['id']}"),
+                             ("GET", f"/api/editor/iterations/{it['id']}/media-link"),
+                             ("PATCH", f"/api/editor/comments/{c['id']}")):
+            status, _ = await a.editor(method, path, {"filename": "x", "size": 1, "mime": "v", "body": "b"})
+            assert status == 404, (method, path)
+
+
+@pytest.mark.asyncio
+async def test_undo_of_missing_request_is_404_and_tape_creation_is_logged():
+    p, _, _, _ = _world()
+    async with api() as a:
+        assert (await a.admin("POST", "/api/editor/deletions/999/undo"))[0] == 404
+        status, t = await a.editor("POST", f"/api/editor/projects/{p['id']}/tapes", {"name": "Second"})
+        assert status == 201
+    [ev] = [e for e in es.events_since(0) if e["kind"] == "tape_created"]
+    assert (ev["actor"], ev["tape_id"], ev["project_id"]) == ("cutguy", t["id"], p["id"])
