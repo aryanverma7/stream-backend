@@ -72,9 +72,11 @@ Only files made by this app are visible to it. It cannot see the rest of your Dr
 
 ## If the database is ever corrupted
 
-The app's database (`app.db` on the Mac Mini) holds the projects, comments and logins. If the
-backend refuses to start and its log complains about the database being corrupt or "malformed", do
-this. The app will not quietly start a fresh empty one, on purpose.
+The app's database (`app.db` on the Mac Mini) holds the projects, comments and logins. A corrupt
+database does not stop the backend from starting: the overlays, chat commands and dashboard pages
+keep working, but logging in and every editor-app call fail with a database error, and the log
+complains about the database being corrupt or "malformed". When that happens, do this. The app
+will not quietly start a fresh empty one, on purpose.
 
 1. Stop the backend.
 2. In Google Drive, open **DualBladeX Editor**, then **Backups**, and download the newest
