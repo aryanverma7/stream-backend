@@ -116,3 +116,17 @@ def test_events_since_excludes_actor():
     assert [e["id"] for e in es.events_since(0)] == [a, b]
     assert [e["id"] for e in es.events_since(0, exclude_actor="ann")] == [b]
     assert es.events_since(b) == []
+
+
+def test_complete_iteration_is_atomic():
+    t = es.create_tape(_proj()["id"], "a")
+    i = es.create_iteration(t["id"], "a.mp4", 1, "u")
+    db.get().execute("CREATE TRIGGER boom BEFORE UPDATE ON tapes BEGIN SELECT RAISE(ABORT, 'x'); END")
+    with pytest.raises(sqlite3.Error):  # the second UPDATE fails
+        es.complete_iteration(i["id"], "F")
+    assert es.get_iteration(i["id"])["status"] == "uploading"
+
+
+def test_download_click_bumps_updated_at():
+    p = _proj()
+    assert es.record_download_click(p["id"], now=500.0)["updated_at"] == 500.0

@@ -130,3 +130,21 @@ def test_nul_in_db_path_falls_back(tmp_path, monkeypatch):
     db.get()
     assert (tmp_path / "fallback.db").exists()
     db.use_path_for_tests(tmp_path / "other.db")
+
+
+def test_transaction_rolls_back_on_error(tmp_path):
+    import pytest
+    db.use_path_for_tests(tmp_path / "t.db")
+    conn = db.get()
+    conn.execute("CREATE TABLE tx(x)")
+    with pytest.raises(RuntimeError):
+        with db.transaction() as c:
+            assert c.in_transaction
+            c.execute("INSERT INTO tx VALUES(1)")
+            raise RuntimeError
+    assert not conn.in_transaction
+    assert conn.execute("SELECT COUNT(*) FROM tx").fetchone()[0] == 0
+    with db.transaction() as c:
+        c.execute("INSERT INTO tx VALUES(2)")
+    assert conn.execute("SELECT COUNT(*) FROM tx").fetchone()[0] == 1
+    db.use_path_for_tests(tmp_path / "other.db")

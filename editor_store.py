@@ -94,8 +94,8 @@ def mark_vod_ready(id, file_id, now=None):
 
 def record_download_click(id, now=None):
     now = time.time() if now is None else now
-    _c().execute("UPDATE projects SET download_clicked_at=? WHERE id=? AND download_clicked_at IS NULL",
-                 (now, id))
+    _c().execute("UPDATE projects SET download_clicked_at=?, updated_at=? WHERE id=? AND download_clicked_at IS NULL",
+                 (now, now, id))
     return get_project(id)
 
 
@@ -157,8 +157,8 @@ def list_iterations(tape_id):
 def complete_iteration(id, file_id, now=None):
     """Returns (row, changed); changed is True only on the uploading -> ready transition."""
     now = time.time() if now is None else now
-    conn = _c()
-    with conn:
+    _c()
+    with db.transaction() as conn:
         row = get_iteration(id)
         if row is None:
             raise ValueError(f"no iteration {id}")

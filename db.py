@@ -11,11 +11,12 @@ drop the last commits on power loss, which for a login session means a
 surprise logout.)
 
 One process-wide connection, opened lazily. It is autocommit
-(isolation_level=None); use `with conn:` or an explicit BEGIN for multi-statement
-changes. One shared connection: never hold a transaction open across an await.
+(isolation_level=None); use `with db.transaction():` for multi-statement changes;
+`with conn:` does nothing on this connection. One shared connection: never hold a transaction open across an await.
 The connection belongs to the event-loop thread; executor code must not use it
 (pass results back to the loop instead) - sqlite3 raises if another thread tries.
 """
+import contextlib
 import sqlite3
 from pathlib import Path
 
@@ -73,6 +74,19 @@ def get() -> sqlite3.Connection:
         if _conn is None:
             _conn = _open(DEFAULT_PATH)
     return _conn
+
+
+@contextlib.contextmanager
+def transaction():
+    """BEGIN IMMEDIATE ... COMMIT, or ROLLBACK and re-raise. No awaits inside."""
+    conn = get()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield conn
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
 
 
 _META_DDL = "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
