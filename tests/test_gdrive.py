@@ -155,3 +155,65 @@ async def test_upload_small_file_puts_bytes_and_returns_id(tmp_path):
         (_, req), = calls(m, "PUT", "https://up.example/s")
     assert req.kwargs["data"] == b"12345"
     assert req.kwargs["headers"]["Content-Length"] == "5"
+
+
+@pytest.mark.asyncio
+async def test_html_502_from_token_endpoint_is_drive_error():
+    with aioresponses() as m:
+        m.post(gdrive.TOKEN_URL, status=502, body="<html>Bad Gateway</html>")
+        with pytest.raises(gdrive.DriveError) as e:
+            await gdrive.access_token(now=0.0)
+    assert e.value.status == 502
+
+
+@pytest.mark.asyncio
+async def test_html_400_from_token_endpoint_is_not_connected():
+    with aioresponses() as m:
+        m.post(gdrive.TOKEN_URL, status=400, body="<html>Bad Request</html>")
+        with pytest.raises(gdrive.DriveNotConnected):
+            await gdrive.access_token(now=0.0)
+
+
+@pytest.mark.asyncio
+async def test_token_503_json_is_drive_error_not_not_connected():
+    with aioresponses() as m:
+        m.post(gdrive.TOKEN_URL, status=503, payload={"error": "backend_error"})
+        with pytest.raises(gdrive.DriveError) as e:
+            await gdrive.access_token(now=0.0)
+    assert not isinstance(e.value, gdrive.DriveNotConnected)
+    assert e.value.status == 503
+
+
+@pytest.mark.asyncio
+async def test_empty_200_from_token_endpoint_is_drive_error():
+    with aioresponses() as m:
+        m.post(gdrive.TOKEN_URL, status=200, body="")
+        with pytest.raises(gdrive.DriveError):
+            await gdrive.access_token(now=0.0)
+
+
+@pytest.mark.asyncio
+async def test_network_error_on_drive_call_is_drive_error_status_0():
+    import aiohttp
+    with aioresponses() as m:
+        m.post(gdrive.TOKEN_URL, payload=TOKEN)
+        m.delete(f"{API}/files/abc", exception=aiohttp.ClientConnectionError())
+        with pytest.raises(gdrive.DriveError) as e:
+            await gdrive.delete_file("abc")
+    assert e.value.status == 0
+
+
+@pytest.mark.asyncio
+async def test_small_file_put_uses_long_timeout_metadata_keeps_60s(tmp_path):
+    f = tmp_path / "b.db"
+    f.write_bytes(b"1")
+    with aioresponses() as m:
+        m.post(gdrive.TOKEN_URL, payload=TOKEN)
+        m.post(f"{gdrive.UPLOAD_API}?uploadType=resumable", headers={"Location": "https://up.example/s"})
+        m.put("https://up.example/s", payload={"id": "fid"})
+        await gdrive.upload_small_file(f, "b.db", "par")
+        (_, put), = calls(m, "PUT", "https://up.example/s")
+        (_, post), = calls(m, "POST", gdrive.UPLOAD_API)
+    t = put.kwargs["timeout"]
+    assert (t.total, t.sock_connect, t.sock_read) == (None, 30, 120)
+    assert post.kwargs["timeout"].total == 60

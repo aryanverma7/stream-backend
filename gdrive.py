@@ -26,6 +26,9 @@ UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files"
 
 _TOKEN_EXPIRY_MARGIN_SECONDS = 60
 _TIMEOUT = aiohttp.ClientTimeout(total=60)
+# A backup PUT on a slow home uplink can legitimately take minutes: bound the
+# stalls, not the total.
+_UPLOAD_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=120)
 _FILE_FIELDS = "id,name,size,parents,appProperties,webViewLink"
 
 _token: "str | None" = None
@@ -69,12 +72,18 @@ async def access_token(now: "float | None" = None) -> str:
         try:
             async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
                 async with session.post(TOKEN_URL, data=body) as resp:
-                    data = await resp.json(content_type=None)
+                    raw = await resp.read()
                     status = resp.status
         except (asyncio.TimeoutError, aiohttp.ClientError) as e:
             raise DriveError(f"Could not reach Google: {type(e).__name__}", 0) from e
+        try:
+            data = json.loads(raw) if raw else {}
+        except ValueError:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
         if status in (400, 401):
-            log.error(f"Drive token refresh refused: {status} {data.get('error') if isinstance(data, dict) else ''}")
+            log.error(f"Drive token refresh refused: {status} {data.get('error', '')}")
             raise DriveNotConnected("Google refused the saved login - reconnect Drive.")
         if status != 200 or "access_token" not in data:
             raise DriveError(f"Token refresh failed ({status})", status)
@@ -88,13 +97,14 @@ async def access_token(now: "float | None" = None) -> str:
         return _token
 
 
-async def _request(method: str, url: str, *, ok_404: bool = False, headers: "dict | None" = None, **kw):
+async def _request(method: str, url: str, *, ok_404: bool = False, headers: "dict | None" = None,
+                   timeout: "aiohttp.ClientTimeout" = _TIMEOUT, **kw):
     """One authenticated call. Returns (response headers, parsed JSON or None)."""
     for attempt in (0, 1):
         h = {"Authorization": f"Bearer {await access_token()}", **(headers or {})}
         try:
-            async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
-                async with session.request(method, url, headers=h, **kw) as resp:
+            async with aiohttp.ClientSession() as session:
+                async with session.request(method, url, headers=h, timeout=timeout, **kw) as resp:
                     raw = await resp.read()
                     status, rh = resp.status, resp.headers
         except (asyncio.TimeoutError, aiohttp.ClientError) as e:
@@ -189,5 +199,6 @@ async def upload_small_file(path: Path, name: str, parent_id: str,
     data = Path(path).read_bytes()
     url = await start_resumable_upload(name, parent_id, len(data), mime, {}, None)
     # The session URL carries its own authorisation; a bearer header is harmless.
-    _, d = await _request("PUT", url, data=data, headers={"Content-Length": str(len(data))})
+    _, d = await _request("PUT", url, data=data,
+                          headers={"Content-Length": str(len(data))}, timeout=_UPLOAD_TIMEOUT)
     return d["id"]
