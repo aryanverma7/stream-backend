@@ -29,13 +29,17 @@ def _handle(ev: dict, now: float) -> None:
     kind, actor = ev["kind"], ev["actor"]
     if kind == "vod_ready":
         p = es.get_project(ev["project_id"])
+        if p is None:  # row gone: skip it, never wedge the cursor on it
+            return
         what = "clip" if p["kind"] == "clip" else "VOD"
         notify_outbox.enqueue("editor", f"New {what} ready: {p['name']}. Open the editor page to download it.",
                               f"vod_ready:{p['id']}", now)
     elif kind == "iteration_ready":
         if actor == "system" or role_for_username(actor) == "editor":
             it = es.get_iteration(ev["iteration_id"])
-            tape = es.get_tape(it["tape_id"])
+            tape = it and es.get_tape(it["tape_id"])
+            if tape is None:
+                return
             notify_outbox.enqueue("streamer", f"{tape['name']} v{it['version']} is ready to review.",
                                   f"iteration_ready:{it['id']}", now)
     elif kind in _DIGEST_KINDS:

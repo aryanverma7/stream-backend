@@ -147,3 +147,11 @@ async def test_failure_stops_at_event_and_never_raises(monkeypatch):
     monkeypatch.setattr(es, "get_project", real)
     await notifier.run(T)
     assert len(outbox()) == 1 and db.meta_get("notify_cursor") == str(e1 + 1)
+
+
+@pytest.mark.asyncio
+async def test_event_for_a_missing_row_is_skipped_not_wedged():
+    es.record_event("system", "vod_ready", "s", project_id=999, now=T)
+    es.record_event("ed", "iteration_ready", "s", iteration_id=999, now=T)
+    await notifier.run(T)
+    assert outbox() == [] and db.meta_get("notify_cursor") == "2"
