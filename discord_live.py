@@ -66,6 +66,8 @@ DEFAULT_YOUTUBE_WAIT_SECONDS = 90
 YOUTUBE_RETRY_SECONDS = 15
 
 _state: "dict | None" = None
+# The Twitch poll's last successful answer, for the gaming-PC uploader. Memory only.
+_live = {"live": None, "checked_at": 0.0, "title": "", "title_at": 0.0}
 _poll_task: "asyncio.Task | None" = None
 _announce_lock = asyncio.Lock()
 
@@ -127,6 +129,26 @@ def reset() -> None:
     """Drops the cached state. Exists for the tests."""
     global _state
     _state = None
+    _live.update(live=None, checked_at=0.0, title="", title_at=0.0)
+
+
+def live_state(now: "float | None" = None) -> dict:
+    """
+    Whether the channel is live, per the last successful Twitch poll: True/False,
+    or None when no check succeeded within 3 poll intervals. The poll only runs
+    while announcements are on (is_enabled), so with them off this is always None
+    and the uploader treats None as "not live".
+    """
+    now = time.time() if now is None else now
+    fresh = now - _live["checked_at"] <= 3 * _poll_seconds()
+    return {"live": _live["live"] if fresh and _live["checked_at"] else None, "title": _live["title"]}
+
+
+def last_live_title(on_date: str) -> str:
+    """The title the poll last saw while live, if that poll was on local date `on_date` (YYYY-MM-DD)."""
+    if _live["title_at"] and time.strftime("%Y-%m-%d", time.localtime(_live["title_at"])) == on_date:
+        return _live["title"]
+    return ""
 
 
 def last_announced() -> dict:
@@ -383,8 +405,12 @@ async def poll_once(stream_info=None) -> bool:
     except Exception as e:
         log.warning(f"Twitch live check failed: {e}")
         return False
+    # Recorded before announce(), which dedupes: the level is not an edge.
+    now = time.time()
+    _live.update(live=bool(info), checked_at=now)
     if not info:
         return False
+    _live.update(title=str(info.get("title", "") or ""), title_at=now)
     # Twitch hands back a templated URL; the cache-buster is because
     # Discord caches an embed image by URL, so without it every stream
     # would show the first stream's screenshot forever.

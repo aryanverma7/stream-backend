@@ -96,9 +96,65 @@ async def test_complete_twice_logs_one_event_and_carry_over_is_rerun(_env, monke
     assert n == 1
 
 
+def _vod_file(_env, p, **over):
+    """The Drive file the uploader would have made for project p (vod_size 5), folder recorded on the row."""
+    es._set("projects", p["id"], None, drive_folder_id="PF")
+    _env["file"] = {"parents": ["PF"], "appProperties": {"project_id": str(p["id"])}, "size": 5, **over}
+
+
+@pytest.mark.asyncio
+async def test_vod_ready_rejects_file_outside_project_folder(_env):
+    p, _ = _tape()
+    _vod_file(_env, p, parents=["other"])
+    with pytest.raises(ValueError, match="not this project's upload"):
+        await svc.vod_ready(p["id"], "vf", "agent")
+    assert es.get_project(p["id"])["vod_status"] == "uploading" and _env["shared"] == []
+
+
+@pytest.mark.asyncio
+async def test_vod_ready_rejects_wrong_project_property(_env):
+    p, _ = _tape()
+    _vod_file(_env, p, appProperties={"project_id": "99"})
+    with pytest.raises(ValueError, match="not this project's upload"):
+        await svc.vod_ready(p["id"], "vf", "agent")
+    assert es.get_project(p["id"])["vod_status"] == "uploading" and _env["shared"] == []
+
+
+@pytest.mark.asyncio
+async def test_vod_ready_rejects_wrong_size(_env):
+    p, _ = _tape()
+    _vod_file(_env, p, size=6)
+    with pytest.raises(ValueError, match="not this project's upload"):
+        await svc.vod_ready(p["id"], "vf", "agent")
+    assert es.get_project(p["id"])["vod_status"] == "uploading" and _env["shared"] == []
+
+
+@pytest.mark.asyncio
+async def test_vod_ready_accepts_matching_file_and_records_agent_event(_env):
+    p, _ = _tape()
+    _vod_file(_env, p)
+    assert (await svc.vod_ready(p["id"], "vf", "agent"))["vod_status"] == "ready"
+    row = db.get().execute("SELECT actor FROM events WHERE kind='vod_ready'").fetchone()
+    assert row[0] == "agent"
+
+
+@pytest.mark.asyncio
+async def test_vod_ready_repeat_makes_no_drive_call(_env, monkeypatch):
+    p, _ = _tape()
+    _vod_file(_env, p)
+    await svc.vod_ready(p["id"], "vf", "agent")
+
+    async def boom(fid):
+        raise AssertionError("Drive was called")
+
+    monkeypatch.setattr(gdrive, "get_file", boom)
+    assert (await svc.vod_ready(p["id"], "vf", "agent"))["vod_status"] == "ready"
+
+
 @pytest.mark.asyncio
 async def test_vod_ready_shares_with_editor_email_when_set(_env, monkeypatch):
     p, _ = _tape()
+    _vod_file(_env, p)
     monkeypatch.setitem(config.config._data, "editor_google_email", "e@x.com")
     await svc.vod_ready(p["id"], "vf", "sys")
     await svc.vod_ready(p["id"], "vf", "sys")
@@ -136,6 +192,7 @@ def test_token_expires_at_getter(monkeypatch):
 @pytest.mark.asyncio
 async def test_storage_view_lists_ready_and_deleting(_env):
     p, _ = _tape()
+    _vod_file(_env, p)
     await svc.vod_ready(p["id"], "vf", "sys")
     _, iid = await _started(_env)
     await svc.complete_iteration_upload(iid, "fid", "x")
@@ -255,6 +312,7 @@ async def test_ready_and_its_event_commit_together(_env, monkeypatch):
     monkeypatch.setattr(es, "record_event", boom)
     with pytest.raises(RuntimeError):
         await svc.complete_iteration_upload(iid, "fid", "x")
+    _vod_file(_env, p)
     with pytest.raises(RuntimeError):
         await svc.vod_ready(p["id"], "VOD", "x")
     assert es.get_iteration(iid)["status"] == "uploading"
@@ -394,5 +452,6 @@ def test_create_tape_on_a_cold_start(_env, tmp_path):
 @pytest.mark.asyncio
 async def test_vod_ready_on_a_cold_start(_env, tmp_path):
     p = es.create_project("Ace", "2026-10-20", "", "v.mp4", 5, now=1.0)
+    _vod_file(_env, p)
     _cold_restart(tmp_path)
     assert (await svc.vod_ready(p["id"], "vf", "system"))["vod_status"] == "ready"

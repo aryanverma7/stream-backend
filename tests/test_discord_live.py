@@ -187,6 +187,83 @@ async def test_poll_survives_an_api_failure(monkeypatch, tmp_path):
     assert await discord_live.poll_once(stream_info=boom) is False
 
 
+# ---------- the live level ----------
+
+async def _live_info(_channel):
+    return {"id": "42", "title": "Ranked grind", "game_name": "VALORANT"}
+
+
+async def _offline_info(_channel):
+    return None
+
+
+def test_live_state_none_before_any_check(monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path)
+    assert discord_live.live_state() == {"live": None, "title": ""}
+
+
+@pytest.mark.asyncio
+async def test_live_state_true_after_live_poll(monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path)
+    monkeypatch.setattr(discord_live, "announce", _recording_announce(FakeSession()))
+    await discord_live.poll_once(stream_info=_live_info)
+    assert discord_live.live_state() == {"live": True, "title": "Ranked grind"}
+
+
+@pytest.mark.asyncio
+async def test_live_state_recorded_even_when_announce_dedupes(monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path)
+
+    async def suppressed(**kwargs):
+        return False
+
+    monkeypatch.setattr(discord_live, "announce", suppressed)
+    await discord_live.poll_once(stream_info=_live_info)
+    assert discord_live.live_state()["live"] is True
+
+
+@pytest.mark.asyncio
+async def test_live_state_false_after_offline_poll(monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path)
+    monkeypatch.setattr(discord_live, "announce", _recording_announce(FakeSession()))
+    await discord_live.poll_once(stream_info=_live_info)
+    await discord_live.poll_once(stream_info=_offline_info)
+    assert discord_live.live_state() == {"live": False, "title": "Ranked grind"}
+
+
+@pytest.mark.asyncio
+async def test_live_state_goes_none_when_stale(monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path)
+    monkeypatch.setattr(discord_live, "announce", _recording_announce(FakeSession()))
+    await discord_live.poll_once(stream_info=_live_info)
+    now = time.time()
+    assert discord_live.live_state(now=now + 3 * discord_live._poll_seconds() - 1)["live"] is True
+    assert discord_live.live_state(now=now + 3 * discord_live._poll_seconds() + 1)["live"] is None
+
+
+@pytest.mark.asyncio
+async def test_failed_poll_does_not_update_level(monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path)
+    monkeypatch.setattr(discord_live, "announce", _recording_announce(FakeSession()))
+    await discord_live.poll_once(stream_info=_live_info)
+
+    async def boom(_channel):
+        raise RuntimeError("twitch is down")
+
+    await discord_live.poll_once(stream_info=boom)
+    assert discord_live.live_state()["live"] is True
+
+
+@pytest.mark.asyncio
+async def test_last_live_title_only_for_same_local_date(monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path)
+    monkeypatch.setattr(discord_live, "announce", _recording_announce(FakeSession()))
+    await discord_live.poll_once(stream_info=_live_info)
+    today = time.strftime("%Y-%m-%d")
+    assert discord_live.last_live_title(today) == "Ranked grind"
+    assert discord_live.last_live_title("2001-01-01") == ""
+
+
 def _recording_announce(session):
     async def fake(**kwargs):
         return await _real_announce(session, **kwargs)
