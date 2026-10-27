@@ -41,13 +41,23 @@ class _Fail(Exception):
 
 def _route(handler):
     """Runs a handler as (request, me) and turns every expected failure into a JSON error."""
+    mapped = map_errors(handler)
+
     @functools.wraps(handler)
     async def wrapped(request):
         me = auth.session_for(request)
         if me is None:  # the middleware already refused these; belt and braces
             return web.json_response({"error": "Not authenticated"}, status=401)
+        return await mapped(request, me)
+    return wrapped
+
+
+def map_errors(handler):
+    """Turns every expected failure into a JSON error. Also used by uploader_api, which has no session."""
+    @functools.wraps(handler)
+    async def wrapped(*args):
         try:
-            return await handler(request, me)
+            return await handler(*args)
         except _Fail as e:
             return web.json_response(e.payload, status=e.status)
         except svc.DriveFull as e:

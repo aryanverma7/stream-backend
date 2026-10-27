@@ -31,6 +31,7 @@ import site_server
 import spotify_oauth
 import gdrive_oauth
 import streamlabs_oauth
+import uploader_api
 from logger import get_logger
 from widget_hub import widget_hub
 
@@ -90,6 +91,8 @@ def build_app() -> web.Application:
     # The editor app. Both roles reach /api/editor/* through auth.py's
     # EDITOR_PATHS; streamer-only actions are refused inside the handlers.
     editor_api.register_routes(app)
+    # The gaming-PC VOD uploader: no session, X-Agent-Secret checked in the handlers.
+    uploader_api.register_routes(app)
 
     # Registered LAST, deliberately - confirmed by testing that aiohttp
     # resolves the more specific routes above before falling through to
