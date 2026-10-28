@@ -67,8 +67,8 @@ async def _security_headers(request: web.Request, response: web.StreamResponse) 
     """
     h = response.headers
     path = request.path
-    if (response.content_type == "text/html"
-            and (path in ("/editor", "/admin") or path.startswith(("/editor/", "/admin/")))):
+    # Every page but the homepage, so /admin.html or any other spelling cannot dodge it.
+    if response.content_type == "text/html" and path not in ("/", "/index.html"):
         h.setdefault("Content-Security-Policy", PAGE_CSP)
     h.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
     h.setdefault("X-Content-Type-Options", "nosniff")

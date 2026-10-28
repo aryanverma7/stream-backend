@@ -191,7 +191,7 @@ def _iteration_view(it, with_upload_url=False):
 async def me(request, me):
     kit = db.meta_get("gdrive_brand_kit")
     return _ok({"username": me["username"], "role": me["role"],
-                "brand_kit_url": kit and f"https://drive.google.com/drive/folders/{kit}"})
+                "brand_kit_url": f"https://drive.google.com/drive/folders/{kit}" if kit else None})
 
 
 # -- home and the fix list (projects in project-delete limbo show in neither) --

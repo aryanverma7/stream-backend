@@ -168,9 +168,9 @@ async def start_iteration_upload(tape_id, filename, size, mime) -> dict:
 
 
 async def renew_iteration_upload(iteration_id, mime) -> "str | None":
-    """A fresh session for a version still uploading (Google expires one after ~a week); None once it is not."""
+    """A fresh session for a version still uploading or abandoned (Google expires one after ~a week); None otherwise."""
     it = es.get_iteration(iteration_id)
-    if it is None or it["status"] != "uploading":
+    if it is None or it["status"] not in ("uploading", "abandoned"):
         return None
     project_id = _project_of(it["tape_id"])
     deletions.ensure_project_not_deleting(project_id)
@@ -179,7 +179,8 @@ async def renew_iteration_upload(iteration_id, mime) -> "str | None":
     deletions.ensure_project_not_deleting(project_id)  # after the awaits, right before the write
     deletions.ensure_tape_not_deleting(it["tape_id"])
     with db.transaction() as conn:
-        if not conn.execute("UPDATE iterations SET upload_url=? WHERE id=? AND status='uploading'",
+        if not conn.execute("UPDATE iterations SET upload_url=?, status='uploading' WHERE id=?"
+                            " AND status IN ('uploading','abandoned')",
                             (url, iteration_id)).rowcount:
             return None
     return url

@@ -34,7 +34,8 @@ def _cookie(user, role):
 
 @pytest.mark.asyncio
 async def test_editor_and_admin_pages_carry_the_full_csp(client):
-    for path, who in (("/editor", ("cutguy", "editor")), ("/admin", ("aryan", "admin"))):
+    for path, who in (("/editor", ("cutguy", "editor")), ("/admin", ("aryan", "admin")),
+                      ("/editor.html", ("aryan", "admin")), ("/admin.html", ("aryan", "admin"))):
         resp = await client.get(path, headers=_cookie(*who), allow_redirects=False)
         assert resp.status == 200 and resp.content_type == "text/html", path
         assert resp.headers["Content-Security-Policy"] == EDITOR_CSP, path
@@ -47,6 +48,9 @@ async def test_homepage_and_api_only_forbid_framing(client):
     assert resp.status == 200
     assert resp.headers["Content-Security-Policy"] == "frame-ancestors 'none'"
     assert resp.headers["X-Content-Type-Options"] == "nosniff"
+    resp = await client.get("/index.html", headers=_cookie("aryan", "admin"))
+    assert resp.status == 200 and resp.content_type == "text/html"
+    assert resp.headers["Content-Security-Policy"] == "frame-ancestors 'none'"
     resp = await client.get("/api/editor/me", headers=_cookie("cutguy", "editor"))
     assert resp.status == 200
     assert resp.headers["Content-Security-Policy"] == "frame-ancestors 'none'"

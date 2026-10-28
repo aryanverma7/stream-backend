@@ -503,8 +503,17 @@ async def test_new_session_for_an_unfinished_upload(drive):
         await a.editor("POST", f"/api/editor/iterations/{up['iteration_id']}/complete", {"file_id": "IT2"})
         status, got = await a.editor("POST", path, {})
         assert (status, got) == (409, {"error": "This version is not uploading"})
-        deletions.request_delete("tape_files", t["id"], "Clutch", username="aryan", role="admin", now=5.0)
-        up3 = es.create_iteration(t["id"], "c.mp4", 5, "")
+        abandoned = es.create_iteration(t["id"], "d.mp4", 7, "https://upload/old")
+        db.get().execute("UPDATE iterations SET status='abandoned' WHERE id=?", (abandoned["id"],))
+        status, got = await a.editor("POST", f"/api/editor/iterations/{abandoned['id']}/session", {})
+        assert (status, got) == (200, {"upload_url": "https://upload/fresh"})
+        assert drive["files"]["pending"]["name"] == "v3 - d.mp4"
+        row = es.get_iteration(abandoned["id"])
+        assert (row["status"], row["upload_url"]) == ("uploading", "https://upload/fresh")
+        t2 = es.create_tape(t["project_id"], "Other")
+        es.complete_iteration(es.create_iteration(t2["id"], "o.mp4", 5, "")["id"], "O1")
+        deletions.request_delete("tape_files", t2["id"], "Other", username="aryan", role="admin", now=5.0)
+        up3 = es.create_iteration(t2["id"], "c.mp4", 5, "")
         status, got = await a.editor("POST", f"/api/editor/iterations/{up3['id']}/session", {})
         assert (status, got) == (400, {"error": "This tape's files are being deleted"})
 
@@ -564,6 +573,12 @@ async def test_fix_list_is_the_latest_versions_unresolved_comments():
     es.complete_iteration(v2["id"], "X2")
     ec.carry_over(v2["id"])
     new = ec.add_comment(v2["id"], "cutguy", "question", "new on v2", now=7.0)
+    gone = es.create_project("Gone", "2026-10-23", "", "g.mp4", 5, now=4.0)
+    gt = es.create_tape(gone["id"], "G")
+    gi = es.create_iteration(gt["id"], "g.mp4", 1, "")
+    es.complete_iteration(gi["id"], "G1")
+    ec.add_comment(gi["id"], "aryan", "fix", "in limbo", now=1.0)
+    deletions.request_delete("project", gone["id"], "Gone", username="aryan", role="admin", now=5.0)
     async with api() as a:
         for who in ("admin", "editor"):
             status, got = await a.call(who, "GET", "/api/editor/fix-list")
