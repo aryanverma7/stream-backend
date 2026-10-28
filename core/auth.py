@@ -24,6 +24,7 @@ SESSION_MAX_AGE_SECONDS after login and is deleted when found expired or on
 POST /auth/logout. Pending logins stay in memory: one in flight across a
 restart is already handled by "start over".
 """
+import re
 import secrets
 import time
 from urllib.parse import urlencode
@@ -196,7 +197,9 @@ async def handle_callback(request: web.Request) -> web.Response:
             return web.Response(status=403, text="Dashboard not yet configured with any authorized accounts")
         log.warning(f"Rejected login attempt from unauthorized GitHub account: {github_username}")
         return web.Response(status=403, text="This GitHub account is not authorized for this dashboard")
-    if role == "editor" and not any(path_matches(next_path.split("?")[0], p) for p in EDITOR_PATHS):
+    # Query and fragment both go: the editor app keeps its place in the hash
+    # ("/editor#/p/12/t/5"), and that deep link has to survive the login.
+    if role == "editor" and not any(path_matches(re.split(r"[?#]", next_path)[0], p) for p in EDITOR_PATHS):
         next_path = "/editor"
 
     session_token = create_session(github_username, role)

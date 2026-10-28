@@ -342,6 +342,25 @@ class TestCallbackRoles:
         assert found["role"] == role
 
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("next_path,location", [
+        ("/editor#/p/12", "/editor#/p/12"),
+        ("/editor?x=1#/p/12/t/5", "/editor?x=1#/p/12/t/5"),
+        ("/admin#x", "/editor"),
+        ("/admin?y#/editor", "/editor"),
+    ])
+    async def test_an_editors_deep_link_survives_login_but_admin_does_not(self, monkeypatch, next_path, location):
+        monkeypatch.setitem(config._data, "authorized_github_usernames", ["aryan"])
+        monkeypatch.setitem(config._data, "editor_github_username", "CutGuy")
+        auth._pending_logins["st"] = next_path
+        with aioresponses() as mocked:
+            mocked.post(auth.GITHUB_TOKEN_URL, payload={"access_token": "t"})
+            mocked.get(auth.GITHUB_USER_URL, payload={"login": "CutGuy"})
+            with pytest.raises(web.HTTPFound) as caught:
+                await auth.handle_callback(request_for("/auth/callback?code=c&state=st"))
+        assert caught.value.location == location
+
+
 class TestRevocation:
     def _login(self, name, role):
         return _cookie(auth.create_session(name, role))
