@@ -41,19 +41,64 @@ def ev(actor, kind, it, at, tape=None):
                            iteration_id=it["id"], now=at)
 
 
+def ready(name, clip=False, at=T):
+    p = es.create_project(name, "2026-10-20", "", "v.mp4", 5, now=1.0, duration_s=30 if clip else None)
+    es.record_event("agent", "vod_ready", "s", project_id=p["id"], now=at)
+    return p
+
+
 @pytest.mark.asyncio
-async def test_vod_ready_dms_editor_once():
-    p = es.create_project("Stream 0412", "2026-10-20", "", "v.mp4", 5, now=1.0)
-    c = es.create_project("Clip 0412", "2026-10-20", "", "c.mp4", 5, now=1.0, duration_s=30)
-    es.record_event("system", "vod_ready", "s", project_id=p["id"], now=T)
-    es.record_event("agent", "vod_ready", "s", project_id=c["id"], now=T)
+async def test_single_vod_ready_dms_editor_after_quiet():
+    p = ready("Stream 0412")
     await notifier.run(T)
-    await notifier.run(T + 1)
-    assert outbox() == [
-        {"recipient_role": "editor", "content": "New VOD ready: Stream 0412. Open the editor page to download it.",
-         "dedupe_key": f"vod_ready:{p['id']}"},
-        {"recipient_role": "editor", "content": "New clip ready: Clip 0412. Open the editor page to download it.",
-         "dedupe_key": f"vod_ready:{c['id']}"}]
+    await notifier.run(T + notifier.DIGEST_QUIET_SECONDS - 1)
+    assert outbox() == []
+    await notifier.run(T + notifier.DIGEST_QUIET_SECONDS)
+    await notifier.run(T + 5000)
+    assert outbox() == [{"recipient_role": "editor",
+                         "content": "New VOD ready: Stream 0412. Open the editor page to download it.",
+                         "dedupe_key": "ready:" + str(db.get().execute("SELECT MAX(id) FROM events").fetchone()[0])}]
+
+
+@pytest.mark.asyncio
+async def test_clips_sent_together_are_one_grouped_dm():
+    for i in range(8):
+        ready(f"Clip {i}", clip=True, at=T + i * 120)  # finishing one after another
+    await notifier.run(T + 7 * 120 + 599)
+    assert outbox() == []
+    await notifier.run(T + 7 * 120 + 600)
+    assert [r["content"] for r in outbox()] == [
+        "8 new clips are ready: Clip 0, Clip 1, Clip 2, Clip 3, Clip 4 and 3 more."
+        " Open the editor page to download them."]
+
+
+@pytest.mark.asyncio
+async def test_mixed_batch_counts_vods_and_clips_once_each():
+    v1, v2 = ready("Stream A"), ready("Stream B")
+    c = ready("Clip X", clip=True)
+    es.record_event("system", "vod_ready", "s", project_id=c["id"], now=T)  # a repeat is not a second clip
+    await notifier.run(T + 600)
+    assert [r["content"] for r in outbox()] == [
+        "2 new VODs and 1 new clip are ready: Stream A, Stream B, Clip X. Open the editor page to download them."]
+
+
+@pytest.mark.asyncio
+async def test_ready_dm_skips_deleted_projects_and_never_mixes_with_comment_digest():
+    ready("Stream A")
+    es.record_event("agent", "vod_ready", "s", project_id=999, now=T)
+    _, _, it = tape_with_version()
+    ev("Aryan", "comment_added", it, T)
+    await notifier.run(T + 600)
+    assert sorted(r["content"] for r in outbox()) == [
+        "Aryan: 1 comment on Jett dash v1.",
+        "New VOD ready: Stream A. Open the editor page to download it."]
+
+
+@pytest.mark.asyncio
+async def test_ready_batch_of_only_deleted_projects_sends_nothing():
+    es.record_event("agent", "vod_ready", "s", project_id=999, now=T)
+    await notifier.run(T + 600)
+    assert outbox() == [] and db.get().execute("SELECT COUNT(*) FROM digest_pending").fetchone()[0] == 0
 
 
 @pytest.mark.asyncio
@@ -99,9 +144,9 @@ async def test_cursor_survives_restart_no_double_processing(tmp_path):
     await notifier.run(T + 10)
     db.use_path_for_tests(tmp_path / "t.db")  # restart
     await notifier.run(T + 20)
-    assert db.get().execute("SELECT COUNT(*) FROM digest_pending").fetchone()[0] == 1
+    assert db.get().execute("SELECT COUNT(*) FROM digest_pending").fetchone()[0] == 2
     await notifier.run(T + 700)
-    assert [r["recipient_role"] for r in outbox()] == ["editor", "streamer"]
+    assert sorted(r["recipient_role"] for r in outbox()) == ["editor", "streamer"]
 
 
 @pytest.mark.asyncio
@@ -147,7 +192,7 @@ async def test_failure_stops_at_event_and_never_raises(monkeypatch):
     await notifier.run(T)
     assert db.meta_get("notify_cursor") == "0"
     monkeypatch.setattr(es, "get_project", real)
-    await notifier.run(T)
+    await notifier.run(T + 600)
     assert len(outbox()) == 1 and db.meta_get("notify_cursor") == str(e1 + 1)
 
 
@@ -195,5 +240,5 @@ async def test_first_run_baselines_cursor_and_skips_history():
     await notifier.run(T)
     assert outbox() == [] and db.meta_get("notify_cursor") == str(old)
     es.record_event("system", "vod_ready", "s", project_id=p["id"], now=T)
-    await notifier.run(T + 1)
+    await notifier.run(T + 600)
     assert len(outbox()) == 1

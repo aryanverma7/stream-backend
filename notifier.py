@@ -1,7 +1,8 @@
 """
-Turns the editor app's events log into Discord DMs via the outbox. A VOD/clip or a new version
-is DMed at once; comments, replies, resolves and start-overs collect in digest_pending and go to
-the other person as one digest once the actor has been quiet for DIGEST_QUIET_SECONDS.
+Turns the editor app's events log into Discord DMs via the outbox. A new version is DMed at once;
+finished VOD/clip uploads, and comments, replies, resolves and start-overs, collect in digest_pending
+and go out as one DM once DIGEST_QUIET_SECONDS pass with nothing new (several files sent at once are
+one "8 new clips are ready" message).
 """
 import db
 import editor_store as es
@@ -16,6 +17,8 @@ OUTAGE_SECONDS = 600
 _CURSOR = "notify_cursor"
 _OTHER = {"admin": "editor", "editor": "streamer"}
 _DIGEST_KINDS = ("comment_added", "reply_added", "comment_resolved", "start_over")
+_READY = "ready"  # digest_pending pseudo-recipient for finished uploads; DMed to the editor
+_READY_NAMES = 5
 _boot_last_seen: "float | None" = None
 _back_online_done = False
 _DDL = """
@@ -35,9 +38,8 @@ def _handle(ev: dict, now: float) -> None:
         if p is None:  # row gone: skip it, never wedge the cursor on it
             log.warning("Event %s: row gone, skipped", ev["id"])
             return
-        what = "clip" if p["kind"] == "clip" else "VOD"
-        notify_outbox.enqueue("editor", f"New {what} ready: {p['name']}. Open the editor page to download it.",
-                              f"vod_ready:{p['id']}", now)
+        db.get().execute("INSERT OR IGNORE INTO digest_pending(recipient_role, event_id, actor, at)"
+                         " VALUES(?,?,?,?)", (_READY, ev["id"], actor, ev["at"]))
     elif kind == "iteration_ready":
         if actor == "system" or role_for_username(actor) == "editor":
             it = es.get_iteration(ev["iteration_id"])
@@ -85,6 +87,22 @@ def _digest(rows) -> str:
     return "; ".join(lines) + "."
 
 
+def _ready(project_ids) -> "str | None":
+    """One message for a batch of finished uploads, each project once, in finishing order."""
+    ps = [p for p in (es.get_project(i) for i in dict.fromkeys(project_ids)) if p is not None]
+    if not ps:
+        return None
+    if len(ps) == 1:
+        what = "clip" if ps[0]["kind"] == "clip" else "VOD"
+        return f"New {what} ready: {ps[0]['name']}. Open the editor page to download it."
+    clips = sum(p["kind"] == "clip" for p in ps)
+    counts = [f"{n} new {w}{'' if n == 1 else 's'}" for n, w in ((len(ps) - clips, "VOD"), (clips, "clip")) if n]
+    names = ", ".join(p["name"] for p in ps[:_READY_NAMES])
+    if len(ps) > _READY_NAMES:
+        names += f" and {len(ps) - _READY_NAMES} more"
+    return f"{' and '.join(counts)} are ready: {names}. Open the editor page to download them."
+
+
 def _flush(now: float) -> None:
     conn = db.get()
     due = conn.execute("SELECT recipient_role, MAX(event_id) FROM digest_pending GROUP BY recipient_role"
@@ -93,12 +111,16 @@ def _flush(now: float) -> None:
         try:
             with db.transaction():
                 rows = conn.execute(
-                    "SELECT d.actor, e.kind, e.tape_id, e.iteration_id FROM digest_pending d"
+                    "SELECT d.actor, e.kind, e.project_id, e.tape_id, e.iteration_id FROM digest_pending d"
                     " JOIN events e ON e.id=d.event_id WHERE d.recipient_role=? AND d.event_id<=?"
                     " ORDER BY d.event_id", (recipient, max_id)).fetchall()
                 conn.execute("DELETE FROM digest_pending WHERE recipient_role=? AND event_id<=?",
                              (recipient, max_id))
-                if rows:
+                if recipient == _READY:
+                    text = _ready([r["project_id"] for r in rows])
+                    if text:
+                        notify_outbox.enqueue("editor", text, f"ready:{max_id}", now)
+                elif rows:
                     notify_outbox.enqueue(recipient, _digest(rows), f"digest:{recipient}:{max_id}", now)
         except Exception:
             log.exception("Digest for %s failed", recipient)
