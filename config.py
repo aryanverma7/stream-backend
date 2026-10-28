@@ -10,7 +10,9 @@ import json
 import os
 from pathlib import Path
 
-CONFIG_PATH = Path(__file__).parent / "config.json"
+# DUALBLADEX_CONFIG exists for the test suite (conftest.py points it at a temp file): tests swap
+# config._data and code paths call config.save(), which used to overwrite the real config.json.
+CONFIG_PATH = Path(os.environ.get("DUALBLADEX_CONFIG") or Path(__file__).parent / "config.json")
 
 
 class Config:
