@@ -60,6 +60,10 @@ log = get_logger("StreamerBot")
 # tracker widget's own OBS WebSocket reconnect logic - consistent handling
 # of "primary connection that should self-heal" across this whole project.
 RETRY_DELAYS = [1, 5, 10, 20, 30]  # seconds
+# aiohttp pings this often and drops the socket when no pong comes back. The gaming PC being switched
+# off or sleeping never closes the connection cleanly, so without it the backend held a dead socket
+# forever and chat stayed blank until something was restarted.
+HEARTBEAT_SECONDS = 20
 
 # What to ask Streamer.bot to send us. Overridable via config.json's
 # "streamerbot_subscribe_events" using Streamer.bot's own category/name
@@ -569,7 +573,7 @@ class StreamerBotClient:
     async def _connect_and_listen(self):
         url = config.get("streamerbot_ws_url", "ws://localhost:8080/")
         log.info(f"Connecting to Streamer.bot at {url}")
-        async with self._session.ws_connect(url) as ws:
+        async with self._session.ws_connect(url, heartbeat=HEARTBEAT_SECONDS) as ws:
             self._ws = ws
             log.info("Connected to Streamer.bot")
 

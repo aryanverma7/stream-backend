@@ -699,3 +699,34 @@ class TestEmoteParsing:
     def test_a_non_list_emote_field_is_ignored(self):
         parsed = streamerbot_client.parse_chat_message(self._event("nope"))
         assert parsed["emotes"] == []
+
+
+@pytest.mark.asyncio
+async def test_connection_uses_a_heartbeat_so_a_dead_socket_is_noticed():
+    """The gaming PC switching off (or sleeping) never closes the socket cleanly. Without pings the
+    Mac Mini sat on that dead socket forever, so chat stayed blank until the backend was restarted."""
+    seen = {}
+
+    class Ws:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class Session:
+        def ws_connect(self, url, **kw):
+            seen.update(kw)
+            return Ws()
+
+    client = streamerbot_client.StreamerBotClient()
+    client._session = Session()
+    await client._connect_and_listen()
+    assert seen["heartbeat"] == streamerbot_client.HEARTBEAT_SECONDS
+    assert 0 < streamerbot_client.HEARTBEAT_SECONDS <= 30
