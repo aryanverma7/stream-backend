@@ -5,16 +5,16 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-import auth
-import db
-import deletions
-import editor_api
-import editor_comments as ec
-import editor_personal as ep
-import editor_store as es
-import gdrive
-import scheduler
-from config import config
+from core import auth
+from core import db
+from editor import deletions
+from editor import editor_api
+from editor import editor_comments as ec
+from editor import editor_personal as ep
+from editor import editor_store as es
+from editor import gdrive
+from core import scheduler
+from core.config import config
 
 FORBIDDEN = {"error": "Only the streamer can do this."}
 

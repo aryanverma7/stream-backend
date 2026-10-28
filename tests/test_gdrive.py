@@ -7,8 +7,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pytest
 from aioresponses import aioresponses
 
-import gdrive
-from config import config
+from editor import gdrive
+from core.config import config
 
 API = gdrive.API
 TOKEN = {"access_token": "tok", "expires_in": 3600}

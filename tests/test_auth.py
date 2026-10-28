@@ -10,9 +10,9 @@ from aioresponses import aioresponses
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
-import auth
-import db
-from config import config
+from core import auth
+from core import db
+from core.config import config
 
 
 @pytest.fixture(autouse=True)

@@ -1,116 +1,49 @@
-# Mac Mini Backend — Task #3 Skeleton
+# DualBladeX stream backend
 
-This is the always-on backend that runs on the Mac Mini. Per the project notes
-(Section 3), this task builds the **skeleton only** — the HTTP server, the
-WebSocket server for "smart" widgets, the outbound connection to Streamer.bot,
-config loading, and logging. Feature logic (Roulette, Spotify, OCR, clips)
-gets wired into this skeleton in their own later tasks, not here.
+The always-on Python (aiohttp) backend on the Mac Mini: chat commands and overlays for the stream,
+the admin dashboard's API, the public site, and the editor app's data, Drive and Discord layer.
+It runs as one asyncio process started by `main.py`.
 
-## What this does right now
+## Layout
 
-- Runs an HTTP server with a `/health` check
-- Runs a WebSocket server at `/ws/widgets` that future widgets (Roulette, the
-  Forced Buy badge, Spotify now-playing) will connect to for live updates
-- Connects outbound to Streamer.bot and logs whatever chat/event messages
-  arrive (real command handling comes in later tasks)
-- Logs everything, tagged by subsystem, to `logs/backend.log`
-
-## Setup
-
-### 1. Python environment
-
-```bash
-cd mac_mini_backend
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+```
+main.py          entry point (launchd runs this)
+core/            config, settings schema, SQLite, login/roles, HTTP server, site serving,
+                 dashboard + public APIs, health check, the scheduler
+stream/          the stream itself: Streamer.bot client, overlay sockets, roulette, credit OCR,
+                 points (Cloudbot), Spotify requests, !rank, greeter, break screen,
+                 Discord go-live, Twitch, Streamlabs
+editor/          the editor app: projects/tapes/versions, comments, Google Drive, deletes,
+                 upload recovery, backups, the gaming-PC uploader API, Discord DMs and reminders
+tests/           pytest suite (one file per module)
+docs/            setup guides: Streamer.bot, Google Drive, Discord bot
+deploy/          the launchd LaunchAgent file
+config.example.json   template for config.json (secrets; never committed)
 ```
 
-### 2. Config
+`config.json`, `app.db` (+ `-wal`/`-shm`), `logs/`, `seen_chatters.json` and
+`live_announce_state.json` live in this folder on the Mac Mini and are never committed.
+
+## Run and test
 
 ```bash
-cp config.example.json config.json
-```
-
-Sessions are stored in `app.db` (created on first start, never commit it). Login cookies are
-`Secure`, so sign in through the HTTPS hostname, not the plain-HTTP LAN address.
-
-Open `config.json` and fill in real values. Only `http_host`, `http_port`,
-and `streamerbot_ws_url` actually matter for this task specifically — the
-rest are placeholders for later tasks, left there so this stays one evolving
-config file instead of needing a new one created every task.
-
-### 3. Test run it manually first
-
-```bash
-python3 main.py
-```
-
-You should see startup logs, and (once Streamer.bot is running on the gaming
-PC and reachable at the URL in your config) a "Connected to Streamer.bot"
-line. In a separate terminal, confirm the HTTP server is alive:
-
-```bash
+python3 -m venv venv && venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+cp config.example.json config.json      # first install only, then fill it in from the dashboard
+venv/bin/python3 main.py                # run in the foreground
 curl http://localhost:8765/health
-# should return: {"status": "ok"}
+venv/bin/python3 -m pytest tests -q     # safe on the Mac Mini: tests never touch config.json
 ```
 
-Stop it with Ctrl+C once you've confirmed it works before moving to the
-always-on setup below.
-
-### 4. Install as an always-on LaunchAgent
-
-This is what actually makes it "always-on" — auto-starts, auto-restarts on
-crash, per Section 3's reasoning for why a LaunchAgent matters over just
-leaving a terminal window open.
-
-1. Edit `com.dualbladex.backend.plist` — replace both instances of
-   `/path/to/mac_mini_backend` with the actual full path to this folder on
-   your Mac Mini (e.g. `/Users/yourname/mac_mini_backend`).
-2. Copy it into place and load it:
+## Deploy (Mac Mini)
 
 ```bash
-cp com.dualbladex.backend.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.dualbladex.backend.plist
-```
-
-3. Confirm it's running:
-
-```bash
-curl http://localhost:8765/health
-```
-
-To stop/unload it later (e.g. while actively developing and wanting manual
-control instead):
-
-```bash
+cd ~/Documents/Stream && git pull
 launchctl unload ~/Library/LaunchAgents/com.dualbladex.backend.plist
+launchctl load ~/Library/LaunchAgents/com.dualbladex.backend.plist
+curl -s http://localhost:8765/health
 ```
 
-launchd-level crash logs (separate from `logs/backend.log`) land at
-`/tmp/mac_mini_backend.out.log` and `.err.log` — check these first if the
-LaunchAgent doesn't seem to start at all.
-
-## Cloudflare Tunnel (needed for Task #5's OAuth redirect, not this task)
-
-Not required to get this skeleton itself running, but since Task #5 needs an
-HTTPS redirect URL, it's worth setting up now while you're already in
-terminal setup mode:
-
-1. Install `cloudflared` (`brew install cloudflared` on macOS)
-2. `cloudflared tunnel login` — authenticates against your Cloudflare account
-3. `cloudflared tunnel create <name>` — creates a named tunnel
-4. `cloudflared tunnel route dns <name> <subdomain.yourdomain.com>` — points
-   a subdomain at it
-5. Create a small `config.yml` for cloudflared routing that subdomain to
-   `http://localhost:8765` (or whatever port you're running this backend on)
-6. `cloudflared tunnel run <name>` to test, then install it as its own
-   LaunchAgent the same way as above once confirmed working, so the tunnel
-   itself is also always-on
-
-## Next steps
-
-Task #4 (admin dashboard) will add real routes to this same server — the
-config editor, the points test tool, the log viewer, and the status panel —
-rather than being a separate service, per the architecture decision in
-Section 14.
+First install: `cp deploy/com.dualbladex.backend.plist ~/Library/LaunchAgents/` and `launchctl load` it.
+It is a LaunchAgent, so it starts at login; power-cut recovery needs macOS automatic login and
+`sudo pmset autorestart 1`. Crash logs: `/tmp/mac_mini_backend.err.log`.
+The public hostname is a Cloudflare tunnel (`cloudflared`, installed as a LaunchDaemon) to port 8765.

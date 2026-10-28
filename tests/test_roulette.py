@@ -8,8 +8,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pytest
 from unittest.mock import AsyncMock
 
-import roulette
-from config import config
+from stream import roulette
+from core.config import config
 
 
 @pytest.fixture(autouse=True)

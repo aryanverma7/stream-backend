@@ -6,8 +6,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pytest
 from aioresponses import aioresponses
 
-import twitch_client
-from config import config
+from stream import twitch_client
+from core.config import config
 
 
 @pytest.mark.asyncio

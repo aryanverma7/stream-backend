@@ -5,10 +5,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
-import db
-import editor_store as es
-import notifier
-from config import config
+from core import db
+from editor import editor_store as es
+from editor import notifier
+from core.config import config
 
 T = 1000.0
 

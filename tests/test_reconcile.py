@@ -1,12 +1,12 @@
 import pytest
 
-import config
-import db
-import editor_service
-import editor_store as es
-import gdrive
-import reconcile
-import scheduler
+from core import config
+from core import db
+from editor import editor_service
+from editor import editor_store as es
+from editor import gdrive
+from editor import reconcile
+from core import scheduler
 
 NOW = 10_000_000.0
 

@@ -5,9 +5,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
-import db
-import editor_bell
-import editor_store as es
+from core import db
+from editor import editor_bell
+from editor import editor_store as es
 
 
 @pytest.fixture(autouse=True)

@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
-import db
+from core import db
 
 
 def test_get_uses_wal_and_full_sync(tmp_path):
@@ -54,7 +54,7 @@ def test_a_repeat_ensure_does_not_commit_an_open_transaction(tmp_path):
 
 
 def test_bad_db_path_falls_back_to_default(tmp_path, monkeypatch):
-    from config import config
+    from core.config import config
     db.use_path_for_tests(tmp_path / "x.db")
     db._path_override = None
     monkeypatch.setitem(config._data, "app_db_path", str(tmp_path / "missing" / "x.db"))
@@ -64,13 +64,13 @@ def test_bad_db_path_falls_back_to_default(tmp_path, monkeypatch):
     db.use_path_for_tests(tmp_path / "other.db")
 
 
-def test_relative_db_path_resolves_next_to_the_module(tmp_path, monkeypatch):
-    from config import config
+def test_relative_db_path_resolves_in_the_backend_folder(tmp_path, monkeypatch):
+    from core.config import config
     db.use_path_for_tests(tmp_path / "x.db")
     db._path_override = None
     monkeypatch.chdir(tmp_path)
     monkeypatch.setitem(config._data, "app_db_path", "rel_test.db")
-    target = Path(db.__file__).parent / "rel_test.db"
+    target = Path(db.__file__).parent.parent / "rel_test.db"
     try:
         db.get()
         assert target.exists()
@@ -92,7 +92,7 @@ def test_meta_roundtrip_and_upsert(tmp_path):
 
 
 def _configured(tmp_path, monkeypatch, value):
-    from config import config
+    from core.config import config
     db.use_path_for_tests(tmp_path / "x.db")
     db._path_override = None
     monkeypatch.setitem(config._data, "app_db_path", value)

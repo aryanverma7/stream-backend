@@ -7,9 +7,9 @@ import aiohttp
 import pytest
 from aioresponses import aioresponses
 
-import db
-import discord_dm
-from config import config
+from core import db
+from editor import discord_dm
+from core.config import config
 
 API = discord_dm.API
 CH = f"{API}/users/@me/channels"

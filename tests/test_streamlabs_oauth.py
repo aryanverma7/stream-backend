@@ -9,8 +9,8 @@ from aiohttp.test_utils import TestClient, TestServer
 from aioresponses import aioresponses
 from unittest.mock import AsyncMock
 
-import streamlabs_oauth
-from config import config
+from stream import streamlabs_oauth
+from core.config import config
 
 
 async def make_client():

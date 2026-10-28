@@ -8,9 +8,9 @@ from aiohttp.test_utils import TestClient, TestServer
 from aioresponses import aioresponses
 from unittest.mock import AsyncMock
 
-import public_api
-from config import config
-from server import build_app
+from core import public_api
+from core.config import config
+from core.server import build_app
 
 
 @pytest.mark.asyncio

@@ -4,15 +4,15 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-import auth
-import db
-import discord_live
-import twitch_client
-import editor_store as es
-import gdrive
-import scheduler
-import uploader_api
-from config import config
+from core import auth
+from core import db
+from stream import discord_live
+from stream import twitch_client
+from editor import editor_store as es
+from editor import gdrive
+from core import scheduler
+from editor import uploader_api
+from core.config import config
 
 SECRET = {"X-Agent-Secret": "s3cret"}
 JOB = "0123456789abcdef0123456789abcdef"

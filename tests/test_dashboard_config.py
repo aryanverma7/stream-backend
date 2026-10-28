@@ -7,9 +7,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-import dashboard_api
-from config import config
-from config_schema import SECRET_MASK
+from core import dashboard_api
+from core.config import config
+from core.config_schema import SECRET_MASK
 
 
 @pytest.fixture

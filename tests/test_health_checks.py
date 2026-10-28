@@ -6,8 +6,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
-import health_checks
-from config import config
+from core import health_checks
+from core.config import config
 
 
 class _Ctx:

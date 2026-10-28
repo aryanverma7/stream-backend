@@ -14,28 +14,28 @@ them. The actual logic for each piece lives in its own module.
 import asyncio
 import signal
 
-import backup
-import break_timer
-import credit_ocr
-import deletions
-import discord_live
-import health_checks
-import notifier
-import notify_outbox
-import points_cloudbot
-import greeter
-import reconcile
-import reminders
-import roulette
-import scheduler
-import spotify
-import valorant_rank
-from config import config
-from logger import get_logger
-from roulette import handle_chat_command as handle_roulette_command
-from server import run_server
-from streamerbot_client import forward_chat_to_widgets, parse_chat_message, streamerbot
-from streamlabs_socket import start_tips_listener, stop_tips_listener
+from editor import backup
+from stream import break_timer
+from stream import credit_ocr
+from editor import deletions
+from stream import discord_live
+from core import health_checks
+from editor import notifier
+from editor import notify_outbox
+from stream import points_cloudbot
+from stream import greeter
+from editor import reconcile
+from editor import reminders
+from stream import roulette
+from core import scheduler
+from stream import spotify
+from stream import valorant_rank
+from core.config import config
+from core.logger import get_logger
+from stream.roulette import handle_chat_command as handle_roulette_command
+from core.server import run_server
+from stream.streamerbot_client import forward_chat_to_widgets, parse_chat_message, streamerbot
+from stream.streamlabs_socket import start_tips_listener, stop_tips_listener
 
 log = get_logger("Main")
 

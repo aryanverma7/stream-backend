@@ -38,3 +38,6 @@ clips/
 app.db
 app.db-wal
 app.db-shm
+
+# Windows mark-of-the-web metadata from copying files through Windows
+*:Zone.Identifier

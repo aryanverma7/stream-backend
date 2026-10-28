@@ -7,11 +7,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
-import db
-import deletions
-import editor_store as es
-import reminders
-from config import config
+from core import db
+from editor import deletions
+from editor import editor_store as es
+from editor import reminders
+from core.config import config
 
 H = 3600
 
@@ -109,8 +109,8 @@ async def test_clip_wording_and_no_click_no_reminder():
 
 @pytest.mark.asyncio
 async def test_recovery_after_discord_outage_delivers_one_reminder(monkeypatch):
-    import discord_dm
-    import notify_outbox
+    from editor import discord_dm
+    from editor import notify_outbox
     sent = []
 
     async def fail(uid, text):

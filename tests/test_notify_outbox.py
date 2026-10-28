@@ -5,10 +5,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
-import db
-import discord_dm
-import notify_outbox as ob
-from config import config
+from core import db
+from editor import discord_dm
+from editor import notify_outbox as ob
+from core.config import config
 
 
 @pytest.fixture(autouse=True)

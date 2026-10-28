@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.dualbladex.backend</string>
+
+    <!-- The installed copy in ~/Library/LaunchAgents/ (a LaunchAgent, not a
+         LaunchDaemon: Catalina blocks boot-time services from ~/Documents). -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/aryan/Documents/Stream/venv/bin/python3</string>
+        <string>/Users/aryan/Documents/Stream/main.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/aryan/Documents/Stream</string>
+
+    <!-- launchd runs services with its own minimal default PATH, NOT the
+         interactive shell's PATH from .zshrc - confirmed the hard way:
+         tesseract worked fine typed directly in Terminal but wasn't
+         reachable by this service at all, since MacPorts installs to
+         /opt/local/bin, which isn't on launchd's default PATH. credit_ocr.py
+         also explicitly points at the tesseract binary directly as its own
+         independent fix, but this covers anything else MacPorts/Homebrew-
+         installed that this backend might need to find in the PATH itself,
+         not just this one binary. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <!-- Starts automatically when you log in / when launchd loads this file -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Auto-restarts if the process crashes for any reason - this is what
+         actually makes "always-on" mean something, rather than just leaving
+         a terminal window open (Section 3's stated reasoning) -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- launchd-level stdout/stderr, separate from our own app logger.py -
+         useful if the process crashes before logger.py even gets to run -->
+    <key>StandardOutPath</key>
+    <string>/tmp/mac_mini_backend.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/mac_mini_backend.err.log</string>
+</dict>
+</plist>

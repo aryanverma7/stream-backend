@@ -1,11 +1,11 @@
 import pytest
 
-import config
-import db
-import editor_service as svc
-import editor_store as es
-import gdrive
-import gdrive_oauth
+from core import config
+from core import db
+from editor import editor_service as svc
+from editor import editor_store as es
+from editor import gdrive
+from editor import gdrive_oauth
 
 
 @pytest.fixture(autouse=True)
@@ -85,7 +85,7 @@ async def test_complete_rejects_a_foreign_file(_env):
 
 @pytest.mark.asyncio
 async def test_complete_twice_logs_one_event_and_carry_over_is_rerun(_env, monkeypatch):
-    import editor_comments
+    from editor import editor_comments
     calls = []
     monkeypatch.setattr(editor_comments, "carry_over", lambda i: calls.append(i))
     _, iid = await _started(_env)
@@ -255,7 +255,7 @@ async def test_complete_with_missing_tape_is_value_error(_env, monkeypatch):
 
 
 async def _deleting_project(_env):
-    import deletions
+    from editor import deletions
     t, iid = await _started(_env)
     v = es.create_iteration(t["id"], "b.mp4", 10, "u")
     es.abandon_iteration(v["id"])  # not 'uploading', so the project delete is allowed
@@ -283,7 +283,7 @@ async def test_no_new_work_lands_in_a_project_being_deleted(_env):
 
 @pytest.mark.asyncio
 async def test_retry_after_carry_over_crash_carries_over_and_logs_once(_env, monkeypatch):
-    import editor_comments
+    from editor import editor_comments
     calls = []
 
     def flaky(i):
@@ -401,7 +401,7 @@ def test_uncombine_refused_after_a_version():
 
 
 def test_no_combine_into_a_project_being_deleted():
-    import deletions
+    from editor import deletions
     a, b = _clip("A"), _clip("B")
     deletions.request_delete("project", b["id"], "B", username="aryan", role="admin")
     with pytest.raises(ValueError, match="being deleted"):
@@ -410,7 +410,7 @@ def test_no_combine_into_a_project_being_deleted():
 
 @pytest.mark.asyncio
 async def test_reel_works_like_a_tape(_env):
-    import editor_comments as ec
+    from editor import editor_comments as ec
     c = _clip("Medal")
     reel_id = c["reel_tape_id"]
     with pytest.raises(ValueError, match="exactly one reel"):
