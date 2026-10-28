@@ -116,6 +116,7 @@
   "twitch_channel": "",
   "youtube_api_key": "",
   "youtube_channel_id": "",
+  "youtube_video_ids": [],
   "cloudflare_tunnel_domain": "",
   "site_out_dir": "",
   "app_db_path": "",

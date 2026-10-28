@@ -136,3 +136,23 @@ async def test_site_config_returns_only_social_links(monkeypatch):
     assert "should-never-appear" not in body_text
 
     await client.close()
+
+
+def test_video_id_accepts_pasted_links_and_v_prefix():
+    for raw in ("eYAKjHbXiEI", "v=eYAKjHbXiEI", " https://www.youtube.com/watch?v=eYAKjHbXiEI&t=5s ",
+                "https://youtu.be/eYAKjHbXiEI", "https://www.youtube.com/shorts/eYAKjHbXiEI"):
+        assert public_api.video_id(raw) == "eYAKjHbXiEI", raw
+
+
+@pytest.mark.asyncio
+async def test_videos_error_never_echoes_the_api_key(monkeypatch):
+    monkeypatch.setattr(public_api.config, "_data", {"youtube_video_ids": ["abc"], "youtube_api_key": "SECRETKEY"})
+    client = TestClient(TestServer(build_app()))
+    await client.start_server()
+    with aioresponses(passthrough=["http://127.0.0.1"]) as mocked:
+        mocked.get("https://www.googleapis.com/youtube/v3/videos?part=snippet&id=abc&key=SECRETKEY", status=403)
+        resp = await client.get("/api/public/videos")
+        body = await resp.text()
+    await client.close()
+    assert resp.status == public_api.UPSTREAM_FAILED_STATUS
+    assert "SECRETKEY" not in body and "key=" not in body

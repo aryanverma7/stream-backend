@@ -106,6 +106,7 @@ _ROWS = {
     "twitch_channel": (_TY, "text", "Twitch channel", "Twitch channel name, used for live checks and the embed."),
     "youtube_api_key": (_TY, "secret", "YouTube API key", "Key for the YouTube Data API."),
     "youtube_channel_id": (_TY, "text", "YouTube channel ID", "YouTube channel checked for a live broadcast."),
+    "youtube_video_ids": (_TY, "list", "Homepage videos", "YouTube video IDs shown on the homepage while offline (the part after v= in a link). Needs the YouTube API key."),
     "cloudflare_tunnel_domain": (_LS, "text", "Tunnel domain", "Cloudflare tunnel hostname that reaches this backend."),
     "site_out_dir": (_LS, "text", "Site folder", "Absolute path of the built site's out/ folder that the backend serves."),
     "app_db_path": (_LS, "text", "Database path", "Where the SQLite database lives; empty uses the default."),
