@@ -8,7 +8,7 @@ import time
 import pytest
 from unittest.mock import AsyncMock, patch
 
-import streamerbot_client
+from stream import streamerbot_client
 
 
 # ---------- Chat payload parsing ----------
@@ -82,7 +82,7 @@ async def test_forward_chat_broadcasts_twitch_message():
         "data": {"user": {"login": "someviewer", "name": "SomeViewer"}, "text": "hey chat"},
     }
 
-    with patch("streamerbot_client.widget_hub") as mock_hub:
+    with patch("stream.streamerbot_client.widget_hub") as mock_hub:
         mock_hub.broadcast = AsyncMock()
         await streamerbot_client.forward_chat_to_widgets(event)
 
@@ -107,7 +107,7 @@ async def test_forward_chat_broadcasts_twitch_message():
 async def test_forward_chat_ignores_non_chat_events():
     event = {"event": {"type": "Follow"}, "data": {}}
 
-    with patch("streamerbot_client.widget_hub") as mock_hub:
+    with patch("stream.streamerbot_client.widget_hub") as mock_hub:
         mock_hub.broadcast = AsyncMock()
         await streamerbot_client.forward_chat_to_widgets(event)
 
@@ -135,7 +135,7 @@ async def test_subscribe_asks_for_the_chat_events_by_default():
 
 @pytest.mark.asyncio
 async def test_subscribe_honours_a_configured_event_set(monkeypatch):
-    from config import config
+    from core.config import config
 
     monkeypatch.setitem(config._data, "streamerbot_subscribe_events", {"Twitch": ["Cheer"]})
     client = streamerbot_client.StreamerBotClient()
@@ -193,7 +193,7 @@ async def test_send_chat_message_can_speak_as_the_broadcaster_instead_of_a_bot()
     this side is indistinguishable from a reply that worked. Being able
     to fall back to the broadcaster account has to be a config edit.
     """
-    from config import config
+    from core.config import config
 
     client = streamerbot_client.StreamerBotClient()
     ws = AsyncMock()
@@ -326,7 +326,7 @@ async def test_a_hello_without_a_challenge_subscribes_immediately():
 
 @pytest.mark.asyncio
 async def test_a_challenge_is_answered_before_anything_is_subscribed(monkeypatch):
-    from config import config
+    from core.config import config
 
     monkeypatch.setitem(config._data, "streamerbot_ws_password", "hunter2")
     client = streamerbot_client.StreamerBotClient()
@@ -347,7 +347,7 @@ async def test_a_challenge_is_answered_before_anything_is_subscribed(monkeypatch
 
 @pytest.mark.asyncio
 async def test_a_challenge_with_no_configured_password_still_asks_for_chat(monkeypatch):
-    from config import config
+    from core.config import config
 
     monkeypatch.setitem(config._data, "streamerbot_ws_password", "")
     client = streamerbot_client.StreamerBotClient()

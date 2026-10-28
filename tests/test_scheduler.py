@@ -5,8 +5,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
-import db
-import scheduler
+from core import db
+from core import scheduler
 
 
 @pytest.fixture(autouse=True)

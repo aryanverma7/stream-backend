@@ -10,9 +10,9 @@ from aioresponses import aioresponses
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
-import auth
-import db
-from config import config
+from core import auth
+from core import db
+from core.config import config
 
 
 @pytest.fixture(autouse=True)
@@ -56,6 +56,11 @@ class TestSafeNextPath:
     def test_rejects_a_protocol_relative_url(self):
         # "//evil.example" is a valid Location header meaning https://evil.example
         assert auth._safe_next_path("//evil.example") == auth.DEFAULT_POST_LOGIN_PATH
+
+    def test_rejects_a_backslash_that_browsers_read_as_a_slash(self):
+        # Browsers normalise a backslash to "/" in a Location header: "/\evil.example" means //evil.example.
+        for bad in ("/\\evil.example", "\\\\evil.example", "\\/evil.example"):
+            assert auth._safe_next_path(bad) == auth.DEFAULT_POST_LOGIN_PATH, bad
 
     def test_rejects_a_bare_relative_path(self):
         assert auth._safe_next_path("admin") == auth.DEFAULT_POST_LOGIN_PATH
@@ -340,6 +345,25 @@ class TestCallbackRoles:
         token = caught.value.cookies[auth.SESSION_COOKIE_NAME].value
         found = auth.session_for(request_for("/x", {auth.SESSION_COOKIE_NAME: token}))
         assert found["role"] == role
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("next_path,location", [
+        ("/editor#/p/12", "/editor#/p/12"),
+        ("/editor?x=1#/p/12/t/5", "/editor?x=1#/p/12/t/5"),
+        ("/admin#x", "/editor"),
+        ("/admin?y#/editor", "/editor"),
+    ])
+    async def test_an_editors_deep_link_survives_login_but_admin_does_not(self, monkeypatch, next_path, location):
+        monkeypatch.setitem(config._data, "authorized_github_usernames", ["aryan"])
+        monkeypatch.setitem(config._data, "editor_github_username", "CutGuy")
+        auth._pending_logins["st"] = next_path
+        with aioresponses() as mocked:
+            mocked.post(auth.GITHUB_TOKEN_URL, payload={"access_token": "t"})
+            mocked.get(auth.GITHUB_USER_URL, payload={"login": "CutGuy"})
+            with pytest.raises(web.HTTPFound) as caught:
+                await auth.handle_callback(request_for("/auth/callback?code=c&state=st"))
+        assert caught.value.location == location
 
 
 class TestRevocation:

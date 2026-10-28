@@ -7,8 +7,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
-import spotify
-from config import config
+from stream import spotify
+from core.config import config
 
 CONNECTED = {
     "spotify_refresh_token": "refresh-abc",

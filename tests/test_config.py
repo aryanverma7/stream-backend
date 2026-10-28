@@ -6,7 +6,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import Config, config
+from core.config import Config, config
 
 
 def test_public_safe_only_returns_allowlisted_keys(monkeypatch):
@@ -61,7 +61,7 @@ def test_a_crash_mid_save_leaves_the_old_file_intact(tmp_path, monkeypatch):
 
 
 def test_save_asks_the_drive_to_flush_when_full_fsync_exists(tmp_path, monkeypatch):
-    import config as config_module
+    from core import config as config_module
     calls = []
     monkeypatch.setattr(config_module.fcntl, "F_FULLFSYNC", 51, raising=False)
     monkeypatch.setattr(config_module.fcntl, "fcntl", lambda fd, cmd: calls.append(cmd))

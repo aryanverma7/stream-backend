@@ -1,8 +1,8 @@
 import pytest
 
-import db
-import editor_personal as ep
-import editor_store as es
+from core import db
+from editor import editor_personal as ep
+from editor import editor_store as es
 
 
 @pytest.fixture(autouse=True)

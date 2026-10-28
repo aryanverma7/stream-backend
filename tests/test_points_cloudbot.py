@@ -7,8 +7,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pytest
 from unittest.mock import AsyncMock
 
-import points_cloudbot
-from config import config
+from stream import points_cloudbot
+from core.config import config
 
 
 @pytest.fixture(autouse=True)

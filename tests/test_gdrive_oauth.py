@@ -9,10 +9,10 @@ from aiohttp.test_utils import TestClient, TestServer
 from aioresponses import aioresponses, CallbackResult
 from urllib.parse import parse_qs, urlparse
 
-import db
-import gdrive
-import gdrive_oauth
-from config import config
+from core import db
+from editor import gdrive
+from editor import gdrive_oauth
+from core.config import config
 
 FILES = f"{gdrive.API}/files?fields=id"
 

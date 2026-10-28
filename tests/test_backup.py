@@ -3,11 +3,11 @@ import time
 
 import pytest
 
-import backup
-import config
-import db
-import gdrive
-import gdrive_oauth
+from editor import backup
+from core import config
+from core import db
+from editor import gdrive
+from editor import gdrive_oauth
 
 
 def _ts(h, m, day=26):

@@ -5,16 +5,16 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-import auth
-import db
-import deletions
-import editor_api
-import editor_comments as ec
-import editor_personal as ep
-import editor_store as es
-import gdrive
-import scheduler
-from config import config
+from core import auth
+from core import db
+from editor import deletions
+from editor import editor_api
+from editor import editor_comments as ec
+from editor import editor_personal as ep
+from editor import editor_store as es
+from editor import gdrive
+from core import scheduler
+from core.config import config
 
 FORBIDDEN = {"error": "Only the streamer can do this."}
 
@@ -39,8 +39,9 @@ def drive(tmp_path, monkeypatch):
         return f"F{s['folders']}"
 
     async def start(name, parent, size, mime, props, origin):
-        s["files"]["pending"] = {"parents": [parent], "appProperties": props, "size": size}
-        return "https://upload/s"
+        s["files"]["pending"] = {"parents": [parent], "appProperties": props, "size": size,
+                                 "name": name, "mime": mime, "origin": origin}
+        return s.get("next_url", "https://upload/s")
 
     async def get_file(fid):
         return s["files"].get(fid) or s["files"].get("pending") or {}
@@ -301,7 +302,8 @@ async def test_only_the_author_edits_a_comment():
         status, _ = await a.admin("POST", f"/api/editor/comments/{c['id']}/replies", {"body": "agreed"})
         assert status == 201
         assert (await a.admin("GET", "/api/editor/search?q=agreed"))[1]["hits"][0]["kind"] == "reply"
-        assert (await a.editor("GET", "/api/editor/me"))[1] == {"username": "cutguy", "role": "editor"}
+        assert (await a.editor("GET", "/api/editor/me"))[1] == {"username": "cutguy", "role": "editor",
+                                                               "brand_kit_url": None}
 
 
 @pytest.mark.asyncio
@@ -460,6 +462,22 @@ async def test_storage_includes_discord_status():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure, message", [("not_connected", editor_api.NOT_CONNECTED), ("error", editor_api.DRIVE_PROBLEM)])
+async def test_storage_without_drive_still_reports_scheduler_and_discord(drive, monkeypatch, failure, message):
+    if failure == "error":
+        async def about():
+            raise gdrive.DriveError("x", 500)
+        monkeypatch.setattr(gdrive, "about", about)
+    else:
+        drive["not_connected"] = True
+    async with api() as a:
+        status, got = await a.admin("GET", "/api/editor/storage")
+    assert status == 200
+    assert (got["quota"], got["files"], got["drive_error"]) == (None, None, message)
+    assert got["scheduler"]["sane"] is True and got["discord"]["enabled"] is False and got["pending_deletes"] == []
+
+
+@pytest.mark.asyncio
 async def test_notifications_route_uses_session_identity():
     by_editor = es.record_event("cutguy", "tape_created", "cutguy added tape", now=1.0)
     by_admin = es.record_event("aryan", "tape_created", "aryan added tape", now=2.0)
@@ -480,3 +498,147 @@ async def test_notifications_route_uses_session_identity():
         for bad in ({}, {"up_to_id": "3"}, {"up_to_id": True}, {"up_to_id": -1},
                     {"up_to_id": 10**19}):
             assert (await a.admin("POST", "/api/editor/notifications/seen", bad))[0] == 400, bad
+
+
+@pytest.mark.asyncio
+async def test_new_session_for_an_unfinished_upload(drive):
+    _, t, _, _ = _world()
+    async with api() as a:
+        status, up = await a.editor("POST", f"/api/editor/tapes/{t['id']}/iterations",
+                                    {"filename": "b.mp4", "size": 20, "mime": "video/mp4"})
+        assert status == 200
+        drive["next_url"] = "https://upload/fresh"
+        path = f"/api/editor/iterations/{up['iteration_id']}/session"
+        status, got = await a.editor("POST", path, {"mime": "video/mp4"})
+        assert (status, got) == (200, {"upload_url": "https://upload/fresh"})
+        assert drive["files"]["pending"] == {"parents": ["TF"], "size": 20, "name": "v2 - b.mp4", "mime": "video/mp4",
+                                             "appProperties": {"iteration_id": str(up["iteration_id"])},
+                                             "origin": "https://x.example"}
+        assert es.get_iteration(up["iteration_id"])["upload_url"] == "https://upload/fresh"
+        assert (await a.admin("POST", path))[0] == 200  # no body: mime is optional
+        await a.editor("POST", f"/api/editor/iterations/{up['iteration_id']}/complete", {"file_id": "IT2"})
+        status, got = await a.editor("POST", path, {})
+        assert (status, got) == (409, {"error": "This version is not uploading"})
+        abandoned = es.create_iteration(t["id"], "d.mp4", 7, "https://upload/old")
+        db.get().execute("UPDATE iterations SET status='abandoned' WHERE id=?", (abandoned["id"],))
+        status, got = await a.editor("POST", f"/api/editor/iterations/{abandoned['id']}/session", {})
+        assert (status, got) == (200, {"upload_url": "https://upload/fresh"})
+        assert drive["files"]["pending"]["name"] == "v3 - d.mp4"
+        row = es.get_iteration(abandoned["id"])
+        assert (row["status"], row["upload_url"]) == ("uploading", "https://upload/fresh")
+        t2 = es.create_tape(t["project_id"], "Other")
+        es.complete_iteration(es.create_iteration(t2["id"], "o.mp4", 5, "")["id"], "O1")
+        deletions.request_delete("tape_files", t2["id"], "Other", username="aryan", role="admin", now=5.0)
+        up3 = es.create_iteration(t2["id"], "c.mp4", 5, "")
+        status, got = await a.editor("POST", f"/api/editor/iterations/{up3['id']}/session", {})
+        assert (status, got) == (400, {"error": "This tape's files are being deleted"})
+
+
+@pytest.mark.asyncio
+async def test_abandon_an_unfinished_upload(drive):
+    _, t, done, _ = _world()
+    async with api() as a:
+        status, up = await a.editor("POST", f"/api/editor/tapes/{t['id']}/iterations",
+                                    {"filename": "b.mp4", "size": 20, "mime": "video/mp4"})
+        path = f"/api/editor/iterations/{up['iteration_id']}/abandon"
+        status, got = await a.editor("POST", path)
+        assert status == 200 and got["status"] == "abandoned"
+        assert es.get_iteration(up["iteration_id"])["status"] == "abandoned"
+        assert await a.admin("POST", path) == (409, {"error": "This version is not uploading"})
+        assert (await a.admin("POST", f"/api/editor/iterations/{done['id']}/abandon"))[0] == 409
+        assert (await a.admin("POST", "/api/editor/iterations/999/abandon"))[0] == 404
+
+
+@pytest.mark.asyncio
+async def test_home_buckets():
+    p, t, it, c = _world()  # VOD ready, not clicked; Clutch v1 has one open comment
+    clicked = es.create_project("Clicked", "2026-10-21", "", "c.mp4", 5, now=2.0)
+    es.mark_vod_ready(clicked["id"], "VOD2")
+    es.record_download_click(clicked["id"])
+    asked = es.create_project("Asked", "2026-10-22", "", "d.mp4", 5, now=3.0)
+    es.mark_vod_ready(asked["id"], "VOD3")
+    es.record_download_click(asked["id"])
+    deletions.request_delete("vod", asked["id"], "d.mp4", username="cutguy", role="editor", now=5.0)
+    # A second tape with two open comments on v2, and a resolved one on the earlier v1.
+    t2 = es.create_tape(p["id"], "Ace round")
+    v1 = es.create_iteration(t2["id"], "x.mp4", 1, "")
+    es.complete_iteration(v1["id"], "X1")
+    for body in ("one", "two"):
+        ec.add_comment(v1["id"], "aryan", "fix", body)
+    v2 = es.create_iteration(t2["id"], "y.mp4", 1, "")
+    es.complete_iteration(v2["id"], "X2")
+    ec.carry_over(v2["id"])
+    es.create_iteration(t2["id"], "z.mp4", 1, "")  # v3 still uploading: not the latest READY one
+    # A project being deleted shows nowhere.
+    gone = es.create_project("Gone", "2026-10-23", "", "g.mp4", 5, now=4.0)
+    es.mark_vod_ready(gone["id"], "VOD4")
+    gt = es.create_tape(gone["id"], "G")
+    gi = es.create_iteration(gt["id"], "g.mp4", 1, "")
+    es.complete_iteration(gi["id"], "G1")
+    ec.add_comment(gi["id"], "aryan", "fix", "x")
+    deletions.request_delete("project", gone["id"], "Gone", username="aryan", role="admin", now=5.0)
+    async with api() as a:
+        for who in ("admin", "editor"):
+            status, got = await a.call(who, "GET", "/api/editor/home")
+            assert status == 200
+            assert [x["name"] for x in got["vods_ready"]] == ["Ace"]
+            assert [x["name"] for x in got["deletes_to_confirm"]] == ["Clicked"]
+            assert all("vod_upload_url" not in x for x in got["vods_ready"] + got["deletes_to_confirm"])
+            assert [(x["tape"]["name"], x["project_name"], x["latest_iteration_id"], x["latest_version"],
+                     x["open_comments"]) for x in got["open_tapes"]] == [
+                ("Ace round", "Ace", v2["id"], 2, 2), ("Clutch", "Ace", it["id"], 1, 1)]
+
+
+@pytest.mark.asyncio
+async def test_fix_list_is_the_latest_versions_unresolved_comments():
+    p, t, it, c = _world()
+    done = ec.add_comment(it["id"], "aryan", "fix", "resolved already", now=5.0)
+    ec.set_resolved(done["id"], it["id"], True, "aryan")
+    t2 = es.create_tape(p["id"], "Ace round")
+    v1 = es.create_iteration(t2["id"], "x.mp4", 1, "")
+    es.complete_iteration(v1["id"], "X1")
+    old = ec.add_comment(v1["id"], "aryan", "fix", "carried", now=3.5)
+    fixed = ec.add_comment(v1["id"], "aryan", "fix", "fixed in v1", now=6.0)
+    ec.set_resolved(fixed["id"], v1["id"], True, "aryan")
+    v2 = es.create_iteration(t2["id"], "y.mp4", 1, "")
+    es.complete_iteration(v2["id"], "X2")
+    ec.carry_over(v2["id"])
+    new = ec.add_comment(v2["id"], "cutguy", "question", "new on v2", now=7.0)
+    gone = es.create_project("Gone", "2026-10-23", "", "g.mp4", 5, now=4.0)
+    gt = es.create_tape(gone["id"], "G")
+    gi = es.create_iteration(gt["id"], "g.mp4", 1, "")
+    es.complete_iteration(gi["id"], "G1")
+    ec.add_comment(gi["id"], "aryan", "fix", "in limbo", now=1.0)
+    deletions.request_delete("project", gone["id"], "Gone", username="aryan", role="admin", now=5.0)
+    async with api() as a:
+        for who in ("admin", "editor"):
+            status, got = await a.call(who, "GET", "/api/editor/fix-list")
+            assert status == 200
+            assert [(i["comment"]["id"], i["tape_id"], i["tape_name"], i["project_id"], i["iteration_id"],
+                     i["version"]) for i in got["items"]] == [
+                (old["id"], t2["id"], "Ace round", p["id"], v2["id"], 2),
+                (c["id"], t["id"], "Clutch", p["id"], it["id"], 1),
+                (new["id"], t2["id"], "Ace round", p["id"], v2["id"], 2)]
+            assert got["items"][0]["comment"]["body"] == "carried"
+
+
+@pytest.mark.asyncio
+async def test_me_carries_the_brand_kit_link():
+    async with api() as a:
+        assert (await a.editor("GET", "/api/editor/me"))[1] == {"username": "cutguy", "role": "editor",
+                                                               "brand_kit_url": None}
+        db.meta_set("gdrive_brand_kit", "BK1")
+        assert (await a.admin("GET", "/api/editor/me"))[1]["brand_kit_url"] == \
+            "https://drive.google.com/drive/folders/BK1"
+
+
+@pytest.mark.asyncio
+async def test_drive_space_both_roles_unlimited_and_errors(drive):
+    drive["quota"] = {"limit": 1000, "usage": 250}
+    async with api() as a:
+        for call in (a.admin, a.editor):
+            assert await call("GET", "/api/editor/drive/space") == (200, {"limit": 1000, "usage": 250, "free": 750})
+        drive["quota"] = {"limit": None, "usage": 5}
+        assert (await a.editor("GET", "/api/editor/drive/space"))[1] == {"limit": None, "usage": 5, "free": None}
+        drive["not_connected"] = True
+        assert (await a.editor("GET", "/api/editor/drive/space"))[0] == 503

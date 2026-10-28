@@ -9,8 +9,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-import break_timer
-from config import config
+from stream import break_timer
+from core.config import config
 
 
 @pytest.fixture(autouse=True)

@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config_schema import (FIELD_TYPES, FIELDS, SECRET_MASK, SECTIONS, masked,
+from core.config_schema import (FIELD_TYPES, FIELDS, SECRET_MASK, SECTIONS, masked,
                            schema_for, validate_update)
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "config.example.json"

@@ -7,9 +7,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-import credit_ocr
-import ocr_agent
-from config import config
+from stream import credit_ocr
+from stream import ocr_agent
+from core.config import config
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

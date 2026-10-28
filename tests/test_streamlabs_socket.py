@@ -7,8 +7,8 @@ import pytest
 from unittest.mock import AsyncMock
 from aioresponses import aioresponses
 
-import streamlabs_socket
-from config import config
+from stream import streamlabs_socket
+from core.config import config
 
 
 # Real donation event shape, taken directly from dev.streamlabs.com's own

@@ -5,10 +5,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
-import db
-import deletions
-import editor_store as es
-import gdrive
+from core import db
+from editor import deletions
+from editor import editor_store as es
+from editor import gdrive
 
 T0 = 1_000_000.0
 
@@ -374,7 +374,7 @@ def test_project_being_deleted_check():
 
 
 def test_project_delete_refused_for_clip_holding_combined_reel(drive):
-    import editor_service as svc
+    from editor import editor_service as svc
     a = es.create_project("Clip A", "2026-10-20", "", "a.mp4", 1, now=T0, duration_s=20.0)
     b = es.create_project("Clip B", "2026-10-20", "", "b.mp4", 1, now=T0, duration_s=20.0)
     reel = svc.combine_clips([a["id"], b["id"]], "Duo", "aryan")

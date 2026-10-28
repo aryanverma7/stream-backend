@@ -7,8 +7,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
-import valorant_rank
-from config import config
+from stream import valorant_rank
+from core.config import config
 
 CONFIGURED = {
     "henrik_api_key": "HDEV-test",
@@ -112,7 +112,7 @@ class TestTheChatCommand:
             valorant_rank, "current_rank", AsyncMock(return_value={"tier": "Diamond 2", "rr": 47})
         )
         send = AsyncMock()
-        import streamerbot_client
+        from stream import streamerbot_client
 
         monkeypatch.setattr(streamerbot_client.streamerbot, "send_chat_message", send)
 
@@ -128,7 +128,7 @@ class TestTheChatCommand:
             valorant_rank, "current_rank", AsyncMock(return_value={"tier": "Radiant", "rr": 412})
         )
         send = AsyncMock()
-        import streamerbot_client
+        from stream import streamerbot_client
 
         monkeypatch.setattr(streamerbot_client.streamerbot, "send_chat_message", send)
 
@@ -139,7 +139,7 @@ class TestTheChatCommand:
     async def test_an_unrelated_command_is_ignored(self, monkeypatch):
         monkeypatch.setattr(config, "_data", dict(CONFIGURED))
         send = AsyncMock()
-        import streamerbot_client
+        from stream import streamerbot_client
 
         monkeypatch.setattr(streamerbot_client.streamerbot, "send_chat_message", send)
 
@@ -159,7 +159,7 @@ class TestTheChatCommand:
             AsyncMock(side_effect=valorant_rank.RankUnavailable("the Henrik API key was refused")),
         )
         send = AsyncMock()
-        import streamerbot_client
+        from stream import streamerbot_client
 
         monkeypatch.setattr(streamerbot_client.streamerbot, "send_chat_message", send)
 

@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
-import ocr_agent
+from stream import ocr_agent
 
 
 @pytest.fixture(autouse=True)

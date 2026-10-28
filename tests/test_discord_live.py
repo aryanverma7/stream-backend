@@ -6,8 +6,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
-import discord_live
-from config import config
+from stream import discord_live
+from core.config import config
 
 ENABLED = {
     "discord_live_enabled": True,

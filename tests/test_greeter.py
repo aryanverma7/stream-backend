@@ -7,8 +7,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
-import greeter
-from config import config
+from stream import greeter
+from core.config import config
 
 ENABLED = {
     "greeter_enabled": True,
@@ -107,7 +107,7 @@ class TestTheRaidGuard:
         monkeypatch.setattr(greeter, "_last_greeted_at", time.time())
         send = AsyncMock()
         monkeypatch.setattr(greeter, "_load", greeter._load)
-        import streamerbot_client
+        from stream import streamerbot_client
 
         monkeypatch.setattr(streamerbot_client.streamerbot, "send_chat_message", send)
 
@@ -133,7 +133,7 @@ class TestTheGreeting:
     async def test_a_first_message_is_greeted_end_to_end(self, monkeypatch, tmp_path):
         monkeypatch.setattr(config, "_data", enabled(tmp_path))
         send = AsyncMock()
-        import streamerbot_client
+        from stream import streamerbot_client
 
         monkeypatch.setattr(streamerbot_client.streamerbot, "send_chat_message", send)
 
