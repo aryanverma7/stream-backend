@@ -72,6 +72,9 @@ async def main():
     # the scheduler trusts the clock (a boot-time grace could be computed
     # from 2001). Reconcile runs on that same first sane tick, then only
     # while an upload is in flight, at most every 10 minutes.
+    # The gate resets itself once internet time confirms the local clock;
+    # the clamp has to follow it exactly as it follows the reset-clock route.
+    scheduler.on_auto_reset(deletions.clamp_after_clock_reset)
     scheduler.register("deletions", deletions.run_due)
     scheduler.register("backup", backup.run_if_due)
     scheduler.register("reconcile", reconcile.run_if_due)
