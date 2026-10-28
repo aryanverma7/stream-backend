@@ -10,9 +10,13 @@ from core import scheduler
 
 
 @pytest.fixture(autouse=True)
-def _fresh(tmp_path):
+def _fresh(tmp_path, monkeypatch):
     db.use_path_for_tests(tmp_path / "s.db")
     scheduler._reset_for_tests()
+
+    async def no_answer():
+        return None
+    monkeypatch.setattr(scheduler.net_time, "online_time", no_answer)  # never the network
     yield
     scheduler._reset_for_tests()
 
@@ -135,7 +139,8 @@ async def test_blocked_tick_keeps_last_seen():
 
 @pytest.mark.asyncio
 async def test_status_shows_paused_since():
-    assert scheduler.status() == {"sane": True, "last_seen": None, "paused_since": None}
+    assert scheduler.status() == {"sane": True, "last_seen": None, "paused_since": None,
+                                  "last_internet_check": {"at": None, "agreed": None}}
     await scheduler.tick(1000)
     await scheduler.tick(900)
     await scheduler.tick(950)
@@ -168,3 +173,82 @@ async def test_non_finite_last_seen_is_garbage_and_logged_once(caplog):
             assert await scheduler.tick(5) is True
     assert ran == [5, 5, 5]
     assert len([r for r in caplog.records if r.levelname == "ERROR"]) == 1
+
+
+# -- internet clock check --
+
+def _online(monkeypatch, value):
+    calls = []
+
+    async def fake():
+        calls.append(1)
+        return value
+    monkeypatch.setattr(scheduler.net_time, "online_time", fake)
+    return calls
+
+
+def _mono(monkeypatch, t):
+    monkeypatch.setattr(scheduler, "_monotonic", lambda: t[0])
+
+
+@pytest.mark.asyncio
+async def test_internet_agreement_reopens_gate_and_clamps_deletes(monkeypatch):
+    from editor import deletions
+    db.meta_set("clock_last_seen", "5000000")  # the clock once ran fast
+    clamped = []
+    scheduler.on_auto_reset(lambda now: clamped.append(deletions.clamp_after_clock_reset(now)))
+    ran = []
+
+    async def job(now):
+        ran.append(now)
+    scheduler.register("j", job)
+    _online(monkeypatch, 1000 + 60)
+    assert await scheduler.tick(1000) is True
+    assert ran == [1000] and clamped == [0]
+    assert float(db.meta_get("clock_last_seen")) == 1000
+    assert scheduler.status()["last_internet_check"] == {"at": 1000, "agreed": True}
+
+
+@pytest.mark.asyncio
+async def test_internet_disagreement_stays_paused_logged_once(monkeypatch, caplog):
+    db.meta_set("clock_last_seen", "5000000")
+    t = [0.0]
+    _mono(monkeypatch, t)
+    _online(monkeypatch, 1000 + 3600)
+    with caplog.at_level("WARNING"):
+        for i in range(3):
+            t[0] += 301
+            assert await scheduler.tick(1000 + i) is False
+    assert sum("off internet time" in r.getMessage() for r in caplog.records) == 1
+    assert scheduler.status()["last_internet_check"] == {"at": 1002, "agreed": False}
+    assert float(db.meta_get("clock_last_seen")) == 5000000
+
+
+@pytest.mark.asyncio
+async def test_no_internet_answer_stays_paused():
+    db.meta_set("clock_last_seen", "5000000")
+    assert await scheduler.tick(1000) is False
+    assert scheduler.status()["sane"] is False
+    assert scheduler.status()["last_internet_check"] == {"at": 1000, "agreed": None}
+
+
+@pytest.mark.asyncio
+async def test_internet_checks_throttled_to_five_minutes(monkeypatch):
+    db.meta_set("clock_last_seen", "5000000")
+    t = [0.0]
+    _mono(monkeypatch, t)
+    calls = _online(monkeypatch, None)
+    await scheduler.tick(1000)
+    t[0] += 299
+    await scheduler.tick(1030)
+    assert len(calls) == 1
+    t[0] += 1
+    await scheduler.tick(1060)
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_sane_clock_never_asks_the_internet(monkeypatch):
+    calls = _online(monkeypatch, 0)
+    assert await scheduler.tick(1000) is True
+    assert calls == [] and scheduler.status()["last_internet_check"] == {"at": None, "agreed": None}
