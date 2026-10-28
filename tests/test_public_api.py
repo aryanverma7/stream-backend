@@ -79,40 +79,29 @@ async def test_live_status_returns_false_when_offline(monkeypatch):
     await client.close()
 
 
+def oembed(vid):
+    return f"https://www.youtube.com/oembed?format=json&url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D{vid}"
+
+
 @pytest.mark.asyncio
-async def test_videos_returns_curated_list_with_metadata(monkeypatch):
-    monkeypatch.setattr(public_api.config, "_data", {
-        "youtube_video_ids": ["abc123", "def456"],
-        "youtube_api_key": "fake-yt-key",
-    })
-
-    app = build_app()
-    server = TestServer(app)
-    client = TestClient(server)
+async def test_videos_returns_curated_list_with_metadata_without_an_api_key(monkeypatch):
+    monkeypatch.setattr(public_api.config, "_data", {"youtube_video_ids": ["abc123", "v=def456", "gone99"]})
+    client = TestClient(TestServer(build_app()))
     await client.start_server()
-
     with aioresponses(passthrough=["http://127.0.0.1"]) as mocked:
-        mocked.get(
-            "https://www.googleapis.com/youtube/v3/videos?part=snippet&id=abc123%2Cdef456&key=fake-yt-key",
-            payload={
-                "items": [
-                    {"id": "abc123", "snippet": {"title": "5 Bombs in Ranked", "thumbnails": {"high": {"url": "https://img.youtube.com/abc123.jpg"}}}},
-                    {"id": "def456", "snippet": {"title": "Insane Clutch Round", "thumbnails": {"high": {"url": "https://img.youtube.com/def456.jpg"}}}},
-                ]
-            },
-        )
+        mocked.get(oembed("abc123"), payload={"title": "5 Bombs in Ranked", "thumbnail_url": "https://i.ytimg.com/vi/abc123/hqdefault.jpg"})
+        mocked.get(oembed("def456"), payload={"title": "Insane Clutch Round", "thumbnail_url": "https://i.ytimg.com/vi/def456/hqdefault.jpg"})
+        mocked.get(oembed("gone99"), status=404)  # deleted or private: skipped, the rest still show
         resp = await client.get("/api/public/videos")
         data = await resp.json()
-
-    assert resp.status == 200
-    assert data == {
-        "videos": [
-            {"id": "abc123", "title": "5 Bombs in Ranked", "thumbnail": "https://img.youtube.com/abc123.jpg", "url": "https://www.youtube.com/watch?v=abc123"},
-            {"id": "def456", "title": "Insane Clutch Round", "thumbnail": "https://img.youtube.com/def456.jpg", "url": "https://www.youtube.com/watch?v=def456"},
-        ]
-    }
-
     await client.close()
+    assert resp.status == 200
+    assert data == {"videos": [
+        {"id": "abc123", "title": "5 Bombs in Ranked", "thumbnail": "https://i.ytimg.com/vi/abc123/hqdefault.jpg",
+         "url": "https://www.youtube.com/watch?v=abc123"},
+        {"id": "def456", "title": "Insane Clutch Round", "thumbnail": "https://i.ytimg.com/vi/def456/hqdefault.jpg",
+         "url": "https://www.youtube.com/watch?v=def456"},
+    ]}
 
 
 @pytest.mark.asyncio
@@ -145,14 +134,12 @@ def test_video_id_accepts_pasted_links_and_v_prefix():
 
 
 @pytest.mark.asyncio
-async def test_videos_error_never_echoes_the_api_key(monkeypatch):
-    monkeypatch.setattr(public_api.config, "_data", {"youtube_video_ids": ["abc"], "youtube_api_key": "SECRETKEY"})
+async def test_videos_all_failing_is_an_upstream_error(monkeypatch):
+    monkeypatch.setattr(public_api.config, "_data", {"youtube_video_ids": ["abc"]})
     client = TestClient(TestServer(build_app()))
     await client.start_server()
     with aioresponses(passthrough=["http://127.0.0.1"]) as mocked:
-        mocked.get("https://www.googleapis.com/youtube/v3/videos?part=snippet&id=abc&key=SECRETKEY", status=403)
+        mocked.get(oembed("abc"), status=500)
         resp = await client.get("/api/public/videos")
-        body = await resp.text()
     await client.close()
     assert resp.status == public_api.UPSTREAM_FAILED_STATUS
-    assert "SECRETKEY" not in body and "key=" not in body
