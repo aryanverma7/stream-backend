@@ -172,6 +172,11 @@ def _latest_ready(tape_id):
     return next((i for i in reversed(es.list_iterations(tape_id)) if i["status"] == "ready"), None)
 
 
+def _open_comments(latest):
+    """Unresolved comments (carried-over ones included) on a tape's latest ready iteration."""
+    return [] if latest is None else [c for c in ec.comments_for_iteration(latest["id"]) if not c["resolved"]]
+
+
 def _iteration_view(it, with_upload_url=False):
     """The upload URL is a bearer credential for the upload: only the single-iteration GET carries it."""
     view = {k: v for k, v in it.items() if k != "thumbnail" and (with_upload_url or k != "upload_url")}
@@ -184,7 +189,45 @@ def _iteration_view(it, with_upload_url=False):
 
 @_route
 async def me(request, me):
-    return _ok({"username": me["username"], "role": me["role"]})
+    kit = db.meta_get("gdrive_brand_kit")
+    return _ok({"username": me["username"], "role": me["role"],
+                "brand_kit_url": kit and f"https://drive.google.com/drive/folders/{kit}"})
+
+
+# -- home and the fix list (projects in project-delete limbo show in neither) --
+
+def _live_projects():
+    return [p for p in es.list_projects() if not deletions.has_live_request("project", p["id"])]
+
+
+def _open_tapes(projects):
+    """(project, tape, latest ready iteration, its unresolved comments) for every tape with any."""
+    for p in projects:
+        for t in es.list_tapes(p["id"]):
+            latest = _latest_ready(t["id"])
+            open_comments = _open_comments(latest)
+            if open_comments:
+                yield p, t, latest, open_comments
+
+
+@_route
+async def home(request, me):
+    live = _live_projects()
+    ready = [p for p in live if p["vod_status"] == "ready"]
+    open_tapes = [{"tape": t, "project_name": p["name"], "latest_iteration_id": it["id"],
+                   "latest_version": it["version"], "open_comments": len(cs)} for p, t, it, cs in _open_tapes(live)]
+    return _ok({"vods_ready": [_project_view(p) for p in ready if p["download_clicked_at"] is None],
+                "deletes_to_confirm": [_project_view(p) for p in ready if p["download_clicked_at"] is not None
+                                       and not deletions.has_live_request("vod", p["id"])],
+                "open_tapes": sorted(open_tapes, key=lambda x: -x["open_comments"])})
+
+
+@_route
+async def fix_list(request, me):
+    items = [{"comment": c, "tape_id": t["id"], "tape_name": t["name"], "project_id": p["id"],
+              "iteration_id": it["id"], "version": it["version"]}
+             for p, t, it, cs in _open_tapes(_live_projects()) for c in cs]
+    return _ok({"items": sorted(items, key=lambda i: (i["comment"]["created_at"], i["comment"]["id"]))})
 
 
 # -- projects --
@@ -202,11 +245,9 @@ async def get_project(request, me):
     tapes = []
     for t in es.list_tapes(p["id"]):
         latest = _latest_ready(t["id"])
-        open_comments = 0 if latest is None else sum(
-            not c["resolved"] for c in ec.comments_for_iteration(latest["id"]))
         tapes.append({**t, "has_new": ep.tape_has_new(me["username"], t["id"]),
                       "latest_version": latest and latest["version"],
-                      "latest_iteration_id": latest and latest["id"], "open_comments": open_comments})
+                      "latest_iteration_id": latest and latest["id"], "open_comments": len(_open_comments(latest))})
     return _ok({"project": _project_view(p), "tapes": tapes})
 
 
@@ -292,6 +333,18 @@ async def complete_iteration(request, me):
     if not _FILE_ID.fullmatch(file_id):
         raise _Fail(400, "file_id is not a Drive file id")
     return _ok(_iteration_view(await svc.complete_iteration_upload(it["id"], file_id, me["username"])))
+
+
+@_route
+async def renew_session(request, me):
+    it = _iteration(_id(request))
+    mime = (await _body(request)).get("mime") if request.can_read_body else None
+    if not isinstance(mime, str) or not mime:
+        mime = "application/octet-stream"
+    url = await svc.renew_iteration_upload(it["id"], mime)
+    if url is None:
+        raise _Fail(409, "This version is not uploading")
+    return _no_store(_ok({"upload_url": url}))
 
 
 @_route
@@ -509,6 +562,8 @@ def register_routes(app: web.Application) -> None:
     r = app.router
     p = "/api/editor"
     r.add_get(f"{p}/me", me)
+    r.add_get(f"{p}/home", home)
+    r.add_get(f"{p}/fix-list", fix_list)
     r.add_get(f"{p}/projects", list_projects)
     r.add_get(f"{p}/projects/{{id:{_ID}}}", get_project)
     r.add_patch(f"{p}/projects/{{id:{_ID}}}", rename_project)
@@ -520,6 +575,7 @@ def register_routes(app: web.Application) -> None:
     r.add_patch(f"{p}/tapes/{{id:{_ID}}}", update_tape)
     r.add_post(f"{p}/tapes/{{id:{_ID}}}/iterations", start_iteration)
     r.add_post(f"{p}/iterations/{{id:{_ID}}}/complete", complete_iteration)
+    r.add_post(f"{p}/iterations/{{id:{_ID}}}/session", renew_session)
     r.add_post(f"{p}/iterations/{{id:{_ID}}}/start-over", start_over)
     r.add_get(f"{p}/iterations/{{id:{_ID}}}", get_iteration)
     r.add_get(f"{p}/iterations/{{id:{_ID}}}/thumbnail", get_thumbnail)

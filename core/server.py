@@ -51,8 +51,32 @@ async def handle_widget_ws(request: web.Request) -> web.WebSocketResponse:
     return await widget_hub.handle_connection(request)
 
 
+# 'unsafe-inline' scripts: Next's static export inlines its bootstrap, and a nonce needs a server.
+PAGE_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
+            "img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://www.googleapis.com; "
+            "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+
+
+async def _security_headers(request: web.Request, response: web.StreamResponse) -> None:
+    """
+    A response-prepare hook, not a middleware: a FileResponse only knows its
+    content type once it is being sent, and auth's 401/302s and raised
+    HTTPNotFounds get headed too. The homepage keeps the frame ban only -
+    it loads cdnjs, S3, Twitch and YouTube content a strict policy would block.
+    """
+    h = response.headers
+    path = request.path
+    if (response.content_type == "text/html"
+            and (path in ("/editor", "/admin") or path.startswith(("/editor/", "/admin/")))):
+        h.setdefault("Content-Security-Policy", PAGE_CSP)
+    h.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
+    h.setdefault("X-Content-Type-Options", "nosniff")
+
+
 def build_app() -> web.Application:
     app = web.Application(middlewares=[auth.auth_middleware])
+    app.on_response_prepare.append(_security_headers)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/ws/widgets", handle_widget_ws)
     app.router.add_get("/auth/login", auth.handle_login)

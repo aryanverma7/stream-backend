@@ -141,6 +141,12 @@ def _project_of(tape_id) -> int:
     return t["project_id"]
 
 
+async def _upload_session(it, folder, mime) -> str:
+    return await gdrive.start_resumable_upload(
+        f"v{it['version']} - {it['filename']}", folder, it["size"], mime,
+        {"iteration_id": str(it["id"])}, config.get("public_base_url") or None)
+
+
 async def start_iteration_upload(tape_id, filename, size, mime) -> dict:
     deletions.ensure_project_not_deleting(_project_of(tape_id))
     free = (await free_space())["free"]
@@ -151,9 +157,7 @@ async def start_iteration_upload(tape_id, filename, size, mime) -> dict:
     deletions.ensure_project_not_deleting(_project_of(tape_id))
     it = es.create_iteration(tape_id, filename, size, "")
     try:
-        url = await gdrive.start_resumable_upload(
-            f"v{it['version']} - {filename}", folder, size, mime,
-            {"iteration_id": str(it["id"])}, config.get("public_base_url") or None)
+        url = await _upload_session(it, folder, mime)
     except BaseException:
         with db.transaction() as conn:
             conn.execute("DELETE FROM iterations WHERE id=?", (it["id"],))
@@ -161,6 +165,24 @@ async def start_iteration_upload(tape_id, filename, size, mime) -> dict:
     with db.transaction() as conn:
         conn.execute("UPDATE iterations SET upload_url=? WHERE id=?", (url, it["id"]))
     return {"iteration_id": it["id"], "version": it["version"], "upload_url": url}
+
+
+async def renew_iteration_upload(iteration_id, mime) -> "str | None":
+    """A fresh session for a version still uploading (Google expires one after ~a week); None once it is not."""
+    it = es.get_iteration(iteration_id)
+    if it is None or it["status"] != "uploading":
+        return None
+    project_id = _project_of(it["tape_id"])
+    deletions.ensure_project_not_deleting(project_id)
+    deletions.ensure_tape_not_deleting(it["tape_id"])
+    url = await _upload_session(it, await ensure_tape_folder(it["tape_id"]), mime)
+    deletions.ensure_project_not_deleting(project_id)  # after the awaits, right before the write
+    deletions.ensure_tape_not_deleting(it["tape_id"])
+    with db.transaction() as conn:
+        if not conn.execute("UPDATE iterations SET upload_url=? WHERE id=? AND status='uploading'",
+                            (url, iteration_id)).rowcount:
+            return None
+    return url
 
 
 async def complete_iteration_upload(iteration_id, file_id, actor) -> dict:
