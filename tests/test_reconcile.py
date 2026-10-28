@@ -161,3 +161,12 @@ async def test_job_runs_on_boot_then_only_when_uploading_and_every_600s(monkeypa
     await reconcile.run_if_due(NOW + 1599)
     await reconcile.run_if_due(NOW + 1600)
     assert runs == [NOW, NOW + 1000, NOW + 1600]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_measures_abandon_from_the_last_renewal(monkeypatch, tape):
+    renewed = es.create_iteration(tape["id"], "a.mp4", 5, "u", now=NOW - reconcile.ABANDON_AFTER_SECONDS - 1)
+    db.get().execute("UPDATE iterations SET updated_at=? WHERE id=?", (NOW - 10, renewed["id"]))
+    _stub(monkeypatch, [])
+    assert (await reconcile.run_once(NOW))["abandoned"] == 0
+    assert es.get_iteration(renewed["id"])["status"] == "uploading"

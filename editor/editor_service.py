@@ -10,6 +10,9 @@ from editor import editor_comments
 from editor import editor_store as es
 from editor import gdrive
 from editor import gdrive_oauth
+from core.logger import get_logger
+
+log = get_logger("EditorService")
 
 
 class DriveFull(Exception):
@@ -141,6 +144,12 @@ def _project_of(tape_id) -> int:
     return t["project_id"]
 
 
+async def _upload_session(it, folder, mime) -> str:
+    return await gdrive.start_resumable_upload(
+        f"v{it['version']} - {it['filename']}", folder, it["size"], mime,
+        {"iteration_id": str(it["id"])}, config.get("public_base_url") or None)
+
+
 async def start_iteration_upload(tape_id, filename, size, mime) -> dict:
     deletions.ensure_project_not_deleting(_project_of(tape_id))
     free = (await free_space())["free"]
@@ -151,9 +160,7 @@ async def start_iteration_upload(tape_id, filename, size, mime) -> dict:
     deletions.ensure_project_not_deleting(_project_of(tape_id))
     it = es.create_iteration(tape_id, filename, size, "")
     try:
-        url = await gdrive.start_resumable_upload(
-            f"v{it['version']} - {filename}", folder, size, mime,
-            {"iteration_id": str(it["id"])}, config.get("public_base_url") or None)
+        url = await _upload_session(it, folder, mime)
     except BaseException:
         with db.transaction() as conn:
             conn.execute("DELETE FROM iterations WHERE id=?", (it["id"],))
@@ -161,6 +168,26 @@ async def start_iteration_upload(tape_id, filename, size, mime) -> dict:
     with db.transaction() as conn:
         conn.execute("UPDATE iterations SET upload_url=? WHERE id=?", (url, it["id"]))
     return {"iteration_id": it["id"], "version": it["version"], "upload_url": url}
+
+
+async def renew_iteration_upload(iteration_id, mime) -> "str | None":
+    """A fresh session for a version still uploading or abandoned (Google expires one after ~a week); None otherwise."""
+    it = es.get_iteration(iteration_id)
+    if it is None or it["status"] not in ("uploading", "abandoned"):
+        return None
+    project_id = _project_of(it["tape_id"])
+    deletions.ensure_project_not_deleting(project_id)
+    deletions.ensure_tape_not_deleting(it["tape_id"])
+    url = await _upload_session(it, await ensure_tape_folder(it["tape_id"]), mime)
+    deletions.ensure_project_not_deleting(project_id)  # after the awaits, right before the write
+    deletions.ensure_tape_not_deleting(it["tape_id"])
+    with db.transaction() as conn:
+        # updated_at restarts reconcile's 8-day abandon clock: a renewal is someone still uploading.
+        if not conn.execute("UPDATE iterations SET upload_url=?, status='uploading', updated_at=? WHERE id=?"
+                            " AND status IN ('uploading','abandoned')",
+                            (url, time.time(), iteration_id)).rowcount:
+            return None
+    return url
 
 
 async def complete_iteration_upload(iteration_id, file_id, actor) -> dict:
@@ -181,6 +208,14 @@ async def complete_iteration_upload(iteration_id, file_id, actor) -> dict:
     row, _ = es.complete_iteration(iteration_id, file_id, actor=actor)  # records iteration_ready atomically
     # Every time, not only on the transition: idempotent, so a retry after a crash here still carries over.
     editor_comments.carry_over(iteration_id)
+    # The editor's own Google account opens per-version links; without this Drive asks him to request access.
+    # Every completion (re-sharing is harmless), and never a reason to fail one.
+    email = config.get("editor_google_email", "")
+    if email:
+        try:
+            await gdrive.share_with(file_id, email, "reader")
+        except Exception as e:
+            log.warning(f"could not share iteration {iteration_id} with the editor: {e}")
     return row
 
 
@@ -231,11 +266,13 @@ async def storage_view() -> dict:
     for p in es.list_projects():
         if p["vod_status"] in ("ready", "deleting"):
             files.append({"kind": "vod", "label": f"{p['name']} — VOD", "size": p["vod_size"],
-                          "project_id": p["id"], "tape_id": None, "status": p["vod_status"]})
+                          "project_id": p["id"], "tape_id": None, "status": p["vod_status"],
+                          "project_name": p["name"], "vod_filename": p["vod_filename"], "tape_name": None})
         for t in es.list_tapes(p["id"]):
             for i in es.list_iterations(t["id"]):
                 if i["status"] in ("ready", "deleting"):
                     files.append({"kind": "iteration", "label": f"{t['name']} v{i['version']}",
                                   "size": i["size"], "project_id": p["id"], "tape_id": t["id"],
-                                  "status": i["status"]})
+                                  "status": i["status"], "project_name": p["name"],
+                                  "vod_filename": None, "tape_name": t["name"]})
     return {"quota": await free_space(), "files": files, "pending_deletes": deletions.pending()}

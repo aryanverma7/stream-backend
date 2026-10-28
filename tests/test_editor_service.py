@@ -198,6 +198,9 @@ async def test_storage_view_lists_ready_and_deleting(_env):
     await svc.complete_iteration_upload(iid, "fid", "x")
     v = await svc.storage_view()
     assert sorted(f["label"] for f in v["files"]) == ["Ace — VOD", "Cut v1"]
+    names = {f["kind"]: (f["project_name"], f["vod_filename"], f["tape_name"]) for f in v["files"]}
+    assert names["vod"][0] == "Ace" and names["vod"][1] == p["vod_filename"] and names["vod"][2] is None
+    assert names["iteration"] == ("Ace", None, "Cut")
     assert v["pending_deletes"] == [] and v["quota"]["free"] == 1000
 
 
@@ -455,3 +458,37 @@ async def test_vod_ready_on_a_cold_start(_env, tmp_path):
     _vod_file(_env, p)
     _cold_restart(tmp_path)
     assert (await svc.vod_ready(p["id"], "vf", "system"))["vod_status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_completed_version_is_shared_with_the_editor(_env, monkeypatch):
+    monkeypatch.setitem(config.config._data, "editor_google_email", "e@x.com")
+    _, iid = await _started(_env)
+    await svc.complete_iteration_upload(iid, "fid", "x")
+    assert _env["shared"] == [("fid", "e@x.com", "reader")]
+
+
+@pytest.mark.asyncio
+async def test_no_share_without_an_editor_email(_env):
+    _, iid = await _started(_env)
+    await svc.complete_iteration_upload(iid, "fid", "x")
+    assert _env["shared"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_share_does_not_fail_completion(_env, monkeypatch):
+    monkeypatch.setitem(config.config._data, "editor_google_email", "e@x.com")
+    _, iid = await _started(_env)
+
+    async def boom(*a, **k):
+        raise gdrive.DriveError("nope", 500)
+    monkeypatch.setattr(gdrive, "share_with", boom)
+    assert (await svc.complete_iteration_upload(iid, "fid", "x"))["status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_renewing_a_session_restarts_the_abandon_clock(_env):
+    _, iid = await _started(_env)
+    db.get().execute("UPDATE iterations SET status='abandoned', created_at=1.0, updated_at=1.0 WHERE id=?", (iid,))
+    assert await svc.renew_iteration_upload(iid, "video/mp4") == "https://upload/s"
+    assert es.get_iteration(iid)["updated_at"] > 1_000_000
