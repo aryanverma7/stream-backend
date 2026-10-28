@@ -193,6 +193,11 @@ async def vod_ready(project_id, file_id, actor) -> dict:
     if p["vod_status"] == "ready":
         return p
     deletions.ensure_project_not_deleting(project_id)
+    f = await gdrive.get_file(file_id)
+    if (not p["drive_folder_id"] or p["drive_folder_id"] not in f.get("parents", [])
+            or f.get("appProperties", {}).get("project_id") != str(project_id)
+            or f.get("size") != p["vod_size"]):
+        raise ValueError("That file is not this project's upload")
     email = config.get("editor_google_email", "")
     if email:
         await gdrive.share_with(file_id, email, "reader")

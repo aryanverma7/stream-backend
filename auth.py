@@ -262,6 +262,7 @@ OPEN_PATHS = (
     "/api/game/state",  # the Overwolf app on the gaming PC, same X-Agent-Secret
                         # check and the same reason: it has no GitHub session
                         # either, so without this line its own auth never runs.
+    "/api/uploader",  # the gaming-PC VOD uploader, same X-Agent-Secret check, same reason
     "/",
 )
 
