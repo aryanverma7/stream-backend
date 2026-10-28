@@ -5,32 +5,26 @@ config.json AT IMPORT TIME - meaning any test file, even one that never
 directly touches config.py, fails at collection if config.json doesn't
 exist on disk.
 
-This fixture creates a minimal dummy config.json before test collection
-begins, so imports succeed everywhere. Individual tests then monkeypatch
+This creates a minimal dummy config.json in a temp folder before test
+collection begins and points config.py at it, so imports succeed everywhere
+and the real config.json is never read or written. Individual tests then monkeypatch
 `config._data` directly to set whatever values that specific test needs -
 this is deliberately the SAME lightweight pattern used throughout the
 plan's later tasks, rather than constructing separate Config instances,
 which is what caused the failure this conftest fixes.
 """
 import json
+import os
+import tempfile
 from pathlib import Path
 
-CONFIG_PATH = Path(__file__).parent.parent / "config.json"
-_CREATED_DUMMY = False
-
-if not CONFIG_PATH.exists():
-    CONFIG_PATH.write_text(json.dumps({
-        "http_host": "0.0.0.0",
-        "http_port": 8765,
-    }))
-    _CREATED_DUMMY = True
-
-
-def pytest_sessionfinish(session, exitstatus):
-    """Clean up the dummy file after the whole test run, but only if we created it -
-    never delete a real config.json a developer might actually have in place."""
-    if _CREATED_DUMMY and CONFIG_PATH.exists():
-        CONFIG_PATH.unlink()
+# The suite NEVER uses the real config.json. Tests replace config._data and many code paths call
+# config.save() (game_events.set_agent, Spotify/Drive token rotation, the Settings PUT), so a suite run
+# on the Mac Mini used to overwrite its live config.json with test values - every secret and setting
+# gone at the next backend restart. Set before anything imports config.
+CONFIG_PATH = Path(tempfile.mkdtemp(prefix="dualbladex-tests-")) / "config.json"
+CONFIG_PATH.write_text(json.dumps({"http_host": "0.0.0.0", "http_port": 8765}))
+os.environ["DUALBLADEX_CONFIG"] = str(CONFIG_PATH)
 
 
 # aioresponses (latest 0.7.9) predates aiohttp 3.14's required `stream_writer`
