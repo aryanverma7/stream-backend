@@ -22,10 +22,16 @@ import discord_live
 import editor_service as svc
 import editor_store as es
 import gdrive
+import twitch_client
 from config import config
+from logger import get_logger
 from editor_api import _FILE_ID, _ID, _Fail, _body, _id, _int, _ok, _seconds, _text, map_errors
 
+log = get_logger("UploaderAPI")
+
 DELETED = "This VOD was deleted"
+LIVE_CACHE_SECONDS = 60  # Twitch is asked at most this often, however often the PC polls
+_live_cache: "tuple[float, bool] | None" = None
 _JOB_ID = re.compile(r"[0-9a-f]{32}")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 # Serialises project creation, so a retry that overlaps a slow first call (both awaiting Drive)
@@ -130,7 +136,18 @@ async def complete(request):
 
 @_agent
 async def live(request):
-    return _ok({"live": discord_live.live_state()["live"]})
+    """Is the streamer live on Twitch right now? Asked directly (cached LIVE_CACHE_SECONDS), so it does
+    not depend on go-live announcements being on; the announcer's last poll is the fallback."""
+    global _live_cache
+    channel = config.get("twitch_channel", "")
+    now = time.time()
+    if channel and (_live_cache is None or now - _live_cache[0] >= LIVE_CACHE_SECONDS):
+        try:
+            _live_cache = (now, await twitch_client.stream_info(channel) is not None)
+        except Exception as e:
+            log.warning("Twitch live check failed (%s); using the last poll", type(e).__name__)
+            _live_cache = None
+    return _ok({"live": _live_cache[1] if channel and _live_cache else discord_live.live_state()["live"]})
 
 
 def register_routes(app: web.Application) -> None:

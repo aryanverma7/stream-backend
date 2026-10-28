@@ -7,6 +7,7 @@ from aiohttp.test_utils import TestClient, TestServer
 import auth
 import db
 import discord_live
+import twitch_client
 import editor_store as es
 import gdrive
 import scheduler
@@ -22,6 +23,7 @@ def drive(tmp_path, monkeypatch):
     db.use_path_for_tests(tmp_path / "x.db")
     scheduler._reset_for_tests()
     monkeypatch.setattr(config, "_data", {"ocr_agent_secret": "s3cret"})
+    monkeypatch.setattr(uploader_api, "_live_cache", None)
     db.meta_set("gdrive_projects", "PROJ")
     s = {"quota": {"limit": 10**12, "usage": 0}, "folders": 0, "sessions": [], "fail_start": 0, "files": {}}
 
@@ -247,8 +249,40 @@ async def test_complete_rejects_wrong_file(drive):
 
 
 @pytest.mark.asyncio
-async def test_live_reports_level(monkeypatch):
+async def test_live_without_twitch_channel_reports_poll_level(monkeypatch):
     async with api() as call:
         for level in (True, False, None):
             monkeypatch.setattr(discord_live, "live_state", lambda now=None, v=level: {"live": v, "title": "t"})
             assert await call("GET", "/api/uploader/live") == (200, {"live": level})
+
+
+@pytest.mark.asyncio
+async def test_live_asks_twitch_and_caches_for_a_minute(monkeypatch):
+    config._data["twitch_channel"] = "dualbladex"
+    asked = []
+
+    async def stream_info(channel, answers=[{"id": "1"}, None]):
+        asked.append(channel)
+        return answers[len(asked) - 1]
+    monkeypatch.setattr(twitch_client, "stream_info", stream_info)
+    clock = [1000.0]
+    monkeypatch.setattr(uploader_api.time, "time", lambda: clock[0])
+    async with api() as call:
+        assert await call("GET", "/api/uploader/live") == (200, {"live": True})
+        clock[0] += uploader_api.LIVE_CACHE_SECONDS - 1
+        assert await call("GET", "/api/uploader/live") == (200, {"live": True})
+        clock[0] += 1
+        assert await call("GET", "/api/uploader/live") == (200, {"live": False})
+    assert asked == ["dualbladex", "dualbladex"]
+
+
+@pytest.mark.asyncio
+async def test_live_falls_back_to_poll_level_when_twitch_fails(monkeypatch):
+    config._data["twitch_channel"] = "dualbladex"
+
+    async def stream_info(channel):
+        raise RuntimeError("twitch down")
+    monkeypatch.setattr(twitch_client, "stream_info", stream_info)
+    monkeypatch.setattr(discord_live, "live_state", lambda now=None: {"live": None, "title": ""})
+    async with api() as call:
+        assert await call("GET", "/api/uploader/live") == (200, {"live": None})
