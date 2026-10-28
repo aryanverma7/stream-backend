@@ -630,3 +630,15 @@ async def test_me_carries_the_brand_kit_link():
         db.meta_set("gdrive_brand_kit", "BK1")
         assert (await a.admin("GET", "/api/editor/me"))[1]["brand_kit_url"] == \
             "https://drive.google.com/drive/folders/BK1"
+
+
+@pytest.mark.asyncio
+async def test_drive_space_both_roles_unlimited_and_errors(drive):
+    drive["quota"] = {"limit": 1000, "usage": 250}
+    async with api() as a:
+        for call in (a.admin, a.editor):
+            assert await call("GET", "/api/editor/drive/space") == (200, {"limit": 1000, "usage": 250, "free": 750})
+        drive["quota"] = {"limit": None, "usage": 5}
+        assert (await a.editor("GET", "/api/editor/drive/space"))[1] == {"limit": None, "usage": 5, "free": None}
+        drive["not_connected"] = True
+        assert (await a.editor("GET", "/api/editor/drive/space"))[0] == 503

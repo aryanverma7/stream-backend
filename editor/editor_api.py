@@ -539,6 +539,12 @@ async def pending_deletes(request, me):
 # -- admin: storage, scheduler, Drive --
 
 @_route
+async def drive_space(request, me):
+    """Both roles: the editor uploads versions too, and the site checks space before each one."""
+    return _ok(await svc.free_space())
+
+
+@_route
 async def storage(request, me):
     _admin(me)
     # The clock gate and the outbox never need Drive: a Drive outage must not hide "Trust the clock again".
@@ -613,4 +619,5 @@ def register_routes(app: web.Application) -> None:
     r.add_post(f"{p}/deletions/{{id:{_ID}}}/undo", undo_delete)
     r.add_get(f"{p}/storage", storage)
     r.add_post(f"{p}/scheduler/reset-clock", reset_clock)
+    r.add_get(f"{p}/drive/space", drive_space)
     r.add_get(f"{p}/drive/status", drive_status)
