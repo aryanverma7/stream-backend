@@ -67,8 +67,16 @@ async def live_status(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=UPSTREAM_FAILED_STATUS)
 
 
+def video_id(raw: str) -> str:
+    """Accepts a bare id or whatever got pasted: "v=ID", a watch/youtu.be/shorts link."""
+    raw = str(raw).strip()
+    if "v=" in raw:
+        raw = raw.split("v=", 1)[1]
+    return raw.split("&", 1)[0].split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+
+
 async def list_videos(request: web.Request) -> web.Response:
-    video_ids = config.get("youtube_video_ids", [])
+    video_ids = [v for v in (video_id(x) for x in config.get("youtube_video_ids", []) or []) if v]
     api_key = config.get("youtube_api_key", "")
 
     if not video_ids:
@@ -83,8 +91,12 @@ async def list_videos(request: web.Request) -> web.Response:
                 resp.raise_for_status()
                 data = await resp.json()
     except Exception as e:
-        log.warning(f"YouTube video fetch failed: {e}")
-        return web.json_response({"error": str(e)}, status=UPSTREAM_FAILED_STATUS)
+        # Never str(e): aiohttp's message includes the request URL, which carries the API key,
+        # and this route is public.
+        status = getattr(e, "status", None)
+        log.warning(f"YouTube video fetch failed: {type(e).__name__} {status or ''}")
+        return web.json_response({"error": f"YouTube request failed ({status or type(e).__name__})"},
+                                 status=UPSTREAM_FAILED_STATUS)
 
     videos = [
         {

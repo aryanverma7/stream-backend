@@ -250,6 +250,8 @@ OPEN_PATHS = (
     "/favicon.ico", # sits at the out/ root, not under /_next
     "/dragon-original.js",  # same reason - a root-level public/ asset,
                              # not caught by the /_next prefix match
+    "/stickers",  # the homepage's sticker images (public/stickers/); without this a
+                  # visitor who is not logged in got 401s and broken images
     "/api/ocr/credit-report",  # gated by its OWN shared-secret check
                                 # (X-Agent-Secret) instead - the
                                 # gaming-PC agent that calls this has
