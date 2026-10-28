@@ -956,10 +956,8 @@ def _cancel_forced_buy_task() -> None:
 
 
 # Two buy-phase signals closer together than this are one buy phase being
-# reported twice, not two rounds. There are now two independent sources -
-# the OCR agent's /api/ocr/reset, driven by a B press, and the Overwolf
-# app's round_phase going "shopping" - and on a stream where both are
-# running EVERY phase arrives twice. Without this the badge would count
+# reported twice, not two rounds (the OCR agent can announce one phase from
+# both its reset and its first capture). Without this the badge would count
 # two phases per round and vanish a round early, which is the one job it
 # has.
 #
@@ -972,23 +970,17 @@ NEW_BUY_PHASE_DEBOUNCE_SECONDS = 20
 
 async def on_new_buy_phase() -> None:
     """
-    Registered from main.py against BOTH credit_ocr.on_new_buy_phase() and
-    game_events.on_buy_phase() - the two things that can tell this backend
-    a round has begun, and the forced-buy badge is what depends on knowing.
-
-    Deliberately registered against both rather than whichever looks
-    better. They fail in completely different ways: the OCR agent's signal
-    needs the streamer to actually press B, so a round where they never
-    open the buy menu produces nothing at all, while the Overwolf app's
-    needs Overwolf to be installed, running, and not broken by today's
-    Valorant patch. Either one alone advances the badge; the debounce above
-    is what stops both of them advancing it twice.
+    Registered from main.py against credit_ocr.on_new_buy_phase(), the
+    thing that tells this backend a round has begun (the Overwolf source
+    was removed on 2026-10-28); the forced-buy badge is what depends on
+    knowing. It needs the streamer to press B, so a round where they never
+    open the buy menu produces nothing and the timers below take over.
 
     The badge's life is exactly two buy phases: the first is the one the
     forced weapon actually gets bought in, so the badge becomes "active";
     by the second, the round it belonged to is over and it goes. The
     timers in _start_forced_buy/_activate_forced_buy stay as the fallback
-    for a stream where neither source is running - they are approximations
+    for a stream where the OCR agent is not running - they are approximations
     of this event, so this supersedes whichever one is pending rather
     than racing it.
     """

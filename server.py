@@ -24,7 +24,6 @@ import break_timer
 import credit_ocr
 import dashboard_api
 import editor_api
-import game_events
 import health_checks
 import public_api
 import site_server
@@ -79,10 +78,6 @@ def build_app() -> web.Application:
     app.router.add_post("/api/ocr/credit-report", credit_ocr.handle_credit_report)
     app.router.add_post("/api/ocr/reset", credit_ocr.handle_reset)
     app.router.add_post("/api/ocr/heartbeat", credit_ocr.handle_heartbeat)
-    # Live game state from the Overwolf app on the gaming PC - same
-    # machine, same shared secret, same open_paths exemption as the three
-    # OCR routes above.
-    game_events.register_routes(app)
     # The break screen's countdown. Admin-gated like the rest of /api/ -
     # the overlay is told over the widget socket, never by calling this.
     break_timer.register_routes(app)

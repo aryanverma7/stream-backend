@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 
 # The suite NEVER uses the real config.json. Tests replace config._data and many code paths call
-# config.save() (game_events.set_agent, Spotify/Drive token rotation, the Settings PUT), so a suite run
+# config.save() (roulette.set_agent, Spotify/Drive token rotation, the Settings PUT), so a suite run
 # on the Mac Mini used to overwrite its live config.json with test values - every secret and setting
 # gone at the next backend restart. Set before anything imports config.
 CONFIG_PATH = Path(tempfile.mkdtemp(prefix="dualbladex-tests-")) / "config.json"

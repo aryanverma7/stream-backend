@@ -11,7 +11,6 @@ All protected by auth.auth_middleware except where explicitly left open
 from aiohttp import web
 
 import credit_ocr
-import game_events
 import health_checks
 import ocr_agent
 import points
@@ -260,13 +259,6 @@ async def get_status(request: web.Request) -> web.Response:
         # which point the overlay has finished its spin - and answering it
         # meant opening the stream on another screen to watch a widget.
         "roulette": roulette.status(),
-        # Live game state from the Overwolf app. Reported next to the OCR
-        # numbers rather than instead of them, deliberately: this is the
-        # pipeline that could replace credit_ocr entirely, and the two run
-        # side by side until one has earned that. Its `money` is the local
-        # player's CURRENT credits, which is not the same number as the
-        # prediction above - see game_events' module docstring.
-        "game_events": game_events.status(),
         # Song requests. `configured` is the one that matters: everything
         # else here is a setting, and without a refresh token none of the
         # settings do anything.
