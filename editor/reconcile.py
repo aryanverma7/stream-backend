@@ -63,7 +63,7 @@ async def run_once(now: "float | None" = None) -> dict:
                         counts["completed"] += 1
                     except (ValueError, gdrive.DriveError) as e:
                         log.warning(f"reconcile: iteration {it['id']} not completed: {e}")
-                elif (files is not None and now - it["created_at"] > ABANDON_AFTER_SECONDS
+                elif (files is not None and now - max(it["created_at"], it["updated_at"]) > ABANDON_AFTER_SECONDS
                       and scheduler.clock_is_sane(now)):
                     if es.abandon_iteration(it["id"], now):
                         counts["abandoned"] += 1

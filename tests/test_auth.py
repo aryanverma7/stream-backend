@@ -57,6 +57,11 @@ class TestSafeNextPath:
         # "//evil.example" is a valid Location header meaning https://evil.example
         assert auth._safe_next_path("//evil.example") == auth.DEFAULT_POST_LOGIN_PATH
 
+    def test_rejects_a_backslash_that_browsers_read_as_a_slash(self):
+        # Browsers normalise a backslash to "/" in a Location header: "/\evil.example" means //evil.example.
+        for bad in ("/\\evil.example", "\\\\evil.example", "\\/evil.example"):
+            assert auth._safe_next_path(bad) == auth.DEFAULT_POST_LOGIN_PATH, bad
+
     def test_rejects_a_bare_relative_path(self):
         assert auth._safe_next_path("admin") == auth.DEFAULT_POST_LOGIN_PATH
 

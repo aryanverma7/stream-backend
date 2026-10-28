@@ -10,6 +10,9 @@ from editor import editor_comments
 from editor import editor_store as es
 from editor import gdrive
 from editor import gdrive_oauth
+from core.logger import get_logger
+
+log = get_logger("EditorService")
 
 
 class DriveFull(Exception):
@@ -179,9 +182,10 @@ async def renew_iteration_upload(iteration_id, mime) -> "str | None":
     deletions.ensure_project_not_deleting(project_id)  # after the awaits, right before the write
     deletions.ensure_tape_not_deleting(it["tape_id"])
     with db.transaction() as conn:
-        if not conn.execute("UPDATE iterations SET upload_url=?, status='uploading' WHERE id=?"
+        # updated_at restarts reconcile's 8-day abandon clock: a renewal is someone still uploading.
+        if not conn.execute("UPDATE iterations SET upload_url=?, status='uploading', updated_at=? WHERE id=?"
                             " AND status IN ('uploading','abandoned')",
-                            (url, iteration_id)).rowcount:
+                            (url, time.time(), iteration_id)).rowcount:
             return None
     return url
 
@@ -204,6 +208,14 @@ async def complete_iteration_upload(iteration_id, file_id, actor) -> dict:
     row, _ = es.complete_iteration(iteration_id, file_id, actor=actor)  # records iteration_ready atomically
     # Every time, not only on the transition: idempotent, so a retry after a crash here still carries over.
     editor_comments.carry_over(iteration_id)
+    # The editor's own Google account opens per-version links; without this Drive asks him to request access.
+    # Every completion (re-sharing is harmless), and never a reason to fail one.
+    email = config.get("editor_google_email", "")
+    if email:
+        try:
+            await gdrive.share_with(file_id, email, "reader")
+        except Exception as e:
+            log.warning(f"could not share iteration {iteration_id} with the editor: {e}")
     return row
 
 

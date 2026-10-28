@@ -348,6 +348,15 @@ async def renew_session(request, me):
 
 
 @_route
+async def abandon_iteration(request, me):
+    """Cancel in the browser: stop the version counting as uploading, so deletes aren't blocked for 8 days."""
+    it = _iteration(_id(request))
+    if not es.abandon_iteration(it["id"]):
+        raise _Fail(409, "This version is not uploading")
+    return _ok(_iteration_view(es.get_iteration(it["id"])))
+
+
+@_route
 async def start_over(request, me):
     _admin(me)
     it = _iteration(_id(request))
@@ -581,6 +590,7 @@ def register_routes(app: web.Application) -> None:
     r.add_post(f"{p}/tapes/{{id:{_ID}}}/iterations", start_iteration)
     r.add_post(f"{p}/iterations/{{id:{_ID}}}/complete", complete_iteration)
     r.add_post(f"{p}/iterations/{{id:{_ID}}}/session", renew_session)
+    r.add_post(f"{p}/iterations/{{id:{_ID}}}/abandon", abandon_iteration)
     r.add_post(f"{p}/iterations/{{id:{_ID}}}/start-over", start_over)
     r.add_get(f"{p}/iterations/{{id:{_ID}}}", get_iteration)
     r.add_get(f"{p}/iterations/{{id:{_ID}}}/thumbnail", get_thumbnail)

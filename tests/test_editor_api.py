@@ -535,6 +535,21 @@ async def test_new_session_for_an_unfinished_upload(drive):
 
 
 @pytest.mark.asyncio
+async def test_abandon_an_unfinished_upload(drive):
+    _, t, done, _ = _world()
+    async with api() as a:
+        status, up = await a.editor("POST", f"/api/editor/tapes/{t['id']}/iterations",
+                                    {"filename": "b.mp4", "size": 20, "mime": "video/mp4"})
+        path = f"/api/editor/iterations/{up['iteration_id']}/abandon"
+        status, got = await a.editor("POST", path)
+        assert status == 200 and got["status"] == "abandoned"
+        assert es.get_iteration(up["iteration_id"])["status"] == "abandoned"
+        assert await a.admin("POST", path) == (409, {"error": "This version is not uploading"})
+        assert (await a.admin("POST", f"/api/editor/iterations/{done['id']}/abandon"))[0] == 409
+        assert (await a.admin("POST", "/api/editor/iterations/999/abandon"))[0] == 404
+
+
+@pytest.mark.asyncio
 async def test_home_buckets():
     p, t, it, c = _world()  # VOD ready, not clicked; Clutch v1 has one open comment
     clicked = es.create_project("Clicked", "2026-10-21", "", "c.mp4", 5, now=2.0)

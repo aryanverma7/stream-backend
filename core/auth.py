@@ -110,9 +110,10 @@ def _safe_next_path(candidate: str) -> str:
     the callback says, so an attacker-supplied ?next= would otherwise be an
     open redirect: "//evil.example" and "https://evil.example" are both
     valid targets for a Location header, and the second slash in "//" is
-    what makes the first one protocol-relative rather than local.
+    what makes the first one protocol-relative rather than local. Browsers
+    read a backslash there as a slash too, so "/\\evil.example" is refused.
     """
-    if not candidate.startswith("/") or candidate.startswith("//"):
+    if not candidate.startswith("/") or "\\" in candidate[:2] or candidate.startswith("//"):
         return DEFAULT_POST_LOGIN_PATH
     return candidate
 
