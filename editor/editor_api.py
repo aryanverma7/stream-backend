@@ -532,8 +532,13 @@ async def pending_deletes(request, me):
 @_route
 async def storage(request, me):
     _admin(me)
-    return _ok({**await svc.storage_view(), "scheduler": scheduler.status(),
-                "discord": notify_outbox.status()})
+    # The clock gate and the outbox never need Drive: a Drive outage must not hide "Trust the clock again".
+    try:
+        view = await svc.storage_view()
+    except (gdrive.DriveNotConnected, gdrive.DriveError) as e:
+        view = {"quota": None, "files": None, "pending_deletes": deletions.pending(),
+                "drive_error": NOT_CONNECTED if isinstance(e, gdrive.DriveNotConnected) else DRIVE_PROBLEM}
+    return _ok({**view, "scheduler": scheduler.status(), "discord": notify_outbox.status()})
 
 
 @_route

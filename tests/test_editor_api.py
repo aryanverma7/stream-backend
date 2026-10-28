@@ -462,6 +462,22 @@ async def test_storage_includes_discord_status():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure, message", [("not_connected", editor_api.NOT_CONNECTED), ("error", editor_api.DRIVE_PROBLEM)])
+async def test_storage_without_drive_still_reports_scheduler_and_discord(drive, monkeypatch, failure, message):
+    if failure == "error":
+        async def about():
+            raise gdrive.DriveError("x", 500)
+        monkeypatch.setattr(gdrive, "about", about)
+    else:
+        drive["not_connected"] = True
+    async with api() as a:
+        status, got = await a.admin("GET", "/api/editor/storage")
+    assert status == 200
+    assert (got["quota"], got["files"], got["drive_error"]) == (None, None, message)
+    assert got["scheduler"]["sane"] is True and got["discord"]["enabled"] is False and got["pending_deletes"] == []
+
+
+@pytest.mark.asyncio
 async def test_notifications_route_uses_session_identity():
     by_editor = es.record_event("cutguy", "tape_created", "cutguy added tape", now=1.0)
     by_admin = es.record_event("aryan", "tape_created", "aryan added tape", now=2.0)

@@ -254,11 +254,13 @@ async def storage_view() -> dict:
     for p in es.list_projects():
         if p["vod_status"] in ("ready", "deleting"):
             files.append({"kind": "vod", "label": f"{p['name']} — VOD", "size": p["vod_size"],
-                          "project_id": p["id"], "tape_id": None, "status": p["vod_status"]})
+                          "project_id": p["id"], "tape_id": None, "status": p["vod_status"],
+                          "project_name": p["name"], "vod_filename": p["vod_filename"], "tape_name": None})
         for t in es.list_tapes(p["id"]):
             for i in es.list_iterations(t["id"]):
                 if i["status"] in ("ready", "deleting"):
                     files.append({"kind": "iteration", "label": f"{t['name']} v{i['version']}",
                                   "size": i["size"], "project_id": p["id"], "tape_id": t["id"],
-                                  "status": i["status"]})
+                                  "status": i["status"], "project_name": p["name"],
+                                  "vod_filename": None, "tape_name": t["name"]})
     return {"quota": await free_space(), "files": files, "pending_deletes": deletions.pending()}

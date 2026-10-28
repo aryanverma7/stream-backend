@@ -198,6 +198,9 @@ async def test_storage_view_lists_ready_and_deleting(_env):
     await svc.complete_iteration_upload(iid, "fid", "x")
     v = await svc.storage_view()
     assert sorted(f["label"] for f in v["files"]) == ["Ace — VOD", "Cut v1"]
+    names = {f["kind"]: (f["project_name"], f["vod_filename"], f["tape_name"]) for f in v["files"]}
+    assert names["vod"][0] == "Ace" and names["vod"][1] == p["vod_filename"] and names["vod"][2] is None
+    assert names["iteration"] == ("Ace", None, "Cut")
     assert v["pending_deletes"] == [] and v["quota"]["free"] == 1000
 
 
