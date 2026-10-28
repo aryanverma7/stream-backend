@@ -872,10 +872,8 @@ class TestForcedBuyBadge:
 
 class TestTwoSourcesReportOneBuyPhase:
     """
-    There are two independent things that can say a round began - the OCR
-    agent's /api/ocr/reset, driven by a B press, and the Overwolf app's
-    round_phase going "shopping" - and on a stream where both are running
-    EVERY phase arrives twice. The badge's whole life is a count of two
+    One buy phase can be announced twice (the OCR agent's reset and its
+    first capture both carry it). The badge's whole life is a count of two
     phases, so without a debounce it would vanish a round early: exactly
     the one job it has, broken by turning on a second source of good news.
     """
@@ -886,8 +884,8 @@ class TestTwoSourcesReportOneBuyPhase:
         roulette._state.forced_buy_weapon = "vandal"
         roulette._state.forced_buy_phase = "queued"
 
-        await roulette.on_new_buy_phase()   # Overwolf
-        await roulette.on_new_buy_phase()   # the OCR agent, a moment later
+        await roulette.on_new_buy_phase()
+        await roulette.on_new_buy_phase()   # the same phase, a moment later
 
         assert roulette._state.forced_buy_phases_seen == 1
         assert roulette._state.forced_buy_phase == "active"
