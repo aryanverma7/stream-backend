@@ -232,15 +232,43 @@ async def test_iteration_payload_includes_carried_comments_and_position(drive):
 
 
 @pytest.mark.asyncio
-async def test_only_the_editors_download_click_is_recorded():
+async def test_only_the_editors_download_click_is_recorded(monkeypatch):
     p, _, _, _ = _world()
+
+    async def down(*a, **k):
+        raise gdrive.DriveError("down", 500)
+    # No Drive call and no token: a Drive outage must not lose the click.
+    monkeypatch.setattr(gdrive, "access_token", down)
+    monkeypatch.setattr(gdrive, "get_file", down)
     async with api() as a:
         status, got = await a.admin("POST", f"/api/editor/projects/{p['id']}/download")
-        assert status == 200 and got["access_token"] == "TOKEN" and "TOKEN" not in got["url"]
+        assert (status, got) == (200, {"ok": True})
         assert es.get_project(p["id"])["download_clicked_at"] is None
         status, got = await a.editor("POST", f"/api/editor/projects/{p['id']}/download")
-        assert status == 200 and got["access_token"] == "TOKEN"
+        assert (status, got) == (200, {"ok": True})
     assert es.get_project(p["id"])["download_clicked_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_media_link_refuses_files_that_are_not_ready_and_maps_drive_404(drive, monkeypatch):
+    _, t, it, _ = _world()
+    gone = es.create_iteration(t["id"], "b.mp4", 10, "")
+    es.complete_iteration(gone["id"], "IT2")
+    db.get().execute("UPDATE iterations SET status='deleted' WHERE id=?", (gone["id"],))
+    async with api() as a:
+        assert await a.editor("GET", f"/api/editor/iterations/{gone['id']}/media-link") == (
+            409, {"error": "This file is not available"})
+
+        async def missing(fid):
+            raise gdrive.DriveError("File not found", 404)
+        monkeypatch.setattr(gdrive, "get_file", missing)
+        assert await a.editor("GET", f"/api/editor/iterations/{it['id']}/media-link") == (
+            404, {"error": "This file is no longer on Drive"})
+
+        async def offline():
+            raise gdrive.DriveNotConnected("no")
+        monkeypatch.setattr(gdrive, "access_token", offline)
+        assert (await a.editor("GET", f"/api/editor/iterations/{it['id']}/media-link"))[0] == 503
 
 
 @pytest.mark.asyncio

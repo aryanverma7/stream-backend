@@ -28,6 +28,14 @@ async def free_space() -> dict:
     return {"limit": limit, "usage": usage, "free": None if limit is None else max(0, limit - usage)}
 
 
+class Unavailable(Exception):
+    """A file the route cannot hand out; editor_api answers it with `status` and this message."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+
+
 _folder_lock = asyncio.Lock()
 
 
@@ -150,14 +158,22 @@ async def _upload_session(it, folder, mime) -> str:
         {"iteration_id": str(it["id"])}, config.get("public_base_url") or None)
 
 
-async def start_iteration_upload(tape_id, filename, size, mime) -> dict:
+def _ensure_tape_open(tape_id) -> None:
+    """No new version on a tape whose files are being, or have been, deleted."""
     deletions.ensure_project_not_deleting(_project_of(tape_id))
+    deletions.ensure_tape_not_deleting(tape_id)
+    if es.get_tape(tape_id)["files_deleted_at"] is not None:
+        raise ValueError("This tape's files were deleted")
+
+
+async def start_iteration_upload(tape_id, filename, size, mime) -> dict:
+    _ensure_tape_open(tape_id)
     free = (await free_space())["free"]
     if free is not None and size > free:
         raise DriveFull(size, free)
     folder = await ensure_tape_folder(tape_id)
     # Again after the awaits, with none before the insert: once the row exists, a project delete refuses.
-    deletions.ensure_project_not_deleting(_project_of(tape_id))
+    _ensure_tape_open(tape_id)
     it = es.create_iteration(tape_id, filename, size, "")
     try:
         url = await _upload_session(it, folder, mime)
@@ -235,7 +251,11 @@ async def vod_ready(project_id, file_id, actor) -> dict:
         raise ValueError("That file is not this project's upload")
     email = config.get("editor_google_email", "")
     if email:
-        await gdrive.share_with(file_id, email, "reader")
+        # Best effort, like complete_iteration_upload: a raise here left the VOD never ready, the PC retrying forever.
+        try:
+            await gdrive.share_with(file_id, email, "reader")
+        except Exception as e:
+            log.warning(f"could not share the VOD of project {project_id} with the editor: {e}")
     deletions.ensure_project_not_deleting(project_id)
     with db.transaction():
         p = es.mark_vod_ready(project_id, file_id)
@@ -246,14 +266,21 @@ async def vod_ready(project_id, file_id, actor) -> dict:
 async def media_link(iteration_id: "int | None" = None, project_id: "int | None" = None) -> dict:
     if iteration_id is not None:
         it = es.get_iteration(iteration_id)
-        file_id = it and it["drive_file_id"]
+        file_id, status = (it["drive_file_id"], it["status"]) if it else (None, None)
     else:
         p = es.get_project(project_id) if project_id is not None else None
-        file_id = p and p["vod_file_id"]
+        file_id, status = (p["vod_file_id"], p["vod_status"]) if p else (None, None)
     if not file_id:
         raise ValueError("No file to open yet")
+    if status not in ("ready", "deleting"):  # deleted (or never finished): Drive would only answer 404
+        raise Unavailable(409, "This file is not available")
     token = await gdrive.access_token()
-    f = await gdrive.get_file(file_id)
+    try:
+        f = await gdrive.get_file(file_id)
+    except gdrive.DriveError as e:
+        if e.status == 404:
+            raise Unavailable(404, "This file is no longer on Drive") from e
+        raise
     # ponytail: a raw drive.file token reaches every file this app made, not just this one;
     # both users can already open them all. Proxy or per-file links if a third user ever joins.
     return {"url": f"{gdrive.API}/files/{file_id}?alt=media", "access_token": token,

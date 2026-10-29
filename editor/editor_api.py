@@ -60,6 +60,8 @@ def map_errors(handler):
             return await handler(*args)
         except _Fail as e:
             return web.json_response(e.payload, status=e.status)
+        except svc.Unavailable as e:
+            return web.json_response({"error": str(e)}, status=e.status)
         except svc.DriveFull as e:
             return web.json_response({"error": "Drive is too full for this file", "needed": e.needed,
                                       "free": e.free}, status=507)
@@ -273,11 +275,13 @@ async def rename_project(request, me):
 @_route
 async def download_project(request, me):
     p = _project(_id(request))
-    link = await svc.media_link(project_id=p["id"])
-    # Only the editor's click counts: it is what lets the editor delete the VOD afterwards.
+    if not p["vod_file_id"]:
+        raise ValueError("No file to open yet")
+    # Only the editor's click counts: it is what lets the editor delete the VOD afterwards. Recorded with no
+    # Drive call (the site downloads from Google directly) and no token handed out: the site ignores the body.
     if me["role"] == "editor":
         es.record_download_click(p["id"])
-    return _no_store(_ok(link))
+    return _no_store(_ok({"ok": True}))
 
 
 @_route
