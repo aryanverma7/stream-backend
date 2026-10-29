@@ -137,7 +137,7 @@ class TestMiddleware:
     @pytest.mark.asyncio
     async def test_open_paths_skip_authentication_entirely(self):
         for path in ("/", "/health", "/ws/widgets", "/api/public/clips", "/_next/static/x.js",
-                     "/stickers/king.png"):
+                     "/stickers/king.png", "/privacy", "/terms"):
             response = await auth.auth_middleware(request_for(path), passthrough)
             assert response.text == "handler ran", path
 
