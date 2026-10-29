@@ -136,3 +136,30 @@ def test_start_over_resolves_all_open_comments_on_that_version_only():
     assert ec.start_over(v2["id"], "aryan", now=7.0) == 0
     with pytest.raises(ValueError):
         ec.start_over(999, "aryan")
+
+
+def test_add_comment_with_same_client_id_returns_existing_and_one_event():
+    it = _ready(_tape()["id"])
+    a = ec.add_comment(it["id"], "a", "fix", "x", client_id="abcdefgh1", now=1.0)
+    b = ec.add_comment(it["id"], "a", "fix", "x", client_id="abcdefgh1", now=2.0)
+    assert a["id"] == b["id"]
+    assert [e["kind"] for e in es.events_since(0)].count("comment_added") == 1
+
+
+def test_add_reply_same_client_id_dedupes():
+    it = _ready(_tape()["id"])
+    c = ec.add_comment(it["id"], "a", "fix", "x", now=1.0)
+    a = ec.add_reply(c["id"], "b", "hi", client_id="abcdefgh1", now=1.0)
+    b = ec.add_reply(c["id"], "b", "hi", client_id="abcdefgh1", now=2.0)
+    assert a["id"] == b["id"]
+    assert [e["kind"] for e in es.events_since(0)].count("reply_added") == 1
+
+
+def test_client_id_columns_added_to_old_db():
+    db.ensure("""CREATE TABLE comments(id INTEGER PRIMARY KEY, iteration_id INTEGER, author TEXT, kind TEXT,
+                 start_s REAL, end_s REAL, body TEXT, created_at REAL, updated_at REAL);
+                 CREATE TABLE replies(id INTEGER PRIMARY KEY, comment_id INTEGER, author TEXT, body TEXT,
+                 created_at REAL);""")
+    conn = ec._cc()
+    for t in ("comments", "replies"):
+        assert "client_id" in {r["name"] for r in conn.execute(f"PRAGMA table_info({t})")}

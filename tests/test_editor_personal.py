@@ -46,3 +46,10 @@ def test_position_roundtrip():
     ep.set_position("aryan", 7, 60.0, now=2.0)
     assert ep.get_position("aryan", 7) == 60.0
     assert ep.get_position("cutguy", 7) == 0.0
+
+
+def test_mark_iteration_seen_returns_previous():
+    from editor import editor_personal as ep
+    assert ep.mark_iteration_seen("a", 1, now=5.0) is None
+    assert ep.mark_iteration_seen("a", 1, now=9.0) == 5.0
+    assert ep.mark_iteration_seen("b", 1, now=9.0) is None

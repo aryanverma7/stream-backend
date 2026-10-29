@@ -642,3 +642,33 @@ async def test_drive_space_both_roles_unlimited_and_errors(drive):
         assert (await a.editor("GET", "/api/editor/drive/space"))[1] == {"limit": None, "usage": 5, "free": None}
         drive["not_connected"] = True
         assert (await a.editor("GET", "/api/editor/drive/space"))[0] == 503
+
+
+@pytest.mark.asyncio
+async def test_comment_route_201_then_200_on_repeat():
+    _, _, it, _ = _world()
+    path = f"/api/editor/iterations/{it['id']}/comments"
+    async with api() as a:
+        s1, g1 = await a.editor("POST", path, {"kind": "fix", "body": "x", "client_id": "abcdefgh1"})
+        s2, g2 = await a.editor("POST", path, {"kind": "fix", "body": "x", "client_id": "abcdefgh1"})
+        assert (s1, s2, g1["id"] == g2["id"]) == (201, 200, True)
+
+
+@pytest.mark.asyncio
+async def test_comment_route_rejects_bad_client_id():
+    _, _, it, _ = _world()
+    async with api() as a:
+        status, got = await a.editor("POST", f"/api/editor/iterations/{it['id']}/comments",
+                                     {"kind": "fix", "body": "x", "client_id": "x"})
+        assert (status, got) == (400, {"error": "client_id is not valid"})
+
+
+@pytest.mark.asyncio
+async def test_seen_route_both_roles():
+    _, _, it, _ = _world()
+    path = f"/api/editor/iterations/{it['id']}/seen"
+    async with api() as a:
+        for who in ("admin", "editor"):
+            assert await a.call(who, "POST", path) == (200, {"previous_seen_at": None})
+            status, got = await a.call(who, "POST", path)
+            assert status == 200 and isinstance(got["previous_seen_at"], float)

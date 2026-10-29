@@ -131,6 +131,18 @@ def _int(body, key):
     return v
 
 
+_CLIENT_ID = re.compile(r"[A-Za-z0-9_-]{8,64}")
+
+
+def _client_id(body):
+    v = body.get("client_id")
+    if v is None:
+        return None
+    if not isinstance(v, str) or not _CLIENT_ID.fullmatch(v):
+        raise _Fail(400, "client_id is not valid")
+    return v
+
+
 def _ok(data, status=200):
     return web.json_response(data, status=status)
 
@@ -412,6 +424,12 @@ async def put_position(request, me):
     return _ok({"position_s": pos})
 
 
+@_route
+async def mark_seen(request, me):
+    it = _iteration(_id(request))
+    return _ok({"previous_seen_at": ep.mark_iteration_seen(me["username"], it["id"])})
+
+
 # -- comments --
 
 @_route
@@ -423,8 +441,12 @@ async def add_comment(request, me):
     text = body.get("body")
     if not isinstance(text, str):
         raise _Fail(400, "body must be a string")
+    cid = _client_id(body)
+    ec._cc()
+    repeat = ec.by_client_id("comments", cid) is not None
     return _ok(ec.add_comment(it["id"], me["username"], body["kind"], text,
-                              _seconds(body.get("start_s")), _seconds(body.get("end_s"))), 201)
+                              _seconds(body.get("start_s")), _seconds(body.get("end_s")), client_id=cid),
+               200 if repeat else 201)
 
 
 @_route
@@ -440,10 +462,13 @@ async def edit_comment(request, me):
 @_route
 async def add_reply(request, me):
     c = _comment(_id(request))
-    text = (await _body(request)).get("body")
+    body = await _body(request)
+    text = body.get("body")
     if not isinstance(text, str):
         raise _Fail(400, "body must be a string")
-    return _ok(ec.add_reply(c["id"], me["username"], text), 201)
+    cid = _client_id(body)
+    repeat = ec.by_client_id("replies", cid) is not None
+    return _ok(ec.add_reply(c["id"], me["username"], text, client_id=cid), 200 if repeat else 201)
 
 
 @_route
@@ -603,6 +628,7 @@ def register_routes(app: web.Application) -> None:
     r.add_put(f"{p}/iterations/{{id:{_ID}}}/media", put_media)
     r.add_get(f"{p}/iterations/{{id:{_ID}}}/media-link", media_link)
     r.add_put(f"{p}/iterations/{{id:{_ID}}}/position", put_position)
+    r.add_post(f"{p}/iterations/{{id:{_ID}}}/seen", mark_seen)
     r.add_post(f"{p}/iterations/{{id:{_ID}}}/comments", add_comment)
     r.add_patch(f"{p}/comments/{{id:{_ID}}}", edit_comment)
     r.add_post(f"{p}/comments/{{id:{_ID}}}/replies", add_reply)
