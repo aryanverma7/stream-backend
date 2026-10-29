@@ -133,6 +133,7 @@ async def test_callback_starts_the_tips_listener_immediately_after_connecting(mo
         "streamlabs_client_id": "test-client-id",
         "streamlabs_client_secret": "test-client-secret",
         "streamlabs_redirect_uri": "https://hub.dualbladex.org/auth/streamlabs/callback",
+        "streamlabs_tips_listener_enabled": True,
     })
     monkeypatch.setattr(config, "set", lambda k, v: None)
     monkeypatch.setattr(config, "save", lambda: None)
@@ -224,4 +225,26 @@ async def test_callback_still_succeeds_even_if_the_tips_listener_fails_to_start(
     body = await resp.json()
     assert body["error"] == "invalid_client"
 
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_callback_leaves_the_tips_listener_off_when_it_is_switched_off(monkeypatch):
+    monkeypatch.setattr(config, "_data", {
+        "streamlabs_client_id": "id", "streamlabs_client_secret": "s",
+        "streamlabs_redirect_uri": "https://hub.dualbladex.org/auth/streamlabs/callback",
+    })
+    monkeypatch.setattr(config, "set", lambda k, v: None)
+    monkeypatch.setattr(config, "save", lambda: None)
+    mock_start = AsyncMock()
+    monkeypatch.setattr(streamlabs_oauth, "stop_tips_listener", AsyncMock())
+    monkeypatch.setattr(streamlabs_oauth, "start_tips_listener", mock_start)
+    streamlabs_oauth._pending_states.clear()
+    streamlabs_oauth._pending_states.add("st-off")
+    client = await make_client()
+    with aioresponses(passthrough=["http://127.0.0.1"]) as mocked:
+        mocked.post("https://streamlabs.com/api/v2.0/token", payload={"access_token": "t"})
+        resp = await client.get("/auth/streamlabs/callback?code=c&state=st-off", allow_redirects=False)
+    assert resp.status == 302
+    mock_start.assert_not_called()
     await client.close()

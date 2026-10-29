@@ -10,8 +10,12 @@ FEATURE messages (RouletteAPI.trigger(), badgeShow(), Spotify now-playing
 updates, etc.) get built in their own later tasks and just call into
 broadcast()/send_to() - nothing about those payloads is decided here.
 """
+import asyncio
+
 from aiohttp import web, WSMsgType
 from core.logger import get_logger
+
+SEND_TIMEOUT_SECONDS = 5
 
 log = get_logger("WidgetHub")
 
@@ -41,7 +45,7 @@ class WidgetHub:
                     # Widgets can report results back (e.g. Roulette reporting
                     # its winning gun once a spin lands, per Section 6e) -
                     # actual parsing/handling of these is a later task's job.
-                    log.info(f"Message from {client_id} ({tag}): {msg.data}")
+                    log.debug(f"Message from {client_id} ({tag}): {msg.data}")
                 elif msg.type == WSMsgType.ERROR:
                     log.warning(f"WS connection error for {client_id}: {ws.exception()}")
         finally:
@@ -56,16 +60,20 @@ class WidgetHub:
         `tag` (e.g. tag="roulette" to only reach the Roulette widget, leaving
         the badge/Spotify widgets untouched).
         """
-        dead = []
-        for client_id, (ws, client_tag) in self._clients.items():
-            if tag is not None and client_tag != tag:
-                continue
-            try:
-                await ws.send_json(message)
-            except ConnectionResetError:
-                dead.append(client_id)
-        for client_id in dead:
-            self._clients.pop(client_id, None)
+        # A copy: a client connecting or leaving mid-broadcast must not break the loop. Sent concurrently with
+        # a timeout, so one stalled Browser Source cannot hold up the others (or the roulette that broadcast).
+        targets = [(cid, ws) for cid, (ws, t) in list(self._clients.items()) if tag is None or t == tag]
+
+        async def send(ws):
+            await asyncio.wait_for(ws.send_json(message), SEND_TIMEOUT_SECONDS)
+
+        results = await asyncio.gather(*(send(ws) for _, ws in targets), return_exceptions=True)
+        for (client_id, ws), result in zip(targets, results):
+            if isinstance(result, Exception):
+                log.warning(f"Dropping widget {client_id}: send failed ({type(result).__name__})")
+                self._clients.pop(client_id, None)
+                if not ws.closed:
+                    asyncio.ensure_future(ws.close())
 
     def connected_count(self, tag: str | None = None) -> int:
         if tag is None:
