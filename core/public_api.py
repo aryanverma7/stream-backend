@@ -64,8 +64,9 @@ async def live_status(request: web.Request) -> web.Response:
         live = await is_channel_live(channel)
         return web.json_response({"live": live})
     except Exception as e:
-        log.warning(f"Live status check failed: {e}")
-        return web.json_response({"error": str(e)}, status=UPSTREAM_FAILED_STATUS)
+        # Never str(e) on a public route: an upstream error can carry request details.
+        log.warning(f"Live status check failed: {type(e).__name__} {getattr(e, 'status', '')}")
+        return web.json_response({"error": "Twitch live check failed"}, status=UPSTREAM_FAILED_STATUS)
 
 
 def video_id(raw: str) -> str:

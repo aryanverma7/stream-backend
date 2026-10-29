@@ -403,7 +403,7 @@ async def poll_once(stream_info=None) -> bool:
     try:
         info = await stream_info(channel)
     except Exception as e:
-        log.warning(f"Twitch live check failed: {e}")
+        log.warning(f"Twitch live check failed: {type(e).__name__} {getattr(e, 'status', '')}")
         return False
     # Recorded before announce(), which dedupes: the level is not an edge.
     now = time.time()

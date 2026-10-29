@@ -168,3 +168,21 @@ async def test_drive_not_connected_logs_info_once(drive, caplog):
     assert drive["calls"] == 2
     recs = [r for r in caplog.records if r.name == "Backup"]
     assert [r.levelname for r in recs] == ["INFO"]
+
+
+@pytest.mark.asyncio
+async def test_backup_copy_carries_no_session_tokens(drive, monkeypatch):
+    from core import auth
+    token = auth.create_session("someone", "admin")
+    seen = {}
+
+    async def upload(path, name, parent, mime="x"):
+        seen["bytes"] = open(path, "rb").read()
+        seen["rows"] = sqlite3.connect(path).execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        return "new"
+
+    monkeypatch.setattr(gdrive, "upload_small_file", upload)
+    await backup.run_if_due(_ts(4, 1))
+    assert seen["rows"] == 0
+    assert token.encode() not in seen["bytes"]
+    assert db.get().execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1

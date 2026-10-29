@@ -115,6 +115,9 @@ def _safe_next_path(candidate: str) -> str:
     """
     if not candidate.startswith("/") or "\\" in candidate[:2] or candidate.startswith("//"):
         return DEFAULT_POST_LOGIN_PATH
+    # Printable ASCII only: browsers drop tab/newline, so "/\t/evil.example" would become "//evil.example".
+    if not re.fullmatch(r"/(?![/\\])[\x21-\x7e]*", candidate):
+        return DEFAULT_POST_LOGIN_PATH
     return candidate
 
 

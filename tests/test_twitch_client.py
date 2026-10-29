@@ -21,10 +21,14 @@ async def test_get_app_token_fetches_and_caches(monkeypatch):
 
     with aioresponses() as mocked:
         mocked.post(
-            "https://id.twitch.tv/oauth2/token?client_id=test-client-id&client_secret=test-client-secret&grant_type=client_credentials",
+            "https://id.twitch.tv/oauth2/token",
             payload={"access_token": "fake-app-token", "expires_in": 5184000, "token_type": "bearer"},
         )
         token = await twitch_client.get_app_token()
+        (url, call), = [(k[1], v[0]) for k, v in mocked.requests.items()]
+        # The secret travels in the form body, never the URL (which reaches logs and error text).
+        assert "test-client-secret" not in str(url)
+        assert call.kwargs["data"]["client_secret"] == "test-client-secret"
 
     assert token == "fake-app-token"
 
@@ -68,3 +72,26 @@ async def test_is_channel_live_returns_false_when_no_stream(monkeypatch):
         result = await twitch_client.is_channel_live("dualbladex")
 
     assert result is False
+
+
+@pytest.mark.asyncio
+async def test_token_error_carries_no_secret(monkeypatch):
+    monkeypatch.setattr(config, "_data", {"twitch_client_id": "id", "twitch_client_secret": "SUPERSECRET"})
+    twitch_client._cached_token = None
+    with aioresponses() as mocked:
+        mocked.post("https://id.twitch.tv/oauth2/token", status=400)
+        with pytest.raises(twitch_client.TwitchError) as e:
+            await twitch_client.get_app_token()
+    assert "SUPERSECRET" not in str(e.value) and e.value.status == 400
+
+
+@pytest.mark.asyncio
+async def test_401_drops_the_cached_token(monkeypatch):
+    monkeypatch.setattr(config, "_data", {"twitch_client_id": "id", "twitch_client_secret": "s"})
+    twitch_client._cached_token = "stale"
+    twitch_client._cached_token_expiry = 9999999999
+    with aioresponses() as mocked:
+        mocked.get("https://api.twitch.tv/helix/streams?user_login=x", status=401)
+        with pytest.raises(twitch_client.TwitchError):
+            await twitch_client.stream_info("x")
+    assert twitch_client._cached_token is None

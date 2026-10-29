@@ -143,3 +143,17 @@ async def test_videos_all_failing_is_an_upstream_error(monkeypatch):
         resp = await client.get("/api/public/videos")
     await client.close()
     assert resp.status == public_api.UPSTREAM_FAILED_STATUS
+
+
+@pytest.mark.asyncio
+async def test_live_status_failure_never_echoes_the_exception(monkeypatch):
+    leak = "https://id.twitch.tv/oauth2/token?client_secret=SUPERSECRET"
+    monkeypatch.setattr(public_api, "is_channel_live", AsyncMock(side_effect=RuntimeError(leak)))
+    client = TestClient(TestServer(build_app()))
+    await client.start_server()
+    try:
+        resp = await client.get("/api/public/live-status")
+        assert "SUPERSECRET" not in await resp.text()
+        assert resp.status == public_api.UPSTREAM_FAILED_STATUS
+    finally:
+        await client.close()

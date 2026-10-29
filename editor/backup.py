@@ -54,6 +54,12 @@ async def run_if_due(now: float) -> None:
             dest = sqlite3.connect(path)
             try:
                 db.get().backup(dest)  # consistent copy incl. WAL; fast for this size
+                # Live login tokens must never reach Drive: a drive.file token can read the backups.
+                # A restored backup therefore logs everyone out, which is the safe side.
+                if dest.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'").fetchone():
+                    dest.execute("DELETE FROM sessions")
+                    dest.commit()
+                    dest.execute("VACUUM")  # deleted pages would still carry the tokens
             finally:
                 dest.close()
             await gdrive.upload_small_file(path, f"app-{today}.db", folder, "application/x-sqlite3")
