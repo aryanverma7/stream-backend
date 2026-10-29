@@ -239,13 +239,16 @@ def clamp_after_clock_reset(now: float) -> int:
     """
     After the admin trusts a clock that was running fast, nothing waits more than
     the grace from the corrected now: requests made under the fast clock would
-    otherwise sit until that future time comes round.
+    otherwise sit until that future time comes round. One already due gets the
+    full grace too: the gate was shut, so its undo window may never really have
+    been open, and run_due's own grace does not run again in a process that had
+    one sane tick before the pause.
     """
     conn = _c()
     cap = now + DELETE_GRACE_SECONDS
     with db.transaction():
-        n = conn.execute("UPDATE delete_requests SET delete_at=? WHERE status='pending' AND delete_at>?",
-                         (cap, cap)).rowcount
+        n = conn.execute("UPDATE delete_requests SET delete_at=? WHERE status='pending'"
+                         " AND (delete_at>? OR delete_at<=?)", (cap, cap, now)).rowcount
         conn.execute("UPDATE delete_files SET next_attempt_at=? WHERE status='pending' AND next_attempt_at>?",
                      (cap, cap))
     return n
