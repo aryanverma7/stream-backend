@@ -23,6 +23,7 @@
   "streamlabs_channel": "",
   "cloudbot_reply_timeout_seconds": 6,
   "cloudbot_cache_ttl_seconds": 60,
+  "cloudbot_reply_usernames": [],
   "points_exchange_rate_per_inr": 10,
   "streamlabs_tips_listener_enabled": true,
   "roulette_trigger_cost": 500,

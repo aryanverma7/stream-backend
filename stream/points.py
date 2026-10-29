@@ -53,6 +53,11 @@ class UnknownUser(Exception):
     """
 
 
+class UnusableName(UnknownUser):
+    """The name cannot be put into a Cloudbot command (see points_cloudbot.UnsafeUsername).
+    A subclass of UnknownUser so a caller that only knows that one still charges nothing."""
+
+
 _grant_lock = asyncio.Lock()
 
 # The same protection for spends. Cloudbot's spend never reads before it
@@ -113,6 +118,8 @@ async def try_spend(username: str, amount: int, platform: str = "") -> "tuple[bo
     async with _spend_lock:
         try:
             return await points_cloudbot.try_spend(username, amount, platform)
+        except points_cloudbot.UnsafeUsername as e:
+            raise UnusableName(str(e)) from e
         except points_cloudbot.CloudbotUserNotFound as e:
             raise UnknownUser(str(e)) from e
 
@@ -132,4 +139,7 @@ async def grant_points(username: str, amount: int, platform: str = "") -> "int |
     zero.
     """
     async with _grant_lock:
-        return await points_cloudbot.grant_points(username, amount, platform)
+        try:
+            return await points_cloudbot.grant_points(username, amount, platform)
+        except points_cloudbot.UnsafeUsername as e:
+            raise UnusableName(str(e)) from e

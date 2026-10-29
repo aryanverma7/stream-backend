@@ -39,7 +39,7 @@ import time
 from stream import credit_ocr
 from core.config import config
 from core.logger import get_logger
-from stream.points import UnknownUser, grant_points, try_spend
+from stream.points import UnknownUser, UnusableName, grant_points, try_spend
 from stream.streamerbot_client import parse_chat_message, streamerbot
 from stream.widget_hub import widget_hub
 
@@ -612,6 +612,9 @@ def affordable_weapons(predicted_credits: "int | None") -> list[str]:
     return roster
 
 
+UNUSABLE_NAME_MESSAGE = "Your name can't be used with points (letters, digits, _ @ . - only) - nothing was charged"
+
+
 async def trigger_roulette(username: str, platform: str = "twitch") -> dict:
     """
     Starts a new voting session. Returns a result dict rather than raising,
@@ -639,6 +642,8 @@ async def trigger_roulette(username: str, platform: str = "twitch") -> dict:
         # spending, so a check here would have nothing to check.
         try:
             paid, balance = await try_spend(username, cost, platform=platform)
+        except UnusableName:
+            return {"ok": False, "reason": UNUSABLE_NAME_MESSAGE}
         except UnknownUser:
             log.warning(f"{username} tried to trigger roulette but the points ledger has no record of them")
             return {"ok": False, "reason": _unknown_user_message()}
@@ -771,6 +776,8 @@ async def vote(username: str, weapon: str, platform: str = "twitch") -> dict:
         cost = vote_cost_for(weapon)
         try:
             paid, balance = await try_spend(username, cost, platform=platform)
+        except UnusableName:
+            return {"ok": False, "reason": UNUSABLE_NAME_MESSAGE}
         except UnknownUser:
             log.warning(f"{username} tried to vote for {weapon} but the points ledger has no record of them")
             return {"ok": False, "reason": _unknown_user_message()}

@@ -1425,6 +1425,14 @@ class TestUnknownUserRefusal:
         assert roulette._state.weights["vandal"] == 0
 
     @pytest.mark.asyncio
+    async def test_a_name_unusable_with_points_says_so(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(side_effect=roulette.UnusableName("a b")))
+        result = await roulette.trigger_roulette("a b", platform="youtube")
+        assert result == {"ok": False, "reason": roulette.UNUSABLE_NAME_MESSAGE}
+        assert roulette._state.is_active is False
+
+    @pytest.mark.asyncio
     async def test_a_real_outage_still_reads_as_a_retry(self, monkeypatch):
         """A timeout is not the viewer's fault and not theirs to fix."""
         monkeypatch.setattr(config, "_data", {})
