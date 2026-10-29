@@ -49,11 +49,11 @@ UPSTREAM_FAILED_STATUS = 424
 # ---------- Config editor ----------
 
 async def get_config(request: web.Request) -> web.Response:
-    return web.json_response(config_schema.masked(config.all()))
+    return web.json_response(config_schema.masked(config_schema.with_needed(config.all())))
 
 
 async def get_config_schema(request: web.Request) -> web.Response:
-    return web.json_response(config_schema.schema_for(config.all()), headers={"Cache-Control": "no-store"})
+    return web.json_response(config_schema.schema_for(config_schema.with_needed(config.all())), headers={"Cache-Control": "no-store"})
 
 
 async def update_config(request: web.Request) -> web.Response:

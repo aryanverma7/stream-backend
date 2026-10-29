@@ -21,12 +21,14 @@ _SECRET_RE = re.compile(r"secret|token|password|api_key|webhook", re.I)
 _KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 # key: (section, type, label, description, extras)
+# extras "needed": True means the settings page flags the key while it is empty;
+# a key name instead flags it only while that bool setting is on.
 _SB, _PT, _RL, _OC, _SP, _RK, _GR, _DL, _TY, _BR, _LS, _ED = SECTIONS[:12]
 _ROWS = {
     "http_host": (_LS, "text", "Listen address", "Network address the backend binds to; 0.0.0.0 means every interface."),
     "http_port": (_LS, "number", "Listen port", "TCP port the backend serves on. Restart to apply."),
-    "streamerbot_ws_url": (_SB, "text", "WebSocket URL", "Streamer.bot WebSocket address; must be the gaming PC's LAN address, not localhost."),
-    "streamerbot_ws_password": (_SB, "secret", "WebSocket password", "Password for Streamer.bot's WebSocket authentication."),
+    "streamerbot_ws_url": (_SB, "text", "WebSocket URL", "Streamer.bot WebSocket address; must be the gaming PC's LAN address, not localhost.", {"needed": True}),
+    "streamerbot_ws_password": (_SB, "secret", "WebSocket password", "Password for Streamer.bot's WebSocket authentication.", {"needed": True}),
     "streamerbot_send_as_bot": (_SB, "bool", "Send chat as bot", "Send chat replies from the bot account instead of the broadcaster."),
     "streamerbot_log_raw_chat": (_SB, "bool", "Log raw chat events", "Write every whole chat event to the log, to learn what a Streamer.bot build sends."),
     "streamerbot_subscribe_events": (_SB, "json", "Subscribed events", "Streamer.bot events to subscribe to, per platform."),
@@ -61,26 +63,26 @@ _ROWS = {
     "roulette_agent_ability_costs": (_RL, "table", "Agent ability costs", "Credits to reserve for each agent's abilities."),
     "forced_buy_queued_duration_seconds": (_RL, "number", "Forced-buy queued badge", "How long the forced-buy badge shows as queued.", {"unit": "seconds"}),
     "forced_buy_active_duration_seconds": (_RL, "number", "Forced-buy active badge", "How long the forced-buy badge stays active.", {"unit": "seconds"}),
-    "ocr_agent_secret": (_OC, "secret", "Agent shared secret", "Secret the gaming PC agent sends with credit readings and heartbeats."),
+    "ocr_agent_secret": (_OC, "secret", "Agent shared secret", "Secret the gaming PC agent sends with credit readings and heartbeats.", {"needed": True}),
     "ocr_workers": (_OC, "number", "OCR workers", "Parallel Tesseract workers; restart to apply.", {"min": 1}),
     "ocr_reading_max_age_seconds": (_OC, "number", "Reading max age", "Backstop after which a credit reading is discarded.", {"unit": "seconds"}),
-    "github_client_id": (_LS, "text", "GitHub client ID", "Client ID of the GitHub OAuth app used for admin login."),
-    "github_client_secret": (_LS, "secret", "GitHub client secret", "Client secret of the GitHub OAuth app used for admin login."),
-    "authorized_github_usernames": (_LS, "list", "Admin GitHub users", "GitHub usernames allowed into the admin dashboard."),
-    "editor_github_username": (_ED, "text", "Editor GitHub user", "GitHub username allowed into the editor app only."),
-    "gdrive_client_id": (_ED, "text", "Drive client ID", "Client ID of the Google Cloud OAuth app used for Google Drive."),
-    "gdrive_client_secret": (_ED, "secret", "Drive client secret", "Client secret of the Google Cloud OAuth app used for Google Drive."),
-    "gdrive_redirect_uri": (_ED, "text", "Drive redirect URI", "OAuth callback URL registered with the Google Cloud app."),
-    "gdrive_refresh_token": (_ED, "secret", "Drive refresh token", "Google Drive refresh token, written by the Drive connect flow."),
-    "editor_google_email": (_ED, "text", "Editor Google account", "The editor's Google account, which VODs and the brand kit are shared with."),
-    "editor_discord_user_id": (_ED, "text", "Editor Discord user ID", "The editor's Discord user ID, which reminders and notifications are DMed to."),
-    "discord_bot_token": (_ED, "secret", "Discord bot token", "The bot token from the Discord Developer Portal, used to send DMs."),
-    "streamer_discord_user_id": (_ED, "text", "Streamer Discord user ID", "The streamer's Discord user ID, for new-version DMs."),
+    "github_client_id": (_LS, "text", "GitHub client ID", "Client ID of the GitHub OAuth app used for admin login.", {"needed": True}),
+    "github_client_secret": (_LS, "secret", "GitHub client secret", "Client secret of the GitHub OAuth app used for admin login.", {"needed": True}),
+    "authorized_github_usernames": (_LS, "list", "Admin GitHub users", "GitHub usernames allowed into the admin dashboard.", {"needed": True}),
+    "editor_github_username": (_ED, "text", "Editor GitHub user", "GitHub username allowed into the editor app only.", {"needed": True}),
+    "gdrive_client_id": (_ED, "text", "Drive client ID", "Client ID of the Google Cloud OAuth app used for Google Drive.", {"needed": True}),
+    "gdrive_client_secret": (_ED, "secret", "Drive client secret", "Client secret of the Google Cloud OAuth app used for Google Drive.", {"needed": True}),
+    "gdrive_redirect_uri": (_ED, "text", "Drive redirect URI", "OAuth callback URL registered with the Google Cloud app.", {"needed": True}),
+    "gdrive_refresh_token": (_ED, "secret", "Drive refresh token", "Google Drive refresh token, written by the Drive connect flow.", {"needed": True}),
+    "editor_google_email": (_ED, "text", "Editor Google account", "The editor's Google account, which VODs and the brand kit are shared with.", {"needed": True}),
+    "editor_discord_user_id": (_ED, "text", "Editor Discord user ID", "The editor's Discord user ID, which reminders and notifications are DMed to.", {"needed": "discord_notifications_enabled"}),
+    "discord_bot_token": (_ED, "secret", "Discord bot token", "The bot token from the Discord Developer Portal, used to send DMs.", {"needed": "discord_notifications_enabled"}),
+    "streamer_discord_user_id": (_ED, "text", "Streamer Discord user ID", "The streamer's Discord user ID, for new-version DMs.", {"needed": "discord_notifications_enabled"}),
     "discord_notifications_enabled": (_ED, "bool", "Discord notifications", "Send Discord DMs; the bell works either way."),
-    "public_base_url": (_LS, "text", "Public URL", "Public address of this backend, used for the tunnel health check."),
-    "spotify_client_id": (_SP, "text", "Client ID", "Client ID of the Spotify app."),
-    "spotify_client_secret": (_SP, "secret", "Client secret", "Client secret of the Spotify app."),
-    "spotify_refresh_token": (_SP, "secret", "Refresh token", "Spotify refresh token, written by the Connect flow."),
+    "public_base_url": (_LS, "text", "Public URL", "Public address of this backend, used for the tunnel health check.", {"needed": True}),
+    "spotify_client_id": (_SP, "text", "Client ID", "Client ID of the Spotify app.", {"needed": "spotify_song_requests_enabled"}),
+    "spotify_client_secret": (_SP, "secret", "Client secret", "Client secret of the Spotify app.", {"needed": "spotify_song_requests_enabled"}),
+    "spotify_refresh_token": (_SP, "secret", "Refresh token", "Spotify refresh token, written by the Connect flow.", {"needed": "spotify_song_requests_enabled"}),
     "spotify_redirect_uri": (_SP, "text", "Redirect URI", "OAuth callback URL registered with the Spotify app."),
     "spotify_song_requests_enabled": (_SP, "bool", "Song requests", "Let viewers queue songs with !song."),
     "spotify_chat_replies_enabled": (_SP, "bool", "Chat replies", "Answer song commands in chat."),
@@ -89,29 +91,29 @@ _ROWS = {
     "spotify_now_playing_poll_seconds": (_SP, "number", "Now-playing poll", "How often Spotify is asked what is playing.", {"unit": "seconds", "min": 1}),
     "spotify_queue_preview_count": (_SP, "number", "Queue preview length", "Tracks listed by !songqueue.", {"unit": "tracks"}),
     "break_default_minutes": (_BR, "number", "Default break length", "Break length preselected on the dashboard.", {"unit": "minutes", "min": 1}),
-    "riot_name": (_RK, "text", "Riot name", "Riot ID name used for rank lookups."),
-    "riot_tag": (_RK, "text", "Riot tag", "Riot ID tag, the part after the #."),
+    "riot_name": (_RK, "text", "Riot name", "Riot ID name used for rank lookups.", {"needed": True}),
+    "riot_tag": (_RK, "text", "Riot tag", "Riot ID tag, the part after the #.", {"needed": True}),
     "riot_region": (_RK, "text", "Region", "Valorant region for rank lookups, such as ap or eu."),
     "riot_platform": (_RK, "text", "Platform", "Valorant platform for rank lookups, such as pc."),
-    "henrik_api_key": (_RK, "secret", "HenrikDev API key", "Key for the HenrikDev rank API."),
+    "henrik_api_key": (_RK, "secret", "HenrikDev API key", "Key for the HenrikDev rank API.", {"needed": True}),
     "rank_cache_seconds": (_RK, "number", "Rank cache time", "How long a fetched rank is reused.", {"unit": "seconds"}),
     "greeter_enabled": (_GR, "bool", "Greeter", "Welcome first-time chatters with the Discord invite."),
-    "discord_invite_url": (_GR, "text", "Discord invite", "Invite link the greeter posts; the greeter stays off without it."),
+    "discord_invite_url": (_GR, "text", "Discord invite", "Invite link the greeter posts; the greeter stays off without it.", {"needed": "greeter_enabled"}),
     "greeter_message": (_GR, "text", "Greeting", "Message posted to a newcomer; {discord} becomes the invite link."),
     "greeter_cooldown_seconds": (_GR, "number", "Greeting cooldown", "Minimum time between any two greetings, to survive raids.", {"unit": "seconds"}),
     "greeter_ignore_users": (_GR, "list", "Ignored users", "Usernames the greeter never welcomes, such as bots."),
-    "twitch_client_id": (_TY, "text", "Twitch client ID", "Client ID of the Twitch app."),
-    "twitch_client_secret": (_TY, "secret", "Twitch client secret", "Client secret of the Twitch app."),
+    "twitch_client_id": (_TY, "text", "Twitch client ID", "Client ID of the Twitch app.", {"needed": True}),
+    "twitch_client_secret": (_TY, "secret", "Twitch client secret", "Client secret of the Twitch app.", {"needed": True}),
     "twitch_user_access_token": (_TY, "secret", "Twitch user token", "Twitch user access token for channel queries."),
-    "twitch_channel": (_TY, "text", "Twitch channel", "Twitch channel name, used for live checks and the embed."),
+    "twitch_channel": (_TY, "text", "Twitch channel", "Twitch channel name, used for live checks and the embed.", {"needed": True}),
     "youtube_api_key": (_TY, "secret", "YouTube API key", "Key for the YouTube Data API."),
     "youtube_channel_id": (_TY, "text", "YouTube channel ID", "YouTube channel checked for a live broadcast."),
     "youtube_video_ids": (_TY, "list", "Homepage videos", "YouTube video IDs shown on the homepage while offline (the part after v= in a link). Needs the YouTube API key."),
     "cloudflare_tunnel_domain": (_LS, "text", "Tunnel domain", "Cloudflare tunnel hostname that reaches this backend."),
-    "site_out_dir": (_LS, "text", "Site folder", "Absolute path of the built site's out/ folder that the backend serves."),
+    "site_out_dir": (_LS, "text", "Site folder", "Absolute path of the built site's out/ folder that the backend serves.", {"needed": True}),
     "app_db_path": (_LS, "text", "Database path", "Where the SQLite database lives; empty uses the default."),
     "discord_live_enabled": (_DL, "bool", "Go-live post", "Post to Discord when the stream goes live."),
-    "discord_webhook_url": (_DL, "secret", "Webhook URL", "Discord webhook the go-live post is sent to."),
+    "discord_webhook_url": (_DL, "secret", "Webhook URL", "Discord webhook the go-live post is sent to.", {"needed": "discord_live_enabled"}),
     "discord_live_role_mention": (_DL, "text", "Role mention", "Role or @everyone mention put in front of the post."),
     "discord_live_message": (_DL, "text", "Message", "Post text; {mention}, {name} and {title} are filled in."),
     "discord_live_poll_seconds": (_DL, "number", "Poll interval", "How often Twitch is checked for a live stream.", {"unit": "seconds", "min": 15}),
@@ -157,6 +159,11 @@ def _infer(value, secret: bool) -> str:
     if isinstance(value, dict):
         return "table" if all(isinstance(v, (str, int, float, bool)) for v in value.values()) else "json"
     return "secret" if secret else "text"
+
+
+def with_needed(data: dict) -> dict:
+    """data plus every "needed" key it lacks, empty, so the settings page can show and fill it."""
+    return {**{k: [] if f["type"] == "list" else "" for k, f in FIELDS.items() if "needed" in f}, **data}
 
 
 def schema_for(data: dict) -> dict:

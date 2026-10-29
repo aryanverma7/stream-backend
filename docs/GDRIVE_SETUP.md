@@ -14,34 +14,46 @@ site.
    "DualBladeX Editor". Wait for it to be created, then make sure it is the selected project.
 3. Open the menu and find **APIs & Services**, then the library of APIs. Search for
    **Google Drive API**, open it and press **Enable**.
-4. In **APIs & Services**, open the **OAuth consent screen** (Google may now call this section
-   "Google Auth Platform" or "Branding"; it is the same thing).
-   - Choose **External** as the user type.
-   - App name: "DualBladeX Editor". For the support email and developer contact, use your own email.
-   - When it asks for **scopes**, add exactly one: the Google Drive scope that ends in `.../auth/drive.file`
-     (described as "See, edit, create and delete only the specific Google Drive files you use with this app").
-     Do not add any other scope.
-5. **Publish the app.** On the consent screen page, find the publishing status (it says "Testing")
-   and press the button to **Publish app**, then confirm. This step matters:
+4. Open **Google Auth Platform** (search for it in the top bar; older consoles call it
+   "OAuth consent screen"). Press **Get started** and fill in the short wizard:
+   - App name: "DualBladeX Editor". User support email: your own email.
+   - Audience: **External**.
+   - Contact information: your own email.
+   The wizard only covers part of it. The rest lives in the left-hand menu: **Branding**, **Audience**,
+   **Clients** and **Data Access**.
+5. **Branding.** Check the app name, support email and developer contact email are filled, then add:
+   - Application home page: `https://hub.dualbladex.org`
+   - Application privacy policy link: `https://hub.dualbladex.org/privacy`
+   - Application terms of service link: `https://hub.dualbladex.org/terms`
+   - Authorized domains: `dualbladex.org`
+   Do **not** upload a logo; a logo makes Google insist on a full verification review. Press **Save**.
+6. **Data Access** (optional). Press **Add or remove scopes**, filter for `drive.file`, tick the one ending
+   in `.../auth/drive.file` ("See, edit, create and delete only the specific Google Drive files you use
+   with this app"), press **Update**, then **Save**. Do not add any other scope. If you skip this, the
+   connect step in Part 3 asks for the same permission anyway.
+7. **Publish the app.** Open **Audience**. Under "Publishing status: Testing" press **Publish app**, then
+   confirm. If the button is grayed out, Google says which Branding field is still missing. This step
+   matters:
    - While the app is in Testing, Google cancels its login every 7 days, and uploads and deletes would
      silently stop working a week after setup.
    - Publishing does not need Google to review anything, because the `drive.file` scope is the
      low-risk kind. You may see a note that the app is "unverified". That is fine, it is only you
      using it.
-6. Open **Credentials**, press to **create credentials**, and choose **OAuth client ID**.
+8. **Clients.** Press **Create client**.
    - Application type: **Web application**.
    - Name: anything, for example "DualBladeX backend".
+   - Leave **Authorized JavaScript origins** empty.
    - Under **Authorized redirect URIs**, add this exact address, with nothing before or after it:
      `https://hub.dualbladex.org/auth/gdrive/callback`
-   - Create it. Google shows a **Client ID** and a **Client secret**. Keep that window open, or copy
-     both somewhere safe for the next part.
+   - Create it. Google shows a **Client ID** and a **Client secret**. Copy both now: Google may not
+     show the secret again.
 
 ## Part 2: Tell the site
 
-7. Log in to the site as admin and open the dashboard's **Settings** page. Find the **Editor app**
+9. Log in to the site as admin and open the dashboard's **Settings** page. Find the **Editor app**
    section and fill in:
-   - **Drive client ID**: the Client ID from step 6.
-   - **Drive client secret**: the Client secret from step 6.
+   - **Drive client ID**: the Client ID from step 8.
+   - **Drive client secret**: the Client secret from step 8.
    - **Drive redirect URI**: `https://hub.dualbladex.org/auth/gdrive/callback` (it may already be filled in).
    - **Editor Google account**: the editor's Google email address. VODs and the brand kit folder are
      shared with this address.
@@ -50,16 +62,16 @@ site.
 
 ## Part 3: Connect
 
-8. While still logged in as admin, open `https://hub.dualbladex.org/auth/gdrive/login` in your browser.
-9. Google asks which account to use. Choose the Google One account and approve the access it asks
+10. While still logged in as admin, open `https://hub.dualbladex.org/auth/gdrive/login` in your browser.
+11. Google asks which account to use. Choose the Google One account and approve the access it asks
    for. You are sent back to the dashboard.
-10. Open Google Drive. You should see a folder called **DualBladeX Editor**, containing three
+12. Open Google Drive. You should see a folder called **DualBladeX Editor**, containing three
     folders: **Projects**, **Brand kit** and **Backups**. The Brand kit folder is shared with the
     editor automatically.
 
-If the folder does not appear, run step 8 again. It is safe to repeat. If Google says no refresh
+If the folder does not appear, run step 10 again. It is safe to repeat. If Google says no refresh
 token came back, open your Google account's security page, remove the "DualBladeX Editor" app from
-the apps with access, and run step 8 again.
+the apps with access, and run step 10 again.
 
 ## What lives where
 

@@ -4,10 +4,26 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.config_schema import (FIELD_TYPES, FIELDS, SECRET_MASK, SECTIONS, masked,
+from core.config_schema import (FIELD_TYPES, FIELDS, SECRET_MASK, SECTIONS, masked, with_needed,
                            schema_for, validate_update)
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "config.example.json"
+
+
+def test_needed_is_true_or_names_a_bool_setting():
+    needed = {k: f["needed"] for k, f in FIELDS.items() if "needed" in f}
+    assert needed["gdrive_refresh_token"] is True
+    assert needed["discord_bot_token"] == "discord_notifications_enabled"
+    for key, cond in needed.items():
+        assert cond is True or FIELDS[cond]["type"] == "bool", key
+
+
+def test_with_needed_adds_missing_needed_keys_empty_and_keeps_real_values():
+    out = with_needed({"github_client_id": "abc"})
+    assert out["github_client_id"] == "abc"
+    assert out["gdrive_refresh_token"] == ""
+    assert out["authorized_github_usernames"] == []
+    assert "roulette_trigger_cost" not in out
 
 
 def test_every_example_key_has_metadata():
