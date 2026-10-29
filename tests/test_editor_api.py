@@ -472,8 +472,11 @@ async def test_editor_cannot_start_over():
 @pytest.mark.asyncio
 async def test_start_over_only_on_the_latest_version():
     p, t, it, c = _world()
-    v2 = es.create_iteration(t["id"], "b.mp4", 10, "", now=5.0)  # still uploading, but it is the latest
+    v2 = es.create_iteration(t["id"], "b.mp4", 10, "", now=5.0)  # still uploading: v1 is still the one in review
     async with api() as x:
+        assert await x.admin("POST", f"/api/editor/iterations/{v2['id']}/start-over") == \
+            (400, {"error": "Start over works on the latest version"})
+        es.complete_iteration(v2["id"], "IT2", now=6.0)
         assert await x.admin("POST", f"/api/editor/iterations/{it['id']}/start-over") == \
             (400, {"error": "Start over works on the latest version"})
         assert not ec.comments_for_iteration(it["id"])[0]["resolved"]
@@ -680,6 +683,16 @@ async def test_comment_route_201_then_200_on_repeat():
         s1, g1 = await a.editor("POST", path, {"kind": "fix", "body": "x", "client_id": "abcdefgh1"})
         s2, g2 = await a.editor("POST", path, {"kind": "fix", "body": "x", "client_id": "abcdefgh1"})
         assert (s1, s2, g1["id"] == g2["id"]) == (201, 200, True)
+
+
+@pytest.mark.asyncio
+async def test_someone_elses_client_id_is_a_409():
+    _, _, it, _ = _world()
+    path = f"/api/editor/iterations/{it['id']}/comments"
+    async with api() as a:
+        assert (await a.editor("POST", path, {"kind": "fix", "body": "x", "client_id": "abcdefgh1"}))[0] == 201
+        assert await a.admin("POST", path, {"kind": "fix", "body": "x", "client_id": "abcdefgh1"}) == (
+            409, {"error": "client_id already used"})
 
 
 @pytest.mark.asyncio

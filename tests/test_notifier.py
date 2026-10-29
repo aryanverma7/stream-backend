@@ -95,6 +95,21 @@ async def test_ready_dm_skips_deleted_projects_and_never_mixes_with_comment_dige
 
 
 @pytest.mark.asyncio
+async def test_ready_dm_skips_soft_deleted_and_deleting_projects():
+    from editor import deletions
+    ready("Kept")
+    soft = ready("Soft")
+    es._set("projects", soft["id"], None, deleted_at=5.0)
+    vod = ready("Vod going")
+    es._set("projects", vod["id"], None, vod_status="deleting")
+    proj = ready("Project going")
+    deletions.request_delete("project", proj["id"], proj["name"], username="Aryan", role="admin", now=T)
+    await notifier.run(T + 600)
+    assert [r["content"] for r in outbox() if r["recipient_role"] == "editor"] == [
+        "New VOD ready: Kept. Open the editor page to download it."]
+
+
+@pytest.mark.asyncio
 async def test_ready_batch_of_only_deleted_projects_sends_nothing():
     es.record_event("agent", "vod_ready", "s", project_id=999, now=T)
     await notifier.run(T + 600)

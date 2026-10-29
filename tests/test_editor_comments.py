@@ -163,3 +163,39 @@ def test_client_id_columns_added_to_old_db():
     conn = ec._cc()
     for t in ("comments", "replies"):
         assert "client_id" in {r["name"] for r in conn.execute(f"PRAGMA table_info({t})")}
+
+
+def test_start_over_uses_the_latest_ready_version():
+    t = _tape()
+    v1 = _ready(t["id"])
+    ec.add_comment(v1["id"], "cutguy", "fix", "one", now=3.0)
+    up = es.create_iteration(t["id"], "f.mp4", 1, "u", now=4.0)  # v2 still uploading
+    assert ec.start_over(v1["id"], "aryan", now=5.0) == 1
+    with pytest.raises(ValueError, match="latest version"):
+        ec.start_over(up["id"], "aryan", now=6.0)
+
+
+def test_a_client_id_is_scoped_to_its_author_and_target():
+    t = _tape()
+    v1, v2 = _ready(t["id"]), _ready(t["id"])
+    c = ec.add_comment(v1["id"], "cutguy", "fix", "x", client_id="cid-00001")
+    assert ec.add_comment(v1["id"], "cutguy", "fix", "x", client_id="cid-00001")["id"] == c["id"]
+    for author, it in (("aryan", v1), ("cutguy", v2)):
+        with pytest.raises(ec.ClientIdTaken):
+            ec.add_comment(it["id"], author, "fix", "x", client_id="cid-00001")
+    assert ec.by_client_id("comments", "cid-00001", "aryan", v1["id"]) is None
+    other = ec.add_comment(v1["id"], "aryan", "fix", "y")
+    r = ec.add_reply(c["id"], "aryan", "ok", client_id="rid-00001")
+    assert ec.add_reply(c["id"], "aryan", "ok", client_id="rid-00001")["id"] == r["id"]
+    for author, cid in (("cutguy", c["id"]), ("aryan", other["id"])):
+        with pytest.raises(ec.ClientIdTaken):
+            ec.add_reply(cid, author, "ok", client_id="rid-00001")
+
+
+def test_search_skips_soft_deleted_projects():
+    t = _tape()
+    it = _ready(t["id"])
+    ec.add_comment(it["id"], "a", "fix", "needle here", now=3.0)
+    assert len(ec.search("needle")) == 1
+    es._set("projects", t["project_id"], None, deleted_at=9.0)
+    assert ec.search("needle") == []

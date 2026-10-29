@@ -38,12 +38,32 @@ def _cc():
     return conn
 
 
-def by_client_id(table, client_id):
-    """The comment/reply already posted under this client_id, or None."""
+class ClientIdTaken(Exception):
+    """A client_id already used by another author, or for another iteration/comment: never that row."""
+
+
+# The column a repeat must also match: a comment's iteration, a reply's parent comment.
+_TARGET = {"comments": "iteration_id", "replies": "comment_id"}
+
+
+def by_client_id(table, client_id, author, target_id):
+    """The comment/reply this author already posted under this client_id on this target, or None."""
     if not client_id:
         return None
     _cc()  # migrates an old app.db first; plain _one only runs es._c()
-    return _one(f"SELECT * FROM {table} WHERE client_id=?", (client_id,))
+    return _one(f"SELECT * FROM {table} WHERE client_id=? AND author=? AND {_TARGET[table]}=?",
+                (client_id, author, target_id))
+
+
+def _repeat(conn, table, client_id, author, target_id):
+    """The id of this exact post made before, None if new; ClientIdTaken if someone/something else owns it."""
+    old = conn.execute(f"SELECT id, author, {_TARGET[table]} AS target FROM {table} WHERE client_id=?",
+                       (client_id,)).fetchone()
+    if old is None:
+        return None
+    if old["author"] != author or old["target"] != target_id:
+        raise ClientIdTaken("client_id already used")
+    return old["id"]
 
 
 def _short(body):
@@ -78,9 +98,9 @@ def add_comment(iteration_id, author, kind, body, start_s=None, end_s=None, now=
     project_id, tape_id = _ctx(iteration_id)
     with db.transaction() as conn:
         if client_id:
-            old = conn.execute("SELECT id FROM comments WHERE client_id=?", (client_id,)).fetchone()
+            old = _repeat(conn, "comments", client_id, author, iteration_id)
             if old:
-                return _comment(old["id"])
+                return _comment(old)
         cid = conn.execute(
             "INSERT INTO comments(iteration_id, author, kind, start_s, end_s, body, created_at, updated_at,"
             " client_id) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -119,9 +139,9 @@ def add_reply(comment_id, author, body, now=None, client_id=None):
     project_id, tape_id = _ctx(c["iteration_id"])
     with db.transaction() as conn:
         if client_id:
-            old = conn.execute("SELECT id FROM replies WHERE client_id=?", (client_id,)).fetchone()
+            old = _repeat(conn, "replies", client_id, author, comment_id)
             if old:
-                return _one("SELECT * FROM replies WHERE id=?", (old["id"],))
+                return _one("SELECT * FROM replies WHERE id=?", (old,))
         rid = conn.execute("INSERT INTO replies(comment_id, author, body, created_at, client_id) VALUES(?,?,?,?,?)",
                            (comment_id, author, body, now, client_id)).lastrowid
         es.record_event(author, "reply_added", f"{author} replied: {_short(body)}", project_id=project_id,
@@ -151,7 +171,9 @@ def start_over(iteration_id, by, now=None) -> int:
     now = time.time() if now is None else now
     _cc()
     project_id, tape_id = _ctx(iteration_id)
-    if es.get_iteration(iteration_id)["version"] != es.next_version(tape_id) - 1:
+    # The latest READY version: a newer one still uploading (or abandoned) is not what anyone is reviewing.
+    latest = es.previous_ready_iteration(tape_id, 2**62)
+    if latest is None or latest["id"] != iteration_id:
         raise ValueError("Start over works on the latest version")
     with db.transaction() as conn:
         n = conn.execute("UPDATE comment_state SET resolved=1, resolved_by=?, resolved_at=?"
@@ -199,7 +221,8 @@ def search(query, limit=50):
     base = ("SELECT '{k}' AS kind, c.id AS comment_id, c.iteration_id, i.tape_id, t.project_id, i.version,"
             " {b}.body AS snippet, c.start_s, {b}.created_at AS at FROM {src}"
             " JOIN iterations i ON i.id=c.iteration_id JOIN tapes t ON t.id=i.tape_id"
-            " WHERE lower({b}.body) LIKE ? ESCAPE '\\'")
+            " JOIN projects p ON p.id=t.project_id"
+            " WHERE p.deleted_at IS NULL AND lower({b}.body) LIKE ? ESCAPE '\\'")
     sql = (base.format(k="comment", b="c", src="comments c") + " UNION ALL " +
            base.format(k="reply", b="r", src="replies r JOIN comments c ON c.id=r.comment_id") +
            " ORDER BY at DESC, comment_id DESC LIMIT ?")

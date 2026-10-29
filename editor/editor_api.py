@@ -60,6 +60,8 @@ def map_errors(handler):
             return await handler(*args)
         except _Fail as e:
             return web.json_response(e.payload, status=e.status)
+        except ec.ClientIdTaken as e:
+            return web.json_response({"error": str(e)}, status=409)
         except svc.Unavailable as e:
             return web.json_response({"error": str(e)}, status=e.status)
         except svc.DriveFull as e:
@@ -446,7 +448,7 @@ async def add_comment(request, me):
     if not isinstance(text, str):
         raise _Fail(400, "body must be a string")
     cid = _client_id(body)
-    repeat = ec.by_client_id("comments", cid) is not None
+    repeat = ec.by_client_id("comments", cid, me["username"], it["id"]) is not None
     return _ok(ec.add_comment(it["id"], me["username"], body["kind"], text,
                               _seconds(body.get("start_s")), _seconds(body.get("end_s")), client_id=cid),
                200 if repeat else 201)
@@ -470,7 +472,7 @@ async def add_reply(request, me):
     if not isinstance(text, str):
         raise _Fail(400, "body must be a string")
     cid = _client_id(body)
-    repeat = ec.by_client_id("replies", cid) is not None
+    repeat = ec.by_client_id("replies", cid, me["username"], c["id"]) is not None
     return _ok(ec.add_reply(c["id"], me["username"], text, client_id=cid), 200 if repeat else 201)
 
 
