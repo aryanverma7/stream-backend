@@ -33,7 +33,7 @@ import json
 import time
 from pathlib import Path
 
-from core.config import config
+from core.config import atomic_write_text, config
 from core.logger import get_logger
 
 log = get_logger("Greeter")
@@ -79,7 +79,7 @@ def _load() -> set:
 
 def _save() -> None:
     try:
-        _seen_path().write_text(json.dumps(sorted(_load())))
+        atomic_write_text(_seen_path(), json.dumps(sorted(_load())))
     except Exception:
         # Worth a line, not worth failing over: the in-memory set is still
         # correct for this session, so the only cost is re-greeting after
@@ -92,8 +92,10 @@ def has_seen(platform: str, username: str) -> bool:
 
 
 def remember(platform: str, username: str) -> None:
-    _load().add(_key(platform, username))
-    _save()
+    seen, key = _load(), _key(platform, username)
+    if key not in seen:  # every chat message lands here; only a newcomer is worth a disk write
+        seen.add(key)
+        _save()
 
 
 def reset() -> None:

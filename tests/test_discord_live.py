@@ -463,3 +463,11 @@ async def test_no_youtube_configured_means_no_wait(monkeypatch, tmp_path):
         raise AssertionError("should not look")
 
     assert await discord_live._youtube_thumbnail_with_wait(fetch) == ""
+
+
+def test_state_is_saved_atomically(monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(discord_live, "atomic_write_text", lambda p, t: calls.append(p))
+    discord_live._save()
+    assert calls == [tmp_path / "s.json"]
