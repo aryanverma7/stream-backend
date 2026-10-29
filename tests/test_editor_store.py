@@ -174,3 +174,15 @@ def test_a_clip_cannot_be_in_two_reels():
     a, b = _clip("A"), _clip("B")
     with pytest.raises(sqlite3.IntegrityError):
         db.get().execute("INSERT INTO reel_sources(tape_id, project_id) VALUES(?,?)", (b["reel_tape_id"], a["id"]))
+
+
+def test_create_project_writes_its_meta_key_in_the_same_transaction(monkeypatch):
+    p = es.create_project("A", "2026-10-20", "", "v.mp4", 5, meta_key="uploader_job_x")
+    assert db.meta_get("uploader_job_x") == str(p["id"])
+
+    def crash(*a):
+        raise RuntimeError("power cut")
+    monkeypatch.setattr(db, "meta_set", crash)
+    with pytest.raises(RuntimeError):
+        es.create_project("B", "2026-10-20", "", "v.mp4", 5, meta_key="uploader_job_y")
+    assert [x["name"] for x in es.list_projects()] == ["A"]
