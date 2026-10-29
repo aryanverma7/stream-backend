@@ -672,3 +672,17 @@ async def test_seen_route_both_roles():
             assert await a.call(who, "POST", path) == (200, {"previous_seen_at": None})
             status, got = await a.call(who, "POST", path)
             assert status == 200 and isinstance(got["previous_seen_at"], float)
+
+
+@pytest.mark.asyncio
+async def test_reply_route_on_old_db_without_client_id_column():
+    _, _, it, c = _world()  # creates the tables with the current DDL; rebuild them old-style
+    db.get().executescript("""DROP INDEX IF EXISTS comments_client_id; DROP INDEX IF EXISTS replies_client_id;
+        ALTER TABLE comments DROP COLUMN client_id; ALTER TABLE replies DROP COLUMN client_id;""")
+    db._ensured.clear()  # a fresh process would migrate again
+    path = f"/api/editor/comments/{c['id']}/replies"
+    async with api() as a:
+        assert (await a.editor("POST", path, {"body": "x", "client_id": "abcdefgh1"}))[0] == 201
+        assert (await a.editor("POST", path, {"body": "x", "client_id": "abcdefgh1"}))[0] == 200
+        status, got = await a.editor("POST", path, {"body": "x", "client_id": "x"})
+        assert (status, got) == (400, {"error": "client_id is not valid"})

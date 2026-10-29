@@ -442,7 +442,6 @@ async def add_comment(request, me):
     if not isinstance(text, str):
         raise _Fail(400, "body must be a string")
     cid = _client_id(body)
-    ec._cc()
     repeat = ec.by_client_id("comments", cid) is not None
     return _ok(ec.add_comment(it["id"], me["username"], body["kind"], text,
                               _seconds(body.get("start_s")), _seconds(body.get("end_s")), client_id=cid),

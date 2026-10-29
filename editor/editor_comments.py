@@ -40,7 +40,10 @@ def _cc():
 
 def by_client_id(table, client_id):
     """The comment/reply already posted under this client_id, or None."""
-    return _one(f"SELECT * FROM {table} WHERE client_id=?", (client_id,)) if client_id else None
+    if not client_id:
+        return None
+    _cc()  # migrates an old app.db first; plain _one only runs es._c()
+    return _one(f"SELECT * FROM {table} WHERE client_id=?", (client_id,))
 
 
 def _short(body):
