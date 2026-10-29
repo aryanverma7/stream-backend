@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS tape_seen(
   username TEXT, tape_id INTEGER, seen_at REAL, PRIMARY KEY (username, tape_id));
 CREATE TABLE IF NOT EXISTS playback(
   username TEXT, iteration_id INTEGER, position_s REAL, updated_at REAL, PRIMARY KEY (username, iteration_id));
+CREATE TABLE IF NOT EXISTS iteration_seen(
+  username TEXT, iteration_id INTEGER, seen_at REAL, PRIMARY KEY (username, iteration_id));
 """
 
 
@@ -100,3 +102,17 @@ def get_position(username, iteration_id) -> float:
     row = _c().execute("SELECT position_s FROM playback WHERE username=? AND iteration_id=?",
                        (username, iteration_id)).fetchone()
     return 0.0 if row is None else float(row["position_s"])
+
+
+# -- "what changed since my last visit" per iteration --
+
+def mark_iteration_seen(username, iteration_id, now=None):
+    """Stores now as the visit time and returns the previous one (None on a first visit)."""
+    _c()
+    with db.transaction() as conn:
+        row = conn.execute("SELECT seen_at FROM iteration_seen WHERE username=? AND iteration_id=?",
+                           (username, iteration_id)).fetchone()
+        conn.execute("INSERT INTO iteration_seen(username, iteration_id, seen_at) VALUES(?,?,?)"
+                     " ON CONFLICT(username, iteration_id) DO UPDATE SET seen_at=excluded.seen_at",
+                     (username, iteration_id, _now(now)))
+    return None if row is None else row["seen_at"]

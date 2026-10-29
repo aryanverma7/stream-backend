@@ -54,7 +54,7 @@ async def handle_widget_ws(request: web.Request) -> web.WebSocketResponse:
 # 'unsafe-inline' scripts: Next's static export inlines its bootstrap, and a nonce needs a server.
 PAGE_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
-            "img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://www.googleapis.com; "
+            "img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://www.googleapis.com https://*.googleusercontent.com; "
             "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
 
@@ -72,6 +72,8 @@ async def _security_headers(request: web.Request, response: web.StreamResponse) 
         h.setdefault("Content-Security-Policy", PAGE_CSP)
     h.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
     h.setdefault("X-Content-Type-Options", "nosniff")
+    if path == "/editor/media-sw.js":  # default scope /editor/ would miss the page /editor itself
+        h["Service-Worker-Allowed"] = "/editor"
 
 
 def build_app() -> web.Application:

@@ -23,12 +23,27 @@ CREATE TABLE IF NOT EXISTS comment_state(
   comment_id INTEGER NOT NULL, iteration_id INTEGER NOT NULL, resolved INTEGER NOT NULL DEFAULT 0,
   resolved_by TEXT, resolved_at REAL, PRIMARY KEY (comment_id, iteration_id));
 """
+# client_id makes a post idempotent (a retried request returns the row it already made).
+_ALTERS = (("comments", "client_id"), ("replies", "client_id"))
 
 
 def _cc():
     es._c()  # events/iterations tables
     db.ensure(_DDL)
-    return db.get()
+    conn = db.get()
+    for table, col in _ALTERS:
+        if col not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
+            db.ensure(f"ALTER TABLE {table} ADD COLUMN {col} TEXT;")
+        db.ensure(f"CREATE UNIQUE INDEX IF NOT EXISTS {table}_{col} ON {table}({col}) WHERE {col} IS NOT NULL;")
+    return conn
+
+
+def by_client_id(table, client_id):
+    """The comment/reply already posted under this client_id, or None."""
+    if not client_id:
+        return None
+    _cc()  # migrates an old app.db first; plain _one only runs es._c()
+    return _one(f"SELECT * FROM {table} WHERE client_id=?", (client_id,))
 
 
 def _short(body):
@@ -47,7 +62,8 @@ def _comment(id):
     return _one("SELECT * FROM comments WHERE id=?", (id,))
 
 
-def add_comment(iteration_id, author, kind, body, start_s=None, end_s=None, now=None):
+def add_comment(iteration_id, author, kind, body, start_s=None, end_s=None, now=None,
+                client_id=None):
     now = time.time() if now is None else now
     if kind not in KINDS:
         raise ValueError(f"unknown comment kind {kind!r}")
@@ -61,9 +77,14 @@ def add_comment(iteration_id, author, kind, body, start_s=None, end_s=None, now=
     _cc()
     project_id, tape_id = _ctx(iteration_id)
     with db.transaction() as conn:
+        if client_id:
+            old = conn.execute("SELECT id FROM comments WHERE client_id=?", (client_id,)).fetchone()
+            if old:
+                return _comment(old["id"])
         cid = conn.execute(
-            "INSERT INTO comments(iteration_id, author, kind, start_s, end_s, body, created_at, updated_at)"
-            " VALUES(?,?,?,?,?,?,?,?)", (iteration_id, author, kind, start_s, end_s, body, now, now)).lastrowid
+            "INSERT INTO comments(iteration_id, author, kind, start_s, end_s, body, created_at, updated_at,"
+            " client_id) VALUES(?,?,?,?,?,?,?,?,?)",
+            (iteration_id, author, kind, start_s, end_s, body, now, now, client_id)).lastrowid
         conn.execute("INSERT INTO comment_state(comment_id, iteration_id) VALUES(?,?)", (cid, iteration_id))
         es.record_event(author, "comment_added", f"{author} commented: {_short(body)}", project_id=project_id,
                         tape_id=tape_id, iteration_id=iteration_id, comment_id=cid, now=now)
@@ -86,7 +107,7 @@ def edit_comment(id, author, *, body=None, kind=None, now=None):
     return es._set("comments", id, now, **cols)
 
 
-def add_reply(comment_id, author, body, now=None):
+def add_reply(comment_id, author, body, now=None, client_id=None):
     now = time.time() if now is None else now
     body = (body or "").strip()
     if not body:
@@ -97,8 +118,12 @@ def add_reply(comment_id, author, body, now=None):
         raise ValueError(f"no comment {comment_id}")
     project_id, tape_id = _ctx(c["iteration_id"])
     with db.transaction() as conn:
-        rid = conn.execute("INSERT INTO replies(comment_id, author, body, created_at) VALUES(?,?,?,?)",
-                           (comment_id, author, body, now)).lastrowid
+        if client_id:
+            old = conn.execute("SELECT id FROM replies WHERE client_id=?", (client_id,)).fetchone()
+            if old:
+                return _one("SELECT * FROM replies WHERE id=?", (old["id"],))
+        rid = conn.execute("INSERT INTO replies(comment_id, author, body, created_at, client_id) VALUES(?,?,?,?,?)",
+                           (comment_id, author, body, now, client_id)).lastrowid
         es.record_event(author, "reply_added", f"{author} replied: {_short(body)}", project_id=project_id,
                         tape_id=tape_id, iteration_id=c["iteration_id"], comment_id=comment_id, now=now)
     return _one("SELECT * FROM replies WHERE id=?", (rid,))

@@ -9,7 +9,7 @@ from core.config import config
 
 EDITOR_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; "
               "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
-              "img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://www.googleapis.com; "
+              "img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://www.googleapis.com https://*.googleusercontent.com; "
               "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
 
@@ -18,6 +18,9 @@ async def client(tmp_path, monkeypatch):
     db.use_path_for_tests(tmp_path / "x.db")
     out = tmp_path / "out"
     (out / "_next").mkdir(parents=True)
+    (out / "editor").mkdir()
+    (out / "editor" / "media-sw.js").write_text("//sw")
+    (out / "editor" / "other.js").write_text("//x")
     for name in ("index.html", "editor.html", "admin.html"):
         (out / name).write_text("<!doctype html><p>hi</p>")
     monkeypatch.setattr(config, "_data", {"authorized_github_usernames": ["aryan"],
@@ -57,3 +60,19 @@ async def test_homepage_and_api_only_forbid_framing(client):
     assert resp.headers["X-Content-Type-Options"] == "nosniff"
     resp = await client.get("/api/editor/me")  # refused by auth: still headed
     assert resp.status == 401 and resp.headers["X-Content-Type-Options"] == "nosniff"
+
+
+def test_page_csp_allows_googleusercontent():
+    assert "https://*.googleusercontent.com" in server.PAGE_CSP
+
+
+@pytest.mark.asyncio
+async def test_media_sw_gets_service_worker_allowed(client):
+    resp = await client.get("/editor/media-sw.js", headers=_cookie("cutguy", "editor"))
+    assert resp.status == 200 and resp.headers["Service-Worker-Allowed"] == "/editor"
+
+
+@pytest.mark.asyncio
+async def test_other_editor_files_do_not(client):
+    resp = await client.get("/editor/other.js", headers=_cookie("cutguy", "editor"))
+    assert resp.status == 200 and "Service-Worker-Allowed" not in resp.headers
