@@ -230,6 +230,7 @@ hard way: with it NOT in open_paths, even a request with the correct
 secret got rejected with a 401 before the handler ever ran.
 """
 import asyncio
+import hmac
 import re
 import io
 import os
@@ -681,7 +682,7 @@ def _agent_secret_ok(request: web.Request) -> bool:
     """
     expected_secret = config.get("ocr_agent_secret", "")
     provided_secret = request.headers.get("X-Agent-Secret", "")
-    return bool(expected_secret) and provided_secret == expected_secret
+    return bool(expected_secret) and hmac.compare_digest(provided_secret.encode(), expected_secret.encode())
 
 
 async def handle_heartbeat(request: web.Request) -> web.Response:

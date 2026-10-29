@@ -168,7 +168,7 @@ async def handle_callback(request: web.Request) -> web.Response:
         return web.Response(status=400, text="Login session expired - visit /auth/login again")
     next_path = _pending_logins.pop(state)
 
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
         # Exchange the code for an access token
         async with session.post(
             GITHUB_TOKEN_URL,

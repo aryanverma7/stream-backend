@@ -137,7 +137,8 @@ async def handle_chat_command(event: dict) -> None:
     username = chat["username"]
     if not text.startswith("!") or not username:
         return
-    if text[1:].split()[0].lower() not in ("rank", "rr", "elo"):
+    words = text[1:].split()
+    if not words or words[0].lower() not in ("rank", "rr", "elo"):  # a bare "!" has no command word
         return
 
     try:

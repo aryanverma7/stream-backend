@@ -80,3 +80,18 @@ class TestCaptureCounters:
 
     def test_the_timeout_is_reported_so_the_panel_can_explain_itself(self):
         assert ocr_agent.status()["heartbeat_timeout_seconds"] == ocr_agent.HEARTBEAT_TIMEOUT_SECONDS
+
+
+def test_agent_secret_check_is_constant_time_and_refuses_an_empty_secret(monkeypatch):
+    from types import SimpleNamespace
+    from stream import credit_ocr
+    calls = []
+    real = credit_ocr.hmac.compare_digest
+    monkeypatch.setattr(credit_ocr.hmac, "compare_digest", lambda a, b: calls.append(1) or real(a, b))
+    req = lambda s: SimpleNamespace(headers={"X-Agent-Secret": s})
+    monkeypatch.setattr(credit_ocr.config, "_data", {"ocr_agent_secret": "s3cret"})
+    assert credit_ocr._agent_secret_ok(req("s3cret")) is True
+    assert credit_ocr._agent_secret_ok(req("nope")) is False
+    assert calls
+    monkeypatch.setattr(credit_ocr.config, "_data", {"ocr_agent_secret": ""})
+    assert credit_ocr._agent_secret_ok(req("")) is False
