@@ -60,7 +60,7 @@ _ROWS = {
     "roulette_pistol_round_max_creds": (_RL, "number", "Pistol round ceiling", "At or below this credit reading the round counts as a pistol round.", {"unit": "credits"}),
     "roulette_pistol_reserved_creds": (_RL, "number", "Pistol round reserve", "Credits held back on a pistol round.", {"unit": "credits"}),
     "roulette_current_agent": (_RL, "text", "Current agent", "Agent being played, used to size the ability reserve."),
-    "roulette_agent_command_users": (_RL, "json", "Agent command users", "Usernames allowed to set the agent; null means only the streamer."),
+    "roulette_agent_command_users": (_RL, "json", "Agent command users", "Usernames allowed to set the agent; null means only the streamer. A bare name is a Twitch login; write youtube:<name> for a YouTube one."),
     "roulette_agent_ability_costs": (_RL, "table", "Agent ability costs", "Credits to reserve for each agent's abilities."),
     "forced_buy_queued_duration_seconds": (_RL, "number", "Forced-buy queued badge", "How long the forced-buy badge shows as queued.", {"unit": "seconds"}),
     "forced_buy_active_duration_seconds": (_RL, "number", "Forced-buy active badge", "How long the forced-buy badge stays active.", {"unit": "seconds"}),

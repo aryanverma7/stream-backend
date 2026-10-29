@@ -654,6 +654,13 @@ async def trigger_roulette(username: str, platform: str = "twitch") -> dict:
         if not paid:
             return {"ok": False, "reason": _too_poor(cost, balance)}
 
+        # Re-checked after the spend: a second !roulette a moment behind the first passes the checks at
+        # the top while the first is still paying. Whoever wins opens the session (is_active and the
+        # cooldown are set by _open_session before its first await), so the loser sees it here.
+        if _state.is_active or is_on_cooldown():
+            await _refund(username, cost, platform, "another roulette started first")
+            return {"ok": False, "reason": "A roulette is already in progress - your points are back"}
+
     # Paid. Everything from here to the broadcast is setup, and if any of
     # it fails the viewer is out the trigger cost with nothing running -
     # so it is all inside one try, and the failure path gives the points
@@ -720,6 +727,10 @@ async def _open_session(username: str, platform: str, cost: int) -> dict:
         log.info(f"{username} triggered a roulette - voting open for {duration}s, {len(votable)}/{len(WEAPONS)} "
                  f"weapons affordable at {predicted} predicted creds")
 
+    # A session ended early (dashboard) leaves its timer behind; it must not end this one.
+    old = _state._end_task
+    if old is not None and not old.done() and old is not asyncio.current_task():
+        old.cancel()
     _state._end_task = asyncio.create_task(_end_after_delay(duration))
     return {"ok": True}
 
@@ -895,6 +906,7 @@ async def _start_forced_buy(weapon: str) -> None:
     once-per-round cooldown. If the timing feels off in practice, it's a
     single config value to adjust, not a rebuild.
     """
+    _cancel_forced_buy_task()  # the previous badge's timer would otherwise clear or flip this one
     _state.forced_buy_weapon = weapon
     _state.forced_buy_phase = "queued"
     _state.forced_buy_phases_seen = 0
@@ -957,7 +969,8 @@ def _cancel_forced_buy_task() -> None:
     signal arrives, since those timers exist only to stand in for it.
     """
     task = _state._forced_buy_task
-    if task is not None and not task.done():
+    # Never itself: the clear timer calls clear_forced_buy(), which lands here.
+    if task is not None and not task.done() and task is not asyncio.current_task():
         task.cancel()
     _state._forced_buy_task = None
 
@@ -1017,6 +1030,7 @@ async def clear_forced_buy() -> None:
     timer where it doesn't - and again when a new roulette starts, in case
     that happens first.
     """
+    _cancel_forced_buy_task()
     if _state.forced_buy_weapon is not None:
         await widget_hub.broadcast({"type": "forced_buy_cleared"}, tag="roulette")
         log.info(f"Forced buy cleared: {_state.forced_buy_weapon}")
@@ -1167,7 +1181,7 @@ async def handle_chat_command(event: dict):
         # target would be. The buy menu does show ability prices, but
         # reading four more numbers multiplies every failure mode the
         # credit reader already has, for a value that changes this rarely.
-        await _reply_in_chat(platform, _handle_agent_command(username, text))
+        await _reply_in_chat(platform, _handle_agent_command(username, text, platform))
     elif command in ("help", "commands", "command"):
         # Answered regardless of whether a session is active - this is
         # the one command a viewer needs to be able to reach at any time,
@@ -1192,7 +1206,7 @@ async def handle_chat_command(event: dict):
             await _reply_in_chat(platform, f"@{username} {result['reason']}")
 
 
-def _agent_command_is_allowed(username: str) -> bool:
+def _agent_command_is_allowed(username: str, platform: str = "twitch") -> bool:
     """
     Who may set the agent.
 
@@ -1205,10 +1219,13 @@ def _agent_command_is_allowed(username: str) -> bool:
     if allowed is None:
         owner = config.get("streamlabs_channel", "")
         allowed = [owner] if owner else []
-    return username.lower() in {str(name).lower() for name in allowed}
+    # An entry is "platform:name"; a bare name is a Twitch login. Matching the name alone let anyone
+    # on YouTube take the streamer's Twitch name as a display name and set the agent.
+    me = f"{(platform or 'twitch').lower()}:{username.lower()}"
+    return me in {(n if ":" in n else f"twitch:{n}") for n in (str(x).lower() for x in allowed)}
 
 
-def _handle_agent_command(username: str, text: str) -> str:
+def _handle_agent_command(username: str, text: str, platform: str = "twitch") -> str:
     """Answers !agent, and !agent <name>."""
     parts = text.split()
     if len(parts) < 2:
@@ -1220,7 +1237,7 @@ def _handle_agent_command(username: str, text: str) -> str:
             return f"@{username} Playing {agent} (no ability prices on file - estimating {ability_reserve_creds()} creds)"
         return f"@{username} Playing {agent} - {cost} creds of abilities reserved each round"
 
-    if not _agent_command_is_allowed(username):
+    if not _agent_command_is_allowed(username, platform):
         return f"@{username} Only the streamer can set the agent"
 
     stored, cost = set_agent(parts[1])
