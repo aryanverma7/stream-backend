@@ -252,3 +252,20 @@ async def test_sane_clock_never_asks_the_internet(monkeypatch):
     calls = _online(monkeypatch, 0)
     assert await scheduler.tick(1000) is True
     assert calls == [] and scheduler.status()["last_internet_check"] == {"at": None, "agreed": None}
+
+
+@pytest.mark.asyncio
+async def test_auto_reset_clamps_before_the_deletions_job_runs(monkeypatch, tmp_path):
+    from editor import deletions, editor_store as es
+    deletions._reset_for_tests()
+    deletions._grace_applied = True  # this process already had a sane tick, then paused
+    p = es.create_project("Ranked grind", "2026-10-20", "t", "vod-1020.mp4", 100, now=500)
+    es.mark_vod_ready(p["id"], "VODFILE", now=500)
+    r = deletions.request_delete("vod", p["id"], "vod-1020.mp4", username="aryan", role="admin", now=500)
+    db.meta_set("clock_last_seen", "5000000")
+    scheduler.on_auto_reset(deletions.clamp_after_clock_reset)
+    scheduler.register("deletions", deletions.run_due)
+    _online(monkeypatch, 10000)
+    assert await scheduler.tick(10000) is True  # its delete_at (4100) is long past under the real clock
+    [row] = deletions.pending()
+    assert row["id"] == r["request_id"] and row["delete_at"] == 10000 + deletions.DELETE_GRACE_SECONDS
