@@ -41,7 +41,7 @@ _ROWS = {
     "streamlabs_refresh_token": (_TY, "secret", "Streamlabs refresh token", "Streamlabs refresh token, written by the Connect flow."),
     "streamlabs_channel": (_TY, "text", "Streamlabs channel", "Streamer's channel name; also the default user allowed to set the roulette agent."),
     "cloudbot_reply_timeout_seconds": (_PT, "number", "Cloudbot reply timeout", "How long to wait for Cloudbot to answer a points command.", {"unit": "seconds"}),
-    "cloudbot_reply_usernames": (_PT, "list", "Cloudbot account names", "Chat names Cloudbot replies from; replies from anyone else are ignored. Empty accepts any sender (not recommended)."),
+    "cloudbot_reply_usernames": (_PT, "list", "Cloudbot account names", "Chat names Cloudbot replies from; replies from anyone else are ignored. Empty accepts any sender (not recommended). On YouTube anyone can take a display name, so add the bot's channel id as \"id:UC...\" - the unforgeable form; turn on streamerbot_log_raw_chat and look at a Cloudbot reply in the log to find it."),
     "cloudbot_cache_ttl_seconds": (_PT, "number", "Balance cache time", "How long a viewer's balance read from Cloudbot is reused.", {"unit": "seconds"}),
     "points_exchange_rate_per_inr": (_PT, "number", "Points per rupee", "Points granted per rupee of a tip.", {"unit": "points"}),
     "streamlabs_tips_listener_enabled": (_PT, "bool", "Pay points for tips", "Grant points for Streamlabs tips; leave off while Cloudbot pays donors itself."),
