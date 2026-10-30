@@ -23,7 +23,15 @@ def test_with_needed_adds_missing_needed_keys_empty_and_keeps_real_values():
     assert out["github_client_id"] == "abc"
     assert out["gdrive_refresh_token"] == ""
     assert out["authorized_github_usernames"] == []
-    assert "roulette_trigger_cost" not in out
+    assert out["cloudbot_reply_usernames"] == []
+    assert out["roulette_trigger_cost"] == json.loads(EXAMPLE.read_text())["roulette_trigger_cost"]
+
+
+def test_every_fields_key_reaches_the_settings_page_even_if_config_json_lacks_it():
+    out = with_needed({})
+    example = json.loads(EXAMPLE.read_text())
+    assert set(FIELDS) <= set(out) | (set(FIELDS) - set(example) - {k for k, f in FIELDS.items() if "needed" in f})
+    assert "cloudbot_reply_usernames" in out
 
 
 def test_every_example_key_has_metadata():

@@ -127,17 +127,17 @@ DEFAULT_SILENT_WRITE_PLATFORMS = ("youtube",)
 
 # "@dualbladex, you have 19 Bunds."
 _POINTS_RE = re.compile(
-    r"@?(?P<user>[A-Za-z0-9_]+),?\s+you\s+have\s+(?P<points>[\d,]+)\s+\S+",
+    r"@?(?P<user>[^,@]+?),?\s+you\s+have\s+(?P<points>[\d,]+)\s+\S+",
     re.IGNORECASE,
 )
 # "dualbladex has successfully added 1 Bunds to dualbladex"
 _ADDED_RE = re.compile(
-    r"successfully\s+added\s+(?P<points>[\d,]+)\s+\S+\s+to\s+(?P<user>[A-Za-z0-9_]+)",
+    r"successfully\s+added\s+(?P<points>[\d,]+)\s+\S+\s+to\s+@?(?P<user>[^\s.!].*?)[.!]?\s*$",
     re.IGNORECASE,
 )
 # "dualbladex has successfully removed 1 Bunds from dualbladex."
 _REMOVED_RE = re.compile(
-    r"successfully\s+removed\s+(?P<points>[\d,]+)\s+\S+\s+from\s+(?P<user>[A-Za-z0-9_]+)",
+    r"successfully\s+removed\s+(?P<points>[\d,]+)\s+\S+\s+from\s+@?(?P<user>[^\s.!].*?)[.!]?\s*$",
     re.IGNORECASE,
 )
 
@@ -146,7 +146,7 @@ _REMOVED_RE = re.compile(
 # only ever says this for !addpoints/!removepoints; !points answers an
 # unknown name with the CALLER's balance instead (see get_user_points).
 _NOT_FOUND_RE = re.compile(
-    r"unable\s+to\s+find\s+@?(?P<user>[A-Za-z0-9_]+)",
+    r"unable\s+to\s+find\s+@?(?P<user>[^\s.!].*?)[.!]?\s*$",
     re.IGNORECASE,
 )
 
@@ -185,12 +185,21 @@ class UnsafeUsername(Exception):
 
 def _safe_char(ch: str) -> bool:
     # Letters, digits and combining marks of any script (Devanagari's vowel signs are marks, which \w
-    # does not match), plus _ @ . -. Whitespace, controls and punctuation are refused.
-    return ch in "_@.-" or unicodedata.category(ch)[0] in "LNM"
+    # does not match), plus _ @ . - and a plain space. Other whitespace, controls and punctuation are refused.
+    return ch in "_@.- " or unicodedata.category(ch)[0] in "LNM"
+
+
+_NUMBER_WORD = re.compile(r"[+-]?[\d,.]+")
 
 
 def _check_name(username: str) -> None:
-    if not username or not all(_safe_char(c) for c in username):
+    """
+    A YouTube display name may contain spaces, so a name of several words is allowed - but none of its
+    words may look like a number, or "victim 99999" would read to Cloudbot as "take 99999 from victim".
+    """
+    if (not username or username != username.strip() or "  " in username
+            or not all(_safe_char(c) for c in username)
+            or any(_NUMBER_WORD.fullmatch(w) for w in username.split(" "))):
         raise UnsafeUsername(username)
 
 
