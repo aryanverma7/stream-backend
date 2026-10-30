@@ -69,7 +69,10 @@ def _now(now):
     return time.time() if now is None else now
 
 
-def _target(kind, target_id):
+VOD_UPLOAD_STALE_SECONDS = 8 * 86400  # reconcile.ABANDON_AFTER_SECONDS, for iterations
+
+
+def _target(kind, target_id, now):
     """(label, project_id, tape_id, files) where files = [(drive_id, target_kind, target_id, prev_status)]."""
     if kind == "vod":
         p = es.get_project(target_id)
@@ -95,6 +98,10 @@ def _target(kind, target_id):
         p = es.get_project(target_id)
         if p is None or p["deleted_at"] is not None:
             raise ValueError("No such project")
+        # The PC would finish into a deleted folder. VOD uploads are not reconciled, so one silent for
+        # VOD_UPLOAD_STALE_SECONDS is treated as dead, or its project could never be deleted.
+        if p["vod_status"] == "uploading" and now - max(p["created_at"], p["updated_at"]) < VOD_UPLOAD_STALE_SECONDS:
+            raise ValueError("Wait for the VOD upload to finish first")
         # The folder delete takes its children, but every file also gets its own row: the folder may be
         # missing or a file may live outside it, and a target is only marked deleted by its own row.
         files = [(p["drive_folder_id"], "folder", p["id"], None)] if p["drive_folder_id"] else []
@@ -132,7 +139,7 @@ def request_delete(kind, target_id, confirm: str, *, username: str, role: str, n
     _check_allowed(kind, target_id, role)
     delete_at = now + DELETE_GRACE_SECONDS
     with db.transaction():
-        label, project_id, tape_id, files = _target(kind, target_id)
+        label, project_id, tape_id, files = _target(kind, target_id, now)
         if not label.strip():
             raise ValueError("Nothing to confirm against - rename it first")
         if (confirm or "").strip() != label:

@@ -21,9 +21,11 @@ dashboard - so the gesture had to be repeated to get anywhere.
 Sessions live in the `sessions` table of the app database (db.py), so a
 power cut on the Mac Mini does not log anyone out. Each row expires
 SESSION_MAX_AGE_SECONDS after login and is deleted when found expired or on
-POST /auth/logout. Pending logins stay in memory: one in flight across a
-restart is already handled by "start over".
+POST /auth/logout. Only sha256(cookie) is stored, so a copy of app.db (a
+backup, a stray file) holds no usable login. Pending logins stay in memory: one
+in flight across a restart is already handled by "start over".
 """
+import hashlib
 import re
 import secrets
 import time
@@ -57,13 +59,29 @@ CREATE TABLE IF NOT EXISTS sessions (
 """
 
 
+def _hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _sessions() -> None:
+    """Create the table and, once, hash rows written before tokens were hashed (nobody is logged out)."""
+    db.ensure(_SESSIONS_DDL)
+    if db.meta_get("sessions_hashed") == "1":
+        return
+    with db.transaction() as conn:
+        for (tok,) in conn.execute("SELECT token FROM sessions").fetchall():
+            if not re.fullmatch(r"[0-9a-f]{64}", tok):
+                conn.execute("UPDATE sessions SET token=? WHERE token=?", (_hash(tok), tok))
+        db.meta_set("sessions_hashed", "1")
+
+
 def create_session(username: str, role: str, now: float | None = None) -> str:
     now = time.time() if now is None else now
-    db.ensure(_SESSIONS_DDL)
+    _sessions()
     token = secrets.token_urlsafe(32)
     db.get().execute(
         "INSERT INTO sessions (token, username, role, created_at, expires_at) VALUES (?,?,?,?,?)",
-        (token, username, role, now, now + SESSION_MAX_AGE_SECONDS),
+        (_hash(token), username, role, now, now + SESSION_MAX_AGE_SECONDS),
     )
     return token
 
@@ -73,7 +91,8 @@ def session_for(request: web.Request, now: float | None = None) -> dict | None:
     if not token:
         return None
     now = time.time() if now is None else now
-    db.ensure(_SESSIONS_DDL)
+    _sessions()
+    token = _hash(token)
     row = db.get().execute(
         "SELECT username, role, expires_at FROM sessions WHERE token = ?", (token,)
     ).fetchone()
@@ -95,11 +114,34 @@ def session_for(request: web.Request, now: float | None = None) -> dict | None:
 # two jobs at once: it carries the destination across the round trip to
 # GitHub (which otherwise loses it entirely), and it is the OAuth `state`
 # CSRF check - a callback whose state we did not issue is rejected.
-_pending_logins: dict[str, str] = {}
+# Values are (next_path, created_at).
+_pending_logins: dict[str, tuple[str, float]] = {}
 
-# A login that never completes leaves its entry behind, so the dict is
-# capped rather than left to grow for the process's whole lifetime.
-_MAX_PENDING_LOGINS = 32
+# A login that never completes leaves its entry behind, so entries expire and
+# the dict is capped. The cap is generous because /auth/login is open: a few
+# anonymous hits must not evict the streamer's login while he is at GitHub.
+_MAX_PENDING_LOGINS = 256
+PENDING_LOGIN_MAX_AGE_SECONDS = 600
+
+
+def _remember_login(state: str, next_path: str, now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    for key, (_, created) in list(_pending_logins.items()):
+        if now - created > PENDING_LOGIN_MAX_AGE_SECONDS:
+            del _pending_logins[key]
+    while len(_pending_logins) >= _MAX_PENDING_LOGINS:
+        del _pending_logins[min(_pending_logins, key=lambda k: _pending_logins[k][1])]
+    _pending_logins[state] = (next_path, now)
+
+
+def _take_login(state: str, now: float | None = None) -> str | None:
+    """The path a login started from, once; None for a state we did not issue or one past its age."""
+    now = time.time() if now is None else now
+    entry = _pending_logins.get(state)
+    if entry is None:
+        return None
+    del _pending_logins[state]
+    return entry[0] if now - entry[1] <= PENDING_LOGIN_MAX_AGE_SECONDS else None
 
 DEFAULT_POST_LOGIN_PATH = "/admin"
 
@@ -139,9 +181,7 @@ async def handle_login(request: web.Request) -> web.Response:
 
     next_path = _safe_next_path(request.query.get("next", DEFAULT_POST_LOGIN_PATH))
     state = secrets.token_urlsafe(24)
-    if len(_pending_logins) >= _MAX_PENDING_LOGINS:
-        _pending_logins.pop(next(iter(_pending_logins)))
-    _pending_logins[state] = next_path
+    _remember_login(state, next_path)
 
     params = {
         "client_id": client_id,
@@ -159,14 +199,13 @@ async def handle_callback(request: web.Request) -> web.Response:
     if not code:
         return web.Response(status=400, text="Missing code parameter")
 
-    state = request.query.get("state", "")
-    if state not in _pending_logins:
+    next_path = _take_login(request.query.get("state", ""))
+    if next_path is None:
         # Either a genuine CSRF attempt, or a stale callback: the pending
         # logins live in memory, so a backend restart mid-login lands here
         # too. Both cases want the same answer - start over.
         log.warning("Rejected an OAuth callback whose state we did not issue")
         return web.Response(status=400, text="Login session expired - visit /auth/login again")
-    next_path = _pending_logins.pop(state)
 
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
         # Exchange the code for an access token
@@ -227,8 +266,8 @@ def is_authenticated(request: web.Request) -> bool:
 async def handle_logout(request: web.Request) -> web.Response:
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if token:
-        db.ensure(_SESSIONS_DDL)
-        db.get().execute("DELETE FROM sessions WHERE token = ?", (token,))
+        _sessions()
+        db.get().execute("DELETE FROM sessions WHERE token = ?", (_hash(token),))
     response = web.HTTPFound("/")
     response.del_cookie(SESSION_COOKIE_NAME)
     return response

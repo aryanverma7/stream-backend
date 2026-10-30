@@ -13,6 +13,13 @@ from core.config import config
 from core.server import build_app
 
 
+@pytest.fixture(autouse=True)
+def _no_cache():
+    public_api._cache.clear()
+    yield
+    public_api._cache.clear()
+
+
 @pytest.mark.asyncio
 async def test_live_status_reads_the_twitch_specific_channel_config_key(monkeypatch):
     """
@@ -157,3 +164,67 @@ async def test_live_status_failure_never_echoes_the_exception(monkeypatch):
         assert resp.status == public_api.UPSTREAM_FAILED_STATUS
     finally:
         await client.close()
+
+
+async def _get(path):
+    client = TestClient(TestServer(build_app()))
+    await client.start_server()
+    try:
+        resp = await client.get(path)
+        return resp.status, await resp.json()
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_live_status_is_cached_60s_on_success_and_15s_on_failure(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(public_api, "_clock", lambda: clock[0])
+    monkeypatch.setattr(config, "_data", {"twitch_channel": "dualbladex"})
+    live = AsyncMock(return_value=True)
+    monkeypatch.setattr(public_api, "is_channel_live", live)
+    assert await _get("/api/public/live-status") == (200, {"live": True})
+    clock[0] += 59
+    assert await _get("/api/public/live-status") == (200, {"live": True})
+    assert live.await_count == 1
+    clock[0] += 2
+    live.side_effect = RuntimeError("down")
+    assert (await _get("/api/public/live-status"))[0] == public_api.UPSTREAM_FAILED_STATUS
+    clock[0] += 14
+    assert (await _get("/api/public/live-status"))[0] == public_api.UPSTREAM_FAILED_STATUS
+    assert live.await_count == 2
+    clock[0] += 2
+    live.side_effect = None
+    assert await _get("/api/public/live-status") == (200, {"live": True})
+    assert live.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_live_status_cache_is_keyed_by_the_channel(monkeypatch):
+    monkeypatch.setattr(public_api, "_clock", lambda: 1000.0)
+    live = AsyncMock(return_value=False)
+    monkeypatch.setattr(public_api, "is_channel_live", live)
+    monkeypatch.setattr(config, "_data", {"twitch_channel": "one"})
+    await _get("/api/public/live-status")
+    monkeypatch.setattr(config, "_data", {"twitch_channel": "two"})
+    await _get("/api/public/live-status")
+    assert [c.args[0] for c in live.await_args_list] == ["one", "two"]
+
+
+@pytest.mark.asyncio
+async def test_videos_are_cached_and_keyed_by_the_video_list(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(public_api, "_clock", lambda: clock[0])
+    monkeypatch.setattr(public_api.config, "_data", {"youtube_video_ids": ["abc"]})
+    with aioresponses(passthrough=["http://127.0.0.1"]) as mocked:
+        mocked.get(oembed("abc"), payload={"title": "A", "thumbnail_url": "t"})
+        first = await _get("/api/public/videos")
+        assert await _get("/api/public/videos") == first  # second call answered from memory
+        assert len(mocked.requests) == 1
+        monkeypatch.setattr(public_api.config, "_data", {"youtube_video_ids": ["def"]})
+        mocked.get(oembed("def"), payload={"title": "D", "thumbnail_url": "t"})
+        assert (await _get("/api/public/videos"))[1]["videos"][0]["id"] == "def"
+        clock[0] += 61
+        monkeypatch.setattr(public_api.config, "_data", {"youtube_video_ids": ["abc"]})
+        mocked.get(oembed("abc"), payload={"title": "A2", "thumbnail_url": "t"})
+        assert (await _get("/api/public/videos"))[1]["videos"][0]["title"] == "A2"

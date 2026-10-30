@@ -9,6 +9,7 @@ All protected by auth.auth_middleware except where explicitly left open
 (health check, widget websocket, the login flow itself).
 """
 import asyncio
+import time
 
 from aiohttp import web
 
@@ -171,9 +172,16 @@ async def get_logs(request: web.Request) -> web.Response:
     except ValueError:
         n = 200
 
-    if not LOG_FILE.exists():
-        return web.json_response({"lines": []})
-    return web.json_response({"lines": await asyncio.to_thread(tail_lines, LOG_FILE, n)})
+    return web.json_response({"lines": await asyncio.to_thread(recent_log_lines, LOG_FILE, n)})
+
+
+def recent_log_lines(path, n: int) -> list[str]:
+    """The last n lines; right after a rotation the current file is short, so the rest come from <path>.1."""
+    lines = tail_lines(path, n) if path.exists() else []
+    rotated = path.with_name(path.name + ".1")
+    if len(lines) < n and rotated.exists():
+        lines = tail_lines(rotated, n - len(lines)) + lines
+    return lines
 
 
 def tail_lines(path, n: int, block: int = 65536) -> list[str]:
@@ -243,11 +251,30 @@ def _credit_prediction() -> dict:
     }
 
 
+SPOTIFY_ACCOUNT_CHECK_SECONDS = 60
+_spotify_check = {"task": None, "at": None}
+
+
+def _check_spotify_account(now=None):
+    """Starts spotify.ensure_account() in the background, at most once per minute.
+
+    The panel polls every 5 s, and awaiting Spotify here made every poll wait
+    on it (and, while it failed, ask again each time). The status reports the
+    last known account; a fresh answer shows up on a later poll.
+    """
+    now = time.monotonic() if now is None else now
+    task, at = _spotify_check["task"], _spotify_check["at"]
+    if (task is not None and not task.done()) or (at is not None and now - at < SPOTIFY_ACCOUNT_CHECK_SECONDS):
+        return
+    _spotify_check["at"] = now
+    _spotify_check["task"] = asyncio.create_task(spotify.ensure_account())  # kept, so it is not collected
+
+
 async def get_status(request: web.Request) -> web.Response:
-    # Reads which Spotify account is connected, once, so the panel can
-    # answer "does the connected account have Premium" - which a 403 from
-    # the queue endpoint cannot, and which cost a debugging session.
-    await spotify.ensure_account()
+    # Reads which Spotify account is connected, so the panel can answer
+    # "does the connected account have Premium" - which a 403 from the
+    # queue endpoint cannot, and which cost a debugging session.
+    _check_spotify_account()
     # no-store, because the admin panel now polls this on a timer rather
     # than only when someone clicks Refresh. Nothing on this response
     # carries a validator, so without an explicit directive a browser or an

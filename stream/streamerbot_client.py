@@ -182,8 +182,9 @@ def split_message(text: str, limit: int) -> "list[str]":
 def parse_chat_message(event: dict) -> "dict | None":
     """
     Normalizes a Streamer.bot chat event into
-    {"platform", "username", "display_name", "text"}, or None if this
-    isn't a chat event at all.
+    {"platform", "username", "display_name", "text", "emotes", "user_id"},
+    or None if this isn't a chat event at all. `user_id` (the platform's
+    stable id, e.g. a YouTube channel id) is None when the payload has none.
 
     Deliberately accepts more than one payload shape. Current Streamer.bot
     builds put the chatter in `data.user` (`login`/`name`) and the text in
@@ -227,12 +228,16 @@ def parse_chat_message(event: dict) -> "dict | None":
         data.get("source", {}).get("platform") if isinstance(data.get("source"), dict) else None
     )
 
+    user_id = next((v for v in (user.get("id"), legacy.get("userId"), legacy.get("userID"), data.get("userId"))
+                    if isinstance(v, (str, int)) and not isinstance(v, bool) and str(v)), None)
+
     return {
         "platform": str(platform).lower() if platform else "unknown",
         "username": username,
         "display_name": display_name,
         "text": text,
         "emotes": _parse_emotes(data),
+        "user_id": str(user_id) if user_id is not None else None,
     }
 
 

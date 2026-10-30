@@ -36,7 +36,7 @@ class Unavailable(Exception):
         self.status = status
 
 
-_folder_lock = asyncio.Lock()
+_folder_lock = gdrive_oauth._folder_lock  # one lock for every folder creation
 
 
 async def _project_folder(project_id) -> str:
@@ -47,7 +47,7 @@ async def _project_folder(project_id) -> str:
         return p["drive_folder_id"]
     parent = db.meta_get("gdrive_projects")
     if not parent:
-        parent = (await gdrive_oauth.ensure_layout())["gdrive_projects"]
+        parent = (await gdrive_oauth.ensure_layout_locked())["gdrive_projects"]
     fid = await gdrive.create_folder(f"{p['stream_date']} {p['name']}", parent)
     es.set_project_folder(project_id, fid)
     return fid
@@ -100,6 +100,8 @@ def combine_clips(project_ids, name, actor, now=None) -> dict:
             if p is None or p["deleted_at"] is not None or p["kind"] != "clip":
                 raise ValueError("Only clips can be combined")
             deletions.ensure_project_not_deleting(pid)
+            if deletions.has_live_request("vod", pid):  # its file is going: nothing left to cut a reel from
+                raise ValueError(f"{p['name']} is being deleted - it cannot be combined")
             reel = es.reel_for_clip(pid)
             if reel["id"] not in [r["id"] for r in reels]:
                 reels.append(reel)

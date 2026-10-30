@@ -31,7 +31,24 @@ def test_parses_the_current_twitch_shape():
         "display_name": "SomeViewer",
         "text": "!vandal",
         "emotes": [],
+        "user_id": None,
     }
+
+
+def test_reads_the_user_id_from_data_user():
+    event = {
+        "event": {"source": "YouTube", "type": "Message"},
+        "data": {"user": {"name": "Cloudbot", "id": "UCabc"}, "message": "hi"},
+    }
+    assert streamerbot_client.parse_chat_message(event)["user_id"] == "UCabc"
+
+
+def test_reads_the_user_id_from_the_legacy_shape():
+    event = {
+        "event": {"source": "Twitch", "type": "ChatMessage"},
+        "data": {"message": {"username": "v", "userId": 1234, "message": "hey"}},
+    }
+    assert streamerbot_client.parse_chat_message(event)["user_id"] == "1234"
 
 
 def test_parses_the_older_nested_message_shape():
@@ -69,7 +86,7 @@ def test_survives_a_chat_event_with_nothing_usable_in_it():
         {"event": {"source": "Twitch", "type": "ChatMessage"}, "data": {}}
     )
     assert parsed == {
-        "platform": "twitch", "username": "", "display_name": "", "text": "", "emotes": []
+        "platform": "twitch", "username": "", "display_name": "", "text": "", "emotes": [], "user_id": None
     }
 
 

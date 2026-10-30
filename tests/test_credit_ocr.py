@@ -1,3 +1,4 @@
+import shutil
 import sys
 from pathlib import Path
 
@@ -11,7 +12,19 @@ from stream import credit_ocr
 from stream import ocr_agent
 from core.config import config
 
-FIXTURES = Path(__file__).parent / "fixtures"
+FIXTURES = Path(__file__).parent / "fixtures"  # regenerate with fixtures/make_credit_fixtures.py
+
+# Tests that run the real binary. Off the Mac Mini, point DUALBLADEX_TESSERACT at a dev copy.
+needs_tesseract = pytest.mark.skipif(shutil.which(credit_ocr.pytesseract.pytesseract.tesseract_cmd) is None,
+                                     reason="no tesseract binary (set DUALBLADEX_TESSERACT)")
+
+
+def test_tesseract_override_is_used_when_it_exists_and_ignored_when_it_does_not(tmp_path):
+    fake = tmp_path / "tesseract"
+    fake.write_text("")
+    assert credit_ocr._find_tesseract({"DUALBLADEX_TESSERACT": str(fake)}) == str(fake)
+    assert credit_ocr._find_tesseract({"DUALBLADEX_TESSERACT": str(tmp_path / "missing")}) == \
+        credit_ocr._find_tesseract({})
 
 
 @pytest.fixture(autouse=True)
@@ -35,14 +48,17 @@ def reset_reading_history():
 
 
 class TestExtractCredits:
+    @needs_tesseract
     def test_extracts_a_four_digit_number_from_a_realistic_image(self):
         image_bytes = (FIXTURES / "credits_4900.png").read_bytes()
         assert credit_ocr.extract_credits(image_bytes) == 4900
 
+    @needs_tesseract
     def test_extracts_a_second_different_number_confirming_it_is_not_just_a_lucky_case(self):
         image_bytes = (FIXTURES / "credits_8700.png").read_bytes()
         assert credit_ocr.extract_credits(image_bytes) == 8700
 
+    @needs_tesseract
     def test_rejects_a_five_digit_value_above_valorant_s_own_credit_cap(self):
         """
         This fixture used to be asserted as a VALID 13100 reading, back
@@ -55,10 +71,12 @@ class TestExtractCredits:
         image_bytes = (FIXTURES / "credits_13100.png").read_bytes()
         assert credit_ocr.extract_credits(image_bytes) is None
 
+    @needs_tesseract
     def test_still_correct_with_blur_and_jpeg_compression_closer_to_a_real_screen_capture(self):
         image_bytes = (FIXTURES / "credits_noisy.jpg").read_bytes()
         assert credit_ocr.extract_credits(image_bytes) == 4900
 
+    @needs_tesseract
     def test_correctly_handles_a_comma_formatted_number(self):
         """
         Guards against a real bug found after actual deployment: Valorant
@@ -70,6 +88,7 @@ class TestExtractCredits:
         image_bytes = (FIXTURES / "credits_5700_comma.png").read_bytes()
         assert credit_ocr.extract_credits(image_bytes) == 5700
 
+    @needs_tesseract
     def test_rejects_a_value_that_is_not_a_multiple_of_10(self):
         """
         The exact real garbage value observed in actual use (113, when
@@ -80,6 +99,7 @@ class TestExtractCredits:
         image_bytes = (FIXTURES / "credits_113_not_multiple_of_10.png").read_bytes()
         assert credit_ocr.extract_credits(image_bytes) is None
 
+    @needs_tesseract
     def test_zero_is_correctly_accepted_as_a_valid_multiple_of_10(self):
         """
         0 % 10 == 0, so a genuine zero-balance reading (matching your own
@@ -91,6 +111,7 @@ class TestExtractCredits:
         image_bytes = (FIXTURES / "credits_0.png").read_bytes()
         assert credit_ocr.extract_credits(image_bytes) == 0
 
+    @needs_tesseract
     def test_rejects_a_multiple_of_10_that_is_missing_the_expected_label(self):
         """
         The exact scenario raised: what if a garbage reading (from
@@ -529,6 +550,7 @@ async def make_client():
 
 class TestHandleCreditReport:
     @pytest.mark.asyncio
+    @needs_tesseract
     async def test_accepts_a_real_image_and_reports_both_the_reading_and_consensus(self, monkeypatch):
         monkeypatch.setattr(config, "_data", {"ocr_agent_secret": "test-secret-123"})
 
@@ -638,6 +660,7 @@ class TestHandleCreditReport:
         await client.close()
 
     @pytest.mark.asyncio
+    @needs_tesseract
     async def test_consensus_updates_correctly_across_multiple_real_requests(self, monkeypatch):
         """
         An end-to-end version of the majority-vote scenario, through the
@@ -830,6 +853,7 @@ class TestHandleReset:
         await client.close()
 
     @pytest.mark.asyncio
+    @needs_tesseract
     async def test_the_actual_real_bug_this_fixes_cross_round_contamination(self, monkeypatch):
         """
         The exact scenario reported: without a reset between rounds, the
@@ -919,6 +943,7 @@ class TestLastReadingSurvivesAReset:
         assert credit_ocr.get_predicted_credits() is None
 
     @pytest.mark.asyncio
+    @needs_tesseract
     async def test_a_real_accepted_capture_populates_it_end_to_end(self, monkeypatch):
         monkeypatch.setattr(config, "_data", {"ocr_agent_secret": "test-secret-123"})
         client = await make_client()

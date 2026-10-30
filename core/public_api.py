@@ -15,6 +15,7 @@ later") - no Twitch API integration, no automated pulling. This endpoint
 just reflects whatever's actually sitting in that folder.
 """
 import asyncio
+import time
 from pathlib import Path
 
 import aiohttp
@@ -39,6 +40,23 @@ CLIPS_DIR.mkdir(exist_ok=True)
 
 ALLOWED_EXTENSIONS = {".mp4", ".webm", ".mov"}
 
+# Anyone can hit these routes, so each visit must not become a Twitch or YouTube call.
+CACHE_OK_SECONDS = 60
+CACHE_FAILED_SECONDS = 15
+_clock = time.monotonic  # tests replace it
+_cache: dict = {}  # route name -> (key, expires_at, status, body)
+
+
+async def _cached(name, key, compute) -> web.Response:
+    """Answer from memory while the last answer for the same config inputs is fresh."""
+    now = _clock()
+    hit = _cache.get(name)
+    if hit and hit[0] == key and now < hit[1]:
+        return web.json_response(hit[3], status=hit[2])
+    status, body = await compute()
+    _cache[name] = (key, now + (CACHE_OK_SECONDS if status == 200 else CACHE_FAILED_SECONDS), status, body)
+    return web.json_response(body, status=status)
+
 
 async def list_clips(request: web.Request) -> web.Response:
     clips = []
@@ -60,13 +78,15 @@ async def live_status(request: web.Request) -> web.Response:
     # which they weren't - a copy-paste mix-up between two platforms'
     # config keys, not a missing value on the user's end.
     channel = config.get("twitch_channel", "")
-    try:
-        live = await is_channel_live(channel)
-        return web.json_response({"live": live})
-    except Exception as e:
-        # Never str(e) on a public route: an upstream error can carry request details.
-        log.warning(f"Live status check failed: {type(e).__name__} {getattr(e, 'status', '')}")
-        return web.json_response({"error": "Twitch live check failed"}, status=UPSTREAM_FAILED_STATUS)
+
+    async def compute():
+        try:
+            return 200, {"live": await is_channel_live(channel)}
+        except Exception as e:
+            # Never str(e) on a public route: an upstream error can carry request details.
+            log.warning(f"Live status check failed: {type(e).__name__} {getattr(e, 'status', '')}")
+            return UPSTREAM_FAILED_STATUS, {"error": "Twitch live check failed"}
+    return await _cached("live-status", channel, compute)
 
 
 def video_id(raw: str) -> str:
@@ -94,13 +114,15 @@ async def list_videos(request: web.Request) -> web.Response:
     video_ids = [v for v in (video_id(x) for x in config.get("youtube_video_ids", []) or []) if v]
     if not video_ids:
         return web.json_response({"videos": []})
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-        found = await asyncio.gather(*(_oembed(session, v) for v in video_ids))
-    videos = [v for v in found if v]
-    if not videos:
-        return web.json_response({"error": "YouTube did not answer for any of the videos"},
-                                 status=UPSTREAM_FAILED_STATUS)
-    return web.json_response({"videos": videos})
+
+    async def compute():
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            found = await asyncio.gather(*(_oembed(session, v) for v in video_ids))
+        videos = [v for v in found if v]
+        if not videos:
+            return UPSTREAM_FAILED_STATUS, {"error": "YouTube did not answer for any of the videos"}
+        return 200, {"videos": videos}
+    return await _cached("videos", tuple(video_ids), compute)
 
 
 async def site_config(request: web.Request) -> web.Response:

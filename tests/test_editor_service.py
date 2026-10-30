@@ -263,6 +263,7 @@ async def _deleting_project(_env):
     v = es.create_iteration(t["id"], "b.mp4", 10, "u")
     es.abandon_iteration(v["id"])  # not 'uploading', so the project delete is allowed
     es.abandon_iteration(iid)
+    es.mark_vod_ready(t["project_id"], "VOD0")
     p = es.get_project(t["project_id"])
     deletions.request_delete("project", p["id"], p["name"], username="aryan", role="admin")
     return p, t, iid
@@ -274,14 +275,15 @@ async def test_no_new_work_lands_in_a_project_being_deleted(_env):
     with pytest.raises(ValueError, match="This project is being deleted"):
         svc.create_tape(p["id"], "New", "aryan")
     calls = (svc.start_iteration_upload(t["id"], "c.mp4", 10, "video/mp4"),
-             svc.complete_iteration_upload(iid, "fid", "x"),
-             svc.vod_ready(p["id"], "VOD", "x"))
+             svc.complete_iteration_upload(iid, "fid", "x"))
     for c in calls:
         with pytest.raises(ValueError, match="This project is being deleted"):
             await c
+    with pytest.raises(ValueError, match="being deleted"):  # the project delete took the VOD's file too
+        await svc.vod_ready(p["id"], "VOD", "x")
     assert len(es.list_tapes(p["id"])) == 1 and _env["started"] == [_env["started"][0]] and _env["shared"] == []
     assert es.get_iteration(iid)["status"] == "abandoned"
-    assert es.get_project(p["id"])["vod_status"] == "uploading"
+    assert es.get_project(p["id"])["vod_file_id"] == "VOD0"
 
 
 @pytest.mark.asyncio
@@ -406,9 +408,20 @@ def test_uncombine_refused_after_a_version():
 def test_no_combine_into_a_project_being_deleted():
     from editor import deletions
     a, b = _clip("A"), _clip("B")
+    es.mark_vod_ready(b["id"], "VB")
     deletions.request_delete("project", b["id"], "B", username="aryan", role="admin")
     with pytest.raises(ValueError, match="being deleted"):
         svc.combine_clips([a["id"], b["id"]], "x", "aryan")
+
+
+def test_no_combine_with_a_clip_whose_vod_is_being_deleted():
+    from editor import deletions
+    a, b = _clip("A"), _clip("B")
+    es.mark_vod_ready(b["id"], "VB")
+    deletions.request_delete("vod", b["id"], "B.mp4", username="aryan", role="admin")
+    with pytest.raises(ValueError, match="B is being deleted"):
+        svc.combine_clips([a["id"], b["id"]], "x", "aryan")
+    assert _events("reels_combined") == []
 
 
 @pytest.mark.asyncio

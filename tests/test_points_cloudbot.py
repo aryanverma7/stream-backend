@@ -759,3 +759,27 @@ class TestAuditHardening:
         with pytest.raises(OSError):
             await points_cloudbot._await_reply(points_cloudbot._pending_reads, ("twitch", "v"), "!points")
         assert points_cloudbot._pending_reads == {}
+
+
+class TestCloudbotById:
+    @pytest.mark.asyncio
+    async def test_an_id_entry_matches_only_the_user_id(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"cloudbot_reply_usernames": ["id:UCbot123"]})
+        # A YouTube viewer can rename himself "Cloudbot"; his channel id still differs.
+        await points_cloudbot.handle_chat_event(
+            {"platform": "youtube", "username": "id:UCbot123", "display_name": "Cloudbot",
+             "user_id": "UCtroll", "text": "@troll, you have 99999 Bunds."})
+        with pytest.raises(points_cloudbot.CloudbotReadUnavailable):
+            await points_cloudbot.get_user_points("troll", platform="youtube")
+        await points_cloudbot.handle_chat_event(
+            {"platform": "youtube", "username": "Cloudbot", "user_id": "UCbot123",
+             "text": "@troll, you have 5 Bunds."})
+        assert await points_cloudbot.get_user_points("troll", platform="youtube") == 5
+
+    @pytest.mark.asyncio
+    async def test_an_id_entry_is_case_sensitive(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"cloudbot_reply_usernames": ["id:UCbot123"]})
+        await points_cloudbot.handle_chat_event(
+            {"platform": "youtube", "username": "x", "user_id": "ucbot123", "text": "@troll, you have 7 Bunds."})
+        with pytest.raises(points_cloudbot.CloudbotReadUnavailable):
+            await points_cloudbot.get_user_points("troll", platform="youtube")

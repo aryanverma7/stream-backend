@@ -86,7 +86,7 @@ class TestLogin:
         assert location.startswith(auth.GITHUB_AUTHORIZE_URL)
         assert "state=" in location
         assert len(auth._pending_logins) == 1
-        assert list(auth._pending_logins.values()) == ["/admin"]
+        assert [p for p, _ in auth._pending_logins.values()] == ["/admin"]
 
     @pytest.mark.asyncio
     async def test_defaults_to_the_dashboard_when_no_next_is_given(self, monkeypatch):
@@ -96,7 +96,7 @@ class TestLogin:
         with pytest.raises(web.HTTPFound):
             await auth.handle_login(request_for("/auth/login"))
 
-        assert list(auth._pending_logins.values()) == ["/admin"]
+        assert [p for p, _ in auth._pending_logins.values()] == ["/admin"]
 
     @pytest.mark.asyncio
     async def test_will_not_carry_an_offsite_next_across_the_round_trip(self, monkeypatch):
@@ -106,7 +106,7 @@ class TestLogin:
         with pytest.raises(web.HTTPFound):
             await auth.handle_login(request_for("/auth/login?next=https://evil.example"))
 
-        assert list(auth._pending_logins.values()) == ["/admin"]
+        assert [p for p, _ in auth._pending_logins.values()] == ["/admin"]
 
     @pytest.mark.asyncio
     async def test_pending_logins_do_not_grow_without_bound(self, monkeypatch):
@@ -128,11 +128,11 @@ class TestCallback:
 
     @pytest.mark.asyncio
     async def test_rejects_a_state_we_never_issued(self):
-        auth._pending_logins["ours"] = "/admin"
+        auth._remember_login("ours", "/admin")
         response = await auth.handle_callback(request_for("/auth/callback?code=xyz&state=theirs"))
         assert response.status == 400
         # The genuine pending login must survive someone else's bad callback
-        assert auth._pending_logins == {"ours": "/admin"}
+        assert list(auth._pending_logins) == ["ours"]
 
     @pytest.mark.asyncio
     async def test_rejects_a_missing_code(self):
@@ -276,7 +276,7 @@ class TestSessions:
     @pytest.mark.asyncio
     async def test_the_login_cookie_is_secure_httponly_and_lax(self, monkeypatch):
         monkeypatch.setitem(config._data, "authorized_github_usernames", ["aryan"])
-        auth._pending_logins["st"] = "/admin"
+        auth._remember_login("st", "/admin")
         with aioresponses() as mocked:
             mocked.post(auth.GITHUB_TOKEN_URL, payload={"access_token": "t"})
             mocked.get(auth.GITHUB_USER_URL, payload={"login": "Aryan"})
@@ -342,7 +342,7 @@ class TestCallbackRoles:
     async def test_the_session_carries_the_role_of_the_account(self, monkeypatch, login, role, location):
         monkeypatch.setitem(config._data, "authorized_github_usernames", ["aryan"])
         monkeypatch.setitem(config._data, "editor_github_username", "CutGuy")
-        auth._pending_logins["st"] = "/admin"
+        auth._remember_login("st", "/admin")
         with aioresponses() as mocked:
             mocked.post(auth.GITHUB_TOKEN_URL, payload={"access_token": "t"})
             mocked.get(auth.GITHUB_USER_URL, payload={"login": login})
@@ -364,7 +364,7 @@ class TestCallbackRoles:
     async def test_an_editors_deep_link_survives_login_but_admin_does_not(self, monkeypatch, next_path, location):
         monkeypatch.setitem(config._data, "authorized_github_usernames", ["aryan"])
         monkeypatch.setitem(config._data, "editor_github_username", "CutGuy")
-        auth._pending_logins["st"] = next_path
+        auth._remember_login("st", next_path)
         with aioresponses() as mocked:
             mocked.post(auth.GITHUB_TOKEN_URL, payload={"access_token": "t"})
             mocked.get(auth.GITHUB_USER_URL, payload={"login": "CutGuy"})
@@ -414,7 +414,7 @@ class TestDotSegments:
 
 class TestCallbackRefusals:
     async def _callback(self, login):
-        auth._pending_logins["st"] = "/admin"
+        auth._remember_login("st", "/admin")
         with aioresponses() as mocked:
             mocked.post(auth.GITHUB_TOKEN_URL, payload={"access_token": "t"})
             mocked.get(auth.GITHUB_USER_URL, payload={"login": login})
@@ -432,3 +432,72 @@ class TestCallbackRefusals:
         monkeypatch.setitem(config._data, "editor_github_username", "")
         resp = await self._callback("anyone")
         assert resp.status == 403 and "not yet configured" in resp.text
+
+
+class TestHashedSessions:
+    def test_the_stored_token_is_a_hash_not_the_cookie(self):
+        token = auth.create_session("aryan", "admin")
+        stored = db.get().execute("SELECT token FROM sessions").fetchone()[0]
+        assert stored != token and len(stored) == 64
+        assert auth.session_for(_cookie(token)) == {"username": "aryan", "role": "admin"}
+
+    def test_a_pre_hashing_row_still_logs_in_after_the_migration(self):
+        db.ensure(auth._SESSIONS_DDL)
+        db.get().execute(
+            "INSERT INTO sessions (token, username, role, created_at, expires_at) VALUES (?,?,?,?,?)",
+            ("old-plain-token", "aryan", "admin", 0, 10**12),
+        )
+        assert auth.session_for(_cookie("old-plain-token")) == {"username": "aryan", "role": "admin"}
+        stored = db.get().execute("SELECT token FROM sessions").fetchone()[0]
+        assert stored == auth._hash("old-plain-token")
+        assert db.meta_get("sessions_hashed") == "1"
+
+    def test_the_migration_runs_once(self):
+        auth.session_for(_cookie("nothing"))  # migrates the empty table, sets the flag
+        db.get().execute(
+            "INSERT INTO sessions (token, username, role, created_at, expires_at) VALUES (?,?,?,?,?)",
+            ("a" * 64, "aryan", "admin", 0, 10**12),
+        )
+        auth.session_for(_cookie("nothing"))
+        assert db.get().execute("SELECT token FROM sessions").fetchone()[0] == "a" * 64
+
+    @pytest.mark.asyncio
+    async def test_logout_deletes_the_hashed_row(self):
+        token = auth.create_session("aryan", "admin")
+        await auth.handle_logout(_cookie(token))
+        assert db.get().execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+class TestPendingLoginExpiry:
+    @pytest.mark.asyncio
+    async def test_anonymous_hits_do_not_evict_an_in_flight_login(self, monkeypatch):
+        monkeypatch.setitem(config._data, "github_client_id", "abc123")
+        auth._remember_login("mine", "/admin", now=1000)
+        for i in range(32):
+            auth._remember_login(f"anon{i}", "/admin", now=1001)
+        assert "mine" in auth._pending_logins
+
+    def test_an_expired_entry_is_refused(self):
+        auth._remember_login("old", "/admin", now=0)
+        assert auth._take_login("old", now=auth.PENDING_LOGIN_MAX_AGE_SECONDS + 1) is None
+        assert "old" not in auth._pending_logins
+
+    def test_a_fresh_entry_is_returned_once(self):
+        auth._remember_login("st", "/x", now=0)
+        assert auth._take_login("st", now=5) == "/x"
+        assert auth._take_login("st", now=5) is None
+
+    def test_when_full_expired_go_before_the_oldest_live(self):
+        auth._remember_login("oldest-live", "/a", now=auth.PENDING_LOGIN_MAX_AGE_SECONDS)
+        for i in range(auth._MAX_PENDING_LOGINS - 1):
+            auth._remember_login(f"exp{i}", "/a", now=0)  # inserted later but already older
+        assert len(auth._pending_logins) == auth._MAX_PENDING_LOGINS
+        auth._remember_login("new", "/a", now=auth.PENDING_LOGIN_MAX_AGE_SECONDS + 1)
+        assert "oldest-live" in auth._pending_logins and "new" in auth._pending_logins
+
+    def test_when_full_of_live_entries_the_oldest_goes(self):
+        for i in range(auth._MAX_PENDING_LOGINS):
+            auth._remember_login(f"s{i}", "/a", now=i)
+        auth._remember_login("new", "/a", now=auth._MAX_PENDING_LOGINS)
+        assert "s0" not in auth._pending_logins and "s1" in auth._pending_logins
+        assert len(auth._pending_logins) == auth._MAX_PENDING_LOGINS

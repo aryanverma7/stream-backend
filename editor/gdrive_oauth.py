@@ -5,6 +5,7 @@ Same shape as spotify_oauth.py: an admin-only login redirect and a callback
 that exchanges the code at once. Gated by the GitHub admin session - NOT in
 auth.OPEN_PATHS and not in EDITOR_PATHS.
 """
+import asyncio
 import json
 import secrets
 from urllib.parse import quote, urlencode
@@ -38,9 +39,20 @@ def _remember_state(state: str) -> None:
     _pending_states[state] = None
 
 
+# Every Drive folder creation (layout, project, tape) runs under this one lock,
+# so two callers racing on a missing folder cannot create it twice.
+_folder_lock = asyncio.Lock()
+
+
 async def ensure_layout() -> "dict[str, str]":
-    """Creates whichever app folders are missing. Each id is saved as soon as
-    it exists, so a failure partway leaves a retry only the rest to create."""
+    async with _folder_lock:
+        return await ensure_layout_locked()
+
+
+async def ensure_layout_locked() -> "dict[str, str]":
+    """Creates whichever app folders are missing; the caller holds _folder_lock.
+    Each id is saved as soon as it exists, so a failure partway leaves a retry
+    only the rest to create."""
     ids: dict[str, str] = {}
     for key, (name, parent_key) in _LAYOUT.items():
         fid = db.meta_get(key)
@@ -49,10 +61,32 @@ async def ensure_layout() -> "dict[str, str]":
             db.meta_set(key, fid)
         ids[key] = fid
     email = config.get("editor_google_email", "")
-    if email and db.meta_get("gdrive_brand_kit_shared") != "1":
+    # Keyed by address, so changing editor_google_email shares with the new one.
+    # ponytail: the previous address keeps its read access; revoke it in Drive by hand if that matters.
+    if email and db.meta_get("gdrive_brand_kit_shared_with") != email:
         await gdrive.share_with(ids["gdrive_brand_kit"], email, "reader")
-        db.meta_set("gdrive_brand_kit_shared", "1")
+        db.meta_set("gdrive_brand_kit_shared_with", email)
     return ids
+
+
+async def _note_account() -> None:
+    """A reconnect to a different Google account cannot reach the old folders
+    (drive.file only sees this app's files in *that* account), so forget them
+    and let ensure_layout build the layout in the new one."""
+    try:
+        email = await gdrive.account_email()
+    except gdrive.DriveError as e:
+        log.warning(f"Could not read the connected Google account: {e}")
+        return
+    if not email:
+        return
+    previous = db.meta_get("gdrive_account")
+    if previous and previous != email:
+        log.warning("Drive reconnected to a different Google account - creating the folder layout there")
+        with db.transaction():
+            for key in (*_LAYOUT, "gdrive_brand_kit_shared_with"):
+                db.meta_delete(key)
+    db.meta_set("gdrive_account", email)
 
 
 async def gdrive_login(request: web.Request) -> web.Response:
@@ -123,7 +157,9 @@ async def gdrive_callback(request: web.Request) -> web.Response:
     gdrive.forget_token()
 
     try:
-        await ensure_layout()
+        async with _folder_lock:
+            await _note_account()
+            await ensure_layout_locked()
     except gdrive.DriveError as e:
         log.error(f"Drive connected but folder setup failed: {e}")
         return web.json_response(

@@ -6,15 +6,17 @@
     <string>com.dualbladex.backend</string>
 
     <!-- The installed copy in ~/Library/LaunchAgents/ (a LaunchAgent, not a
-         LaunchDaemon: Catalina blocks boot-time services from ~/Documents). -->
+         LaunchDaemon: Catalina blocks boot-time services from ~/Documents).
+         YOUR_MAC_USER is replaced with your macOS user name on install
+         (the sed in README.md's "Install or reinstall the launchd job"). -->
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/aryan/Documents/Stream/venv/bin/python3</string>
-        <string>/Users/aryan/Documents/Stream/main.py</string>
+        <string>/Users/YOUR_MAC_USER/Documents/Stream/venv/bin/python3</string>
+        <string>/Users/YOUR_MAC_USER/Documents/Stream/main.py</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/aryan/Documents/Stream</string>
+    <string>/Users/YOUR_MAC_USER/Documents/Stream</string>
 
     <!-- launchd runs services with its own minimal default PATH, NOT the
          interactive shell's PATH from .zshrc - confirmed the hard way:
@@ -41,10 +43,12 @@
     <key>KeepAlive</key>
     <true/>
 
-    <!-- launchd-level stdout/stderr, separate from our own app logger.py -
-         useful if the process crashes before logger.py even gets to run -->
+    <!-- stdout is thrown away: logger.py writes every line to the rotating
+         logs/backend.log as well, and a stdout file here grew without limit.
+         stderr is kept, because a crash traceback before logger.py runs
+         only ever reaches stderr. -->
     <key>StandardOutPath</key>
-    <string>/tmp/mac_mini_backend.out.log</string>
+    <string>/dev/null</string>
     <key>StandardErrorPath</key>
     <string>/tmp/mac_mini_backend.err.log</string>
 </dict>

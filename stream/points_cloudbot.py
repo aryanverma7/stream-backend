@@ -325,14 +325,18 @@ async def handle_chat_event(chat: dict) -> None:
     Bunds from y." could confirm a spend that never happened, or poison
     the balance cache. An empty list accepts any sender (the old
     behaviour), because the bot's account name differs per channel.
+    A YouTube display name can be copied by anyone, so an entry
+    "id:<user id>" matches the sender's stable id instead (case-sensitive).
     """
     text = chat.get("text", "")
     if not text:
         return
-    allowed = {str(n).lower().lstrip("@") for n in config.get("cloudbot_reply_usernames", []) or [] if n}
-    if allowed:
+    entries = [str(n) for n in config.get("cloudbot_reply_usernames", []) or [] if n]
+    if entries:
+        ids = {e[3:] for e in entries if e.startswith("id:")}
+        names = {e.lower().lstrip("@") for e in entries if not e.startswith("id:")}
         sender = {str(chat.get(k) or "").lower().lstrip("@") for k in ("username", "display_name")}
-        if not sender & allowed:
+        if not (sender & names or (chat.get("user_id") and chat["user_id"] in ids)):
             return
 
     # The chat this reply arrived in decides which wallet it is about.
