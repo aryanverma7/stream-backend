@@ -266,10 +266,17 @@ class TesseractUnavailableError(Exception):
 # correctly whether tesseract was installed via MacPorts (/opt/local/bin)
 # or Homebrew (/usr/local/bin), checking both real locations rather than
 # hardcoding just one.
-for candidate in ("/opt/local/bin/tesseract", "/usr/local/bin/tesseract"):
-    if os.path.exists(candidate):
-        pytesseract.pytesseract.tesseract_cmd = candidate
-        break
+def _find_tesseract(env=os.environ) -> "str | None":
+    """The first tesseract that exists. DUALBLADEX_TESSERACT is for dev and tests only
+    (a binary unpacked without root); production never sets it."""
+    for candidate in (env.get("DUALBLADEX_TESSERACT"), "/opt/local/bin/tesseract", "/usr/local/bin/tesseract"):
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
+
+
+if _find_tesseract():
+    pytesseract.pytesseract.tesseract_cmd = _find_tesseract()
 
 
 def tesseract_available() -> bool:
