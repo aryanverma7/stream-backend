@@ -36,7 +36,7 @@ class Unavailable(Exception):
         self.status = status
 
 
-_folder_lock = asyncio.Lock()
+_folder_lock = gdrive_oauth._folder_lock  # one lock for every folder creation
 
 
 async def _project_folder(project_id) -> str:
@@ -47,7 +47,7 @@ async def _project_folder(project_id) -> str:
         return p["drive_folder_id"]
     parent = db.meta_get("gdrive_projects")
     if not parent:
-        parent = (await gdrive_oauth.ensure_layout())["gdrive_projects"]
+        parent = (await gdrive_oauth.ensure_layout_locked())["gdrive_projects"]
     fid = await gdrive.create_folder(f"{p['stream_date']} {p['name']}", parent)
     es.set_project_folder(project_id, fid)
     return fid

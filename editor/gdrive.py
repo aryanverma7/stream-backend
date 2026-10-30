@@ -144,6 +144,12 @@ async def about() -> dict:
     return {"limit": int(limit) if limit is not None else None, "usage": int(q.get("usage", 0))}
 
 
+async def account_email() -> str:
+    """The connected Google account's address, to notice a reconnect to a different account."""
+    _, d = await _request("GET", f"{API}/about", params={"fields": "user(emailAddress)"})
+    return str(((d or {}).get("user") or {}).get("emailAddress") or "")
+
+
 async def create_folder(name: str, parent_id: "str | None") -> str:
     meta = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
     if parent_id:

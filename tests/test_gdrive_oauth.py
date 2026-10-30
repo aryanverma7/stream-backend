@@ -182,6 +182,83 @@ async def test_brand_kit_shared_once_when_editor_email_set():
         folder_posts(m, ["root", "projects", "brand", "backups"])
         m.post(perm, payload={})
         await gdrive_oauth.ensure_layout()
-    assert db.meta_get("gdrive_brand_kit_shared") == "1"
+    assert db.meta_get("gdrive_brand_kit_shared_with") == "ed@example.com"
     with aioresponses() as m:  # a second share would hit an unregistered URL
         await gdrive_oauth.ensure_layout()
+
+
+ABOUT_USER = f"{gdrive.API}/about?fields=user%28emailAddress%29"
+
+
+def perm_url(fid):
+    return f"{gdrive.API}/files/{fid}/permissions?sendNotificationEmail=false"
+
+
+@pytest.mark.asyncio
+async def test_brand_kit_reshared_when_the_editor_email_changes():
+    await connected()
+    config._data["editor_google_email"] = "ed@example.com"
+    with aioresponses() as m:
+        m.post(gdrive.TOKEN_URL, payload={"access_token": "a", "expires_in": 3600})
+        folder_posts(m, ["root", "projects", "brand", "backups"])
+        m.post(perm_url("f-brand"), payload={})
+        await gdrive_oauth.ensure_layout()
+    assert db.meta_get("gdrive_brand_kit_shared_with") == "ed@example.com"
+    config._data["editor_google_email"] = "new@example.com"
+    shares = []
+    with aioresponses() as m:
+        m.post(perm_url("f-brand"), callback=lambda url, **kw: shares.append(kw["json"]) or CallbackResult(payload={}))
+        await gdrive_oauth.ensure_layout()
+    assert shares and shares[0]["emailAddress"] == "new@example.com"
+    assert db.meta_get("gdrive_brand_kit_shared_with") == "new@example.com"
+
+
+async def _callback_with_account(email):
+    gdrive_oauth._pending_states["s1"] = None
+    client = await make_client()
+    with aioresponses(passthrough=[str(client.make_url('/'))]) as m:
+        m.post(gdrive.TOKEN_URL, payload={"access_token": "a", "refresh_token": "r1", "expires_in": 3600})
+        m.post(gdrive.TOKEN_URL, payload={"access_token": "a", "expires_in": 3600})
+        m.get(ABOUT_USER, payload={"user": {"emailAddress": email}})
+        folder_posts(m, ["root2", "projects2", "brand2", "backups2"])
+        resp = await client.get("/auth/gdrive/callback?code=c&state=s1", allow_redirects=False)
+    await client.close()
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_reconnecting_a_different_account_rebuilds_the_layout():
+    for k in gdrive_oauth._LAYOUT:
+        db.meta_set(k, "old-" + k)
+    db.meta_set("gdrive_account", "old@example.com")
+    db.meta_set("gdrive_brand_kit_shared_with", "ed@example.com")
+    resp = await _callback_with_account("new@example.com")
+    assert resp.status == 302
+    assert db.meta_get("gdrive_root") == "f-root2" and db.meta_get("gdrive_backups") == "f-backups2"
+    assert db.meta_get("gdrive_account") == "new@example.com"
+    assert db.meta_get("gdrive_brand_kit_shared_with") is None
+
+
+@pytest.mark.asyncio
+async def test_reconnecting_the_same_account_keeps_the_layout():
+    for k in gdrive_oauth._LAYOUT:
+        db.meta_set(k, "old-" + k)
+    db.meta_set("gdrive_account", "me@example.com")
+    resp = await _callback_with_account("me@example.com")
+    assert resp.status == 302 and db.meta_get("gdrive_root") == "old-gdrive_root"
+
+
+@pytest.mark.asyncio
+async def test_ensure_layout_waits_for_the_shared_folder_lock(monkeypatch):
+    import asyncio
+    from editor import editor_service
+    assert editor_service._folder_lock is gdrive_oauth._folder_lock
+    # A lock that waited is bound to this test's loop; use a fresh one so later tests are unaffected.
+    monkeypatch.setattr(gdrive_oauth, "_folder_lock", asyncio.Lock())
+    for k in gdrive_oauth._LAYOUT:
+        db.meta_set(k, "x-" + k)
+    async with gdrive_oauth._folder_lock:
+        task = asyncio.create_task(gdrive_oauth.ensure_layout())
+        await asyncio.sleep(0.01)
+        assert not task.done()
+    assert (await task)["gdrive_root"] == "x-gdrive_root"
