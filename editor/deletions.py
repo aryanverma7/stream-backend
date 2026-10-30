@@ -95,6 +95,8 @@ def _target(kind, target_id):
         p = es.get_project(target_id)
         if p is None or p["deleted_at"] is not None:
             raise ValueError("No such project")
+        if p["vod_status"] == "uploading":  # the PC would finish into a deleted folder
+            raise ValueError("Wait for the VOD upload to finish first")
         # The folder delete takes its children, but every file also gets its own row: the folder may be
         # missing or a file may live outside it, and a target is only marked deleted by its own row.
         files = [(p["drive_folder_id"], "folder", p["id"], None)] if p["drive_folder_id"] else []

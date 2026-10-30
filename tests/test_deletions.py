@@ -276,6 +276,7 @@ async def test_project_failed_vod_delete_is_not_marked_deleted(drive, monkeypatc
 
 def test_empty_label_cannot_be_confirmed():
     p = es.create_project("", "2026-10-21", "t", "v.mp4", 1, now=T0)
+    es.mark_vod_ready(p["id"], "V", now=T0)
     with pytest.raises(ValueError, match="Nothing to confirm against"):
         deletions.request_delete("project", p["id"], "", username="boss", role="admin", now=T0)
 
@@ -346,6 +347,13 @@ def test_project_delete_refused_while_an_upload_is_running():
     assert deletions.pending(now=T0) == []
 
 
+def test_project_delete_refused_while_its_vod_is_uploading():
+    p = es.create_project("Ranked grind", "2026-10-20", "t", "vod-1020.mp4", 100, now=T0)
+    with pytest.raises(ValueError, match="Wait for the VOD upload to finish first"):
+        deletions.request_delete("project", p["id"], "Ranked grind", username="boss", role="admin", now=T0)
+    assert deletions.pending(now=T0) == []
+
+
 def test_overlapping_project_and_child_deletes_are_refused():
     p = _project()
     t = _tape_with_iterations(p["id"])
@@ -377,6 +385,8 @@ def test_project_delete_refused_for_clip_holding_combined_reel(drive):
     from editor import editor_service as svc
     a = es.create_project("Clip A", "2026-10-20", "", "a.mp4", 1, now=T0, duration_s=20.0)
     b = es.create_project("Clip B", "2026-10-20", "", "b.mp4", 1, now=T0, duration_s=20.0)
+    es.mark_vod_ready(a["id"], "VA", now=T0)
+    es.mark_vod_ready(b["id"], "VB", now=T0)
     reel = svc.combine_clips([a["id"], b["id"]], "Duo", "aryan")
     it = es.create_iteration(reel["id"], "duo.mp4", 1, "u", now=T0)
     es.complete_iteration(it["id"], "DUO1", now=T0)

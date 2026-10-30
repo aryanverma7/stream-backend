@@ -103,6 +103,7 @@ async def test_ready_dm_skips_soft_deleted_and_deleting_projects():
     vod = ready("Vod going")
     es._set("projects", vod["id"], None, vod_status="deleting")
     proj = ready("Project going")
+    es.mark_vod_ready(proj["id"], "V")
     deletions.request_delete("project", proj["id"], proj["name"], username="Aryan", role="admin", now=T)
     await notifier.run(T + 600)
     assert [r["content"] for r in outbox() if r["recipient_role"] == "editor"] == [

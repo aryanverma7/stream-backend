@@ -636,6 +636,7 @@ async def test_fix_list_is_the_latest_versions_unresolved_comments():
     ec.carry_over(v2["id"])
     new = ec.add_comment(v2["id"], "cutguy", "question", "new on v2", now=7.0)
     gone = es.create_project("Gone", "2026-10-23", "", "g.mp4", 5, now=4.0)
+    es.mark_vod_ready(gone["id"], "GV", now=4.0)
     gt = es.create_tape(gone["id"], "G")
     gi = es.create_iteration(gt["id"], "g.mp4", 1, "")
     es.complete_iteration(gi["id"], "G1")
