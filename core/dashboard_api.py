@@ -172,9 +172,16 @@ async def get_logs(request: web.Request) -> web.Response:
     except ValueError:
         n = 200
 
-    if not LOG_FILE.exists():
-        return web.json_response({"lines": []})
-    return web.json_response({"lines": await asyncio.to_thread(tail_lines, LOG_FILE, n)})
+    return web.json_response({"lines": await asyncio.to_thread(recent_log_lines, LOG_FILE, n)})
+
+
+def recent_log_lines(path, n: int) -> list[str]:
+    """The last n lines; right after a rotation the current file is short, so the rest come from <path>.1."""
+    lines = tail_lines(path, n) if path.exists() else []
+    rotated = path.with_name(path.name + ".1")
+    if len(lines) < n and rotated.exists():
+        lines = tail_lines(rotated, n - len(lines)) + lines
+    return lines
 
 
 def tail_lines(path, n: int, block: int = 65536) -> list[str]:
