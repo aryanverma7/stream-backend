@@ -54,10 +54,12 @@ def test_a_crash_mid_save_leaves_the_old_file_intact(tmp_path, monkeypatch):
     c.set("a", 2)
     def boom(*args, **kwargs):
         raise OSError("power cut")
-    monkeypatch.setattr(json, "dump", boom)
+    from core import config as config_module
+    monkeypatch.setattr(config_module.os, "fsync", boom)  # dies after the .tmp is written, before replace
     with pytest.raises(OSError):
         c.save()
     assert json.loads(path.read_text()) == {"a": 1}
+    assert not (tmp_path / "config.json.tmp").exists()
 
 
 def test_save_asks_the_drive_to_flush_when_full_fsync_exists(tmp_path, monkeypatch):

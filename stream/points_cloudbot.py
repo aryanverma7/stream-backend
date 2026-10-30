@@ -97,6 +97,7 @@ Requirements this backend has that the others don't:
 import asyncio
 import re
 import time
+import unicodedata
 
 from core.config import config
 from core.logger import get_logger
@@ -171,6 +172,26 @@ class CloudbotUserNotFound(Exception):
     because a grant or a spend that landed nowhere must not be reported
     as having happened.
     """
+
+
+class UnsafeUsername(Exception):
+    """
+    A name that is not one plain token, so it cannot go into a Cloudbot
+    command. "!removepoints a b 1" would be read with "a" as the user and
+    "b" as the amount: a YouTube display name with a space could spend or
+    grant someone else's points. Refused before anything is sent.
+    """
+
+
+def _safe_char(ch: str) -> bool:
+    # Letters, digits and combining marks of any script (Devanagari's vowel signs are marks, which \w
+    # does not match), plus _ @ . -. Whitespace, controls and punctuation are refused.
+    return ch in "_@.-" or unicodedata.category(ch)[0] in "LNM"
+
+
+def _check_name(username: str) -> None:
+    if not username or not all(_safe_char(c) for c in username):
+        raise UnsafeUsername(username)
 
 
 class CloudbotReadUnavailable(Exception):
@@ -290,16 +311,20 @@ async def handle_chat_event(chat: dict) -> None:
     Registered from main.py against the parsed chat stream. Matches
     Cloudbot's replies and hands them to whoever is waiting.
 
-    Deliberately does NOT check who sent the message. The bot's account
-    name is configurable in Streamlabs and differs per channel, so
-    matching on it would be one more thing to get wrong silently; the
-    reply shapes above are specific enough on their own, and the only
-    cost of a false match is a viewer quoting a bot line at the exact
-    moment a lookup is in flight.
+    Checks who sent it against `cloudbot_reply_usernames` when that list
+    is set: otherwise any viewer typing "x has successfully removed 500
+    Bunds from y." could confirm a spend that never happened, or poison
+    the balance cache. An empty list accepts any sender (the old
+    behaviour), because the bot's account name differs per channel.
     """
     text = chat.get("text", "")
     if not text:
         return
+    allowed = {str(n).lower().lstrip("@") for n in config.get("cloudbot_reply_usernames", []) or [] if n}
+    if allowed:
+        sender = {str(chat.get(k) or "").lower().lstrip("@") for k in ("username", "display_name")}
+        if not sender & allowed:
+            return
 
     # The chat this reply arrived in decides which wallet it is about.
     # Cloudbot answers in the same chat the command was typed in, and its
@@ -347,11 +372,10 @@ async def _await_reply(waiters: dict, key: tuple, command: str):
     future: asyncio.Future = asyncio.get_running_loop().create_future()
     waiters.setdefault(key, []).append(future)
 
-    if not await streamerbot.send_chat_message(command, platform=platform):
-        waiters.get(key, []).remove(future)
-        raise RuntimeError("Not connected to Streamer.bot - cannot reach Cloudbot")
-
     try:
+        # Inside the try, so a send that raises still removes its waiter.
+        if not await streamerbot.send_chat_message(command, platform=platform):
+            raise RuntimeError("Not connected to Streamer.bot - cannot reach Cloudbot")
         return await asyncio.wait_for(future, timeout=_timeout())
     except asyncio.TimeoutError:
         # Named causes rather than one guess. The only suggestion here
@@ -466,6 +490,7 @@ async def try_spend(username: str, amount: int, platform: str = "") -> "tuple[bo
     level with the amount, which is the one case here a human has to fix
     by hand.
     """
+    _check_name(username)
     key = _key(platform or default_platform(), username)
     async with _lock_for(key):
         # On a silent platform a clamp is invisible, so a balance we
@@ -536,6 +561,7 @@ async def subtract_points(username: str, amount: int, platform: str = "") -> Non
     want try_spend instead - Cloudbot clamps, so this quietly takes
     whatever is there when the balance is short.
     """
+    _check_name(username)
     key = _key(platform or default_platform(), username)
     async with _lock_for(key):
         await _await_write(key, f"!removepoints {username} {amount}")
@@ -555,6 +581,7 @@ async def grant_points(username: str, amount: int, platform: str = "") -> "int |
     to add to; otherwise the grant is confirmed and the total is None,
     which is the honest answer rather than a plausible one.
     """
+    _check_name(username)
     key = _key(platform or default_platform(), username)
     async with _lock_for(key):
         await _await_write(key, f"!addpoints {username} {amount}")

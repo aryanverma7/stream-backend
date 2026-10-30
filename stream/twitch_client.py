@@ -19,6 +19,17 @@ log = get_logger("TwitchClient")
 TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 STREAMS_URL = "https://api.twitch.tv/helix/streams"
 
+TIMEOUT = aiohttp.ClientTimeout(total=15)
+
+
+class TwitchError(Exception):
+    """A non-2xx answer. Carries the status only: aiohttp's own error would carry the request URL."""
+
+    def __init__(self, what: str, status: int):
+        super().__init__(f"{what}: HTTP {status}")
+        self.status = status
+
+
 _cached_token: str | None = None
 _cached_token_expiry: float = 0
 
@@ -32,13 +43,15 @@ async def get_app_token() -> str:
     client_id = config.get("twitch_client_id", "")
     client_secret = config.get("twitch_client_secret", "")
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(TOKEN_URL, params={
+    # Form body, never query params: a URL ends up in exception text, logs and error replies.
+    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+        async with session.post(TOKEN_URL, data={
             "client_id": client_id,
             "client_secret": client_secret,
             "grant_type": "client_credentials",
         }) as resp:
-            resp.raise_for_status()
+            if resp.status >= 400:
+                raise TwitchError("Twitch token request failed", resp.status)
             data = await resp.json()
 
     _cached_token = data["access_token"]
@@ -60,13 +73,17 @@ async def stream_info(channel_name: str) -> "dict | None":
     token = await get_app_token()
     client_id = config.get("twitch_client_id", "")
 
-    async with aiohttp.ClientSession() as session:
+    global _cached_token
+    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
         async with session.get(
             STREAMS_URL,
             params={"user_login": channel_name},
             headers={"Authorization": f"Bearer {token}", "Client-Id": client_id},
         ) as resp:
-            resp.raise_for_status()
+            if resp.status == 401:
+                _cached_token = None  # revoked or rotated secret: fetch a fresh one next time
+            if resp.status >= 400:
+                raise TwitchError("Twitch live check failed", resp.status)
             data = await resp.json()
 
     streams = data.get("data", []) or []

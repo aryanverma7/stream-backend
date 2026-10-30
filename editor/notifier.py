@@ -5,6 +5,7 @@ and go out as one DM once DIGEST_QUIET_SECONDS pass with nothing new (several fi
 one "8 new clips are ready" message).
 """
 from core import db
+from editor import deletions
 from editor import editor_store as es
 from editor import notify_outbox
 from core.auth import role_for_username
@@ -89,7 +90,10 @@ def _digest(rows) -> str:
 
 def _ready(project_ids) -> "str | None":
     """One message for a batch of finished uploads, each project once, in finishing order."""
-    ps = [p for p in (es.get_project(i) for i in dict.fromkeys(project_ids)) if p is not None]
+    # Gone, or on its way out, is not news: a DM pointing at a VOD being deleted only confuses.
+    ps = [p for p in (es.get_project(i) for i in dict.fromkeys(project_ids))
+          if p is not None and p["deleted_at"] is None and p["vod_status"] not in ("deleting", "deleted")
+          and not deletions.has_live_request("project", p["id"])]
     if not ps:
         return None
     if len(ps) == 1:
@@ -132,6 +136,7 @@ async def run(now: float) -> None:
         # Every schema before any transaction: db.ensure raises inside one.
         notify_outbox.ensure_schema()
         es._c()
+        deletions._c()  # _ready reads delete_requests inside a transaction
         db.ensure(_DDL)
         raw = db.meta_get(_CURSOR)
         if raw is None:  # first run on an existing database: don't DM history

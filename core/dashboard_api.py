@@ -8,6 +8,8 @@ Admin dashboard API routes, per Task #4's full feature list (Section 14):
 All protected by auth.auth_middleware except where explicitly left open
 (health check, widget websocket, the login flow itself).
 """
+import asyncio
+
 from aiohttp import web
 
 from stream import credit_ocr
@@ -171,11 +173,22 @@ async def get_logs(request: web.Request) -> web.Response:
 
     if not LOG_FILE.exists():
         return web.json_response({"lines": []})
+    return web.json_response({"lines": await asyncio.to_thread(tail_lines, LOG_FILE, n)})
 
-    with open(LOG_FILE, "r") as f:
-        all_lines = f.readlines()
-    tail = [line.rstrip("\n") for line in all_lines[-n:]]
-    return web.json_response({"lines": tail})
+
+def tail_lines(path, n: int, block: int = 65536) -> list[str]:
+    """The last n lines, read backwards from the end: never the whole file."""
+    if n <= 0:
+        return []
+    with open(path, "rb") as f:
+        end = f.seek(0, 2)
+        data = b""
+        while end > 0 and data.count(b"\n") <= n:
+            step = min(block, end)
+            end -= step
+            f.seek(end)
+            data = f.read(step) + data
+    return data.decode("utf-8", "replace").splitlines()[-n:]
 
 
 # ---------- Status / health panel ----------

@@ -25,6 +25,8 @@ from pathlib import Path
 CONFIG_PATH = Path(tempfile.mkdtemp(prefix="dualbladex-tests-")) / "config.json"
 CONFIG_PATH.write_text(json.dumps({"http_host": "0.0.0.0", "http_port": 8765}))
 os.environ["DUALBLADEX_CONFIG"] = str(CONFIG_PATH)
+# Likewise the log: tests must not write the real logs/backend.log.
+os.environ["DUALBLADEX_LOG_DIR"] = str(CONFIG_PATH.parent / "logs")
 
 
 # aioresponses (latest 0.7.9) predates aiohttp 3.14's required `stream_writer`

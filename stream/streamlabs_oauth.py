@@ -105,7 +105,7 @@ async def streamlabs_callback(request: web.Request) -> web.Response:
         "X-Requested-With": "XMLHttpRequest",
     }
 
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
         async with session.post(TOKEN_URL, json=body, headers=headers) as resp:
             data = await resp.json()
             if resp.status != 200 or "access_token" not in data:
@@ -127,7 +127,9 @@ async def streamlabs_callback(request: web.Request) -> web.Response:
     # leave two socket connections open at once.
     try:
         await stop_tips_listener()
-        await start_tips_listener()
+        # Same switch main.py honours at startup: Cloudbot already pays donors, so running both grants twice.
+        if config.get("streamlabs_tips_listener_enabled", False):
+            await start_tips_listener()
     except Exception:
         log.exception("Connected to Streamlabs, but could not start the tips listener - check the socket API connection")
 

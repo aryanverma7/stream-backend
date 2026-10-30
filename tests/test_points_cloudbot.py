@@ -688,3 +688,53 @@ class TestSilentWritePlatforms:
 
         assert points_cloudbot.writes_are_confirmed("youtube") is True
         assert points_cloudbot.writes_are_confirmed("Twitch") is False
+
+
+class TestAuditHardening:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", ["evil 99999", "a\nb", "", "x;y"])
+    async def test_a_name_that_is_not_one_token_is_never_sent(self, monkeypatch, name):
+        send = AsyncMock(return_value=True)
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", send)
+        for call in (points_cloudbot.try_spend(name, 10, "youtube"),
+                     points_cloudbot.grant_points(name, 10, "youtube"),
+                     points_cloudbot.subtract_points(name, 10, "youtube")):
+            with pytest.raises(points_cloudbot.UnsafeUsername):
+                await call
+        assert send.await_count == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", ["राहुल_गेमर", "José.Núñez", "@Zoë-99"])
+    async def test_unicode_names_are_one_token_too(self, monkeypatch, name):
+        monkeypatch.setattr(config, "_data", {"cloudbot_silent_write_grace_seconds": 0})
+        send = AsyncMock(return_value=True)
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", send)
+        points_cloudbot._check_name(name)  # no raise
+        for bad in ("victim 99999", "a\u00a0b", "x;y", "a\u200bb"):
+            with pytest.raises(points_cloudbot.UnsafeUsername):
+                points_cloudbot._check_name(bad)
+
+    @pytest.mark.asyncio
+    async def test_points_maps_an_unsafe_name_to_unusable_name(self, monkeypatch):
+        from stream import points
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
+        with pytest.raises(points.UnusableName):
+            await points.try_spend("two words", 10, "youtube")
+
+    @pytest.mark.asyncio
+    async def test_replies_from_a_sender_not_on_the_list_are_ignored(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"cloudbot_reply_usernames": ["Cloudbot"]})
+        await points_cloudbot.handle_chat_event(
+            {"platform": "twitch", "username": "troll", "text": "@troll, you have 99999 Bunds."})
+        with pytest.raises(points_cloudbot.CloudbotReadUnavailable):
+            await points_cloudbot.get_user_points("troll")
+        await points_cloudbot.handle_chat_event(
+            {"platform": "twitch", "username": "cloudbot", "text": "@troll, you have 5 Bunds."})
+        assert await points_cloudbot.get_user_points("troll") == 5
+
+    @pytest.mark.asyncio
+    async def test_a_send_that_raises_leaves_no_waiter(self, monkeypatch):
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(side_effect=OSError("x")))
+        with pytest.raises(OSError):
+            await points_cloudbot._await_reply(points_cloudbot._pending_reads, ("twitch", "v"), "!points")
+        assert points_cloudbot._pending_reads == {}

@@ -1425,6 +1425,14 @@ class TestUnknownUserRefusal:
         assert roulette._state.weights["vandal"] == 0
 
     @pytest.mark.asyncio
+    async def test_a_name_unusable_with_points_says_so(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(side_effect=roulette.UnusableName("a b")))
+        result = await roulette.trigger_roulette("a b", platform="youtube")
+        assert result == {"ok": False, "reason": roulette.UNUSABLE_NAME_MESSAGE}
+        assert roulette._state.is_active is False
+
+    @pytest.mark.asyncio
     async def test_a_real_outage_still_reads_as_a_retry(self, monkeypatch):
         """A timeout is not the viewer's fault and not theirs to fix."""
         monkeypatch.setattr(config, "_data", {})
@@ -2049,3 +2057,107 @@ class TestCrossPlatformAnnouncements:
         await roulette._announce("roulette is open")
         platforms = {c.kwargs.get("platform") for c in sent.call_args_list}
         assert platforms == set(roulette.ANNOUNCE_PLATFORMS)
+
+
+class TestAuditRaces:
+    @pytest.mark.asyncio
+    async def test_two_simultaneous_triggers_charge_one_and_refund_the_other(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"roulette_trigger_cost": 500})
+        spent, seen = [], {}
+
+        async def spend(username, cost, platform="twitch"):
+            spent.append(username)
+            await asyncio.sleep(0.01)  # a chat round trip
+            if username == "second":
+                # The first session is open by now and a paid vote has landed on it.
+                seen["first_end"] = roulette._state._end_task
+                roulette._state.weights["vandal"] = 1
+            return True, None
+
+        async def refund(username, amount, platform="twitch"):
+            seen["lock_held_during_refund"] = roulette._spend_lock.locked()
+
+        monkeypatch.setattr(roulette, "_spend_lock", asyncio.Lock())  # contended: must belong to this loop
+        monkeypatch.setattr(roulette, "try_spend", spend)
+        monkeypatch.setattr(roulette, "grant_points", refund)
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        a, b = await asyncio.gather(roulette.trigger_roulette("first"), roulette.trigger_roulette("second"))
+        try:
+            assert a["ok"] is True and b["ok"] is False
+            assert spent == ["first", "second"]
+            assert seen["lock_held_during_refund"] is False  # votes never wait behind the refund
+            assert roulette._state.weights["vandal"] == 1  # the second trigger did not wipe the vote
+            assert seen["first_end"] is not None and roulette._state._end_task is seen["first_end"]
+            assert not seen["first_end"].cancelled()
+        finally:
+            roulette._state._end_task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_the_old_end_timer_is_cancelled_before_the_first_await(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"roulette_cooldown_seconds": 0})
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
+        old = asyncio.create_task(asyncio.sleep(60))
+        roulette._state._end_task = old
+        at_first_await = []
+
+        async def broadcast(*a, **k):
+            at_first_await.append(old.cancelling() > 0 or old.cancelled())
+            await asyncio.sleep(0)
+
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", broadcast)
+        roulette._state.forced_buy_weapon = "vandal"  # clear_forced_buy broadcasts: the session's first await
+        await roulette.trigger_roulette("someone")
+        try:
+            assert at_first_await[0] is True
+        finally:
+            roulette._state._end_task.cancel()
+            old.cancel()
+
+    @pytest.mark.asyncio
+    async def test_a_new_session_cancels_the_previous_end_timer(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"roulette_cooldown_seconds": 0})
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        await roulette.trigger_roulette("first")
+        old = roulette._state._end_task
+        roulette._state.is_active = False  # ended early from the dashboard; its timer is still pending
+        await roulette.trigger_roulette("second")
+        await asyncio.sleep(0)
+        assert old.cancelled()
+        roulette._state._end_task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_a_new_forced_buy_cancels_the_previous_timer(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {})
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", AsyncMock())
+        await roulette._start_forced_buy("vandal")
+        old = roulette._state._forced_buy_task
+        await roulette._start_forced_buy("vandal")  # same weapon: the staleness guard cannot tell them apart
+        await asyncio.sleep(0)
+        assert old.cancelled()
+        new = roulette._state._forced_buy_task
+        await roulette.clear_forced_buy()
+        await asyncio.sleep(0)
+        assert new.cancelled() and roulette._state._forced_buy_task is None
+
+    @pytest.mark.asyncio
+    async def test_the_clear_timer_still_broadcasts_the_clear(self, monkeypatch):
+        bc = AsyncMock()
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", bc)
+        roulette._state.forced_buy_weapon = "vandal"
+        task = asyncio.create_task(roulette._clear_forced_buy_after_delay("vandal", 0))
+        roulette._state._forced_buy_task = task
+        await task
+        assert bc.call_args_list[-1].args[0] == {"type": "forced_buy_cleared"}
+
+
+class TestAgentCommandPlatform:
+    def test_a_bare_name_is_a_twitch_login_only(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"streamlabs_channel": "dualbladex"})
+        assert roulette._agent_command_is_allowed("dualbladex", "twitch") is True
+        assert roulette._agent_command_is_allowed("dualbladex", "youtube") is False
+
+    def test_a_platform_prefixed_entry_matches_that_platform(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"roulette_agent_command_users": ["YouTube:DualBladeX"]})
+        assert roulette._agent_command_is_allowed("dualbladex", "youtube") is True
+        assert roulette._agent_command_is_allowed("dualbladex", "twitch") is False

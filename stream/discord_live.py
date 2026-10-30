@@ -43,7 +43,7 @@ from pathlib import Path
 
 import aiohttp
 
-from core.config import config
+from core.config import atomic_write_text, config
 from core.logger import get_logger
 
 log = get_logger("DiscordLive")
@@ -120,7 +120,7 @@ def _load() -> dict:
 
 def _save() -> None:
     try:
-        _state_path().write_text(json.dumps(_load()))
+        atomic_write_text(_state_path(), json.dumps(_load()))
     except Exception:
         log.exception("Could not write the go-live announcement state")
 
@@ -403,7 +403,7 @@ async def poll_once(stream_info=None) -> bool:
     try:
         info = await stream_info(channel)
     except Exception as e:
-        log.warning(f"Twitch live check failed: {e}")
+        log.warning(f"Twitch live check failed: {type(e).__name__} {getattr(e, 'status', '')}")
         return False
     # Recorded before announce(), which dedupes: the level is not an edge.
     now = time.time()

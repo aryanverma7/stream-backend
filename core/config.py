@@ -15,6 +15,22 @@ from pathlib import Path
 CONFIG_PATH = Path(os.environ.get("DUALBLADEX_CONFIG") or Path(__file__).parent.parent / "config.json")
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write .tmp, fsync (+ F_FULLFSYNC on macOS), replace: a power cut never leaves a truncated file."""
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+            if hasattr(fcntl, "F_FULLFSYNC"):  # macOS: fsync alone leaves the data in the drive's cache
+                fcntl.fcntl(f.fileno(), fcntl.F_FULLFSYNC)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 class Config:
     """
     Thin wrapper around the config.json file. Values are read once at startup
@@ -41,18 +57,7 @@ class Config:
     def save(self):
         """Used by the admin dashboard (Task #4) to persist edits made in the UI.
         Atomic (write .tmp, fsync + F_FULLFSYNC on macOS, replace) so a power cut mid-save never leaves a truncated config.json."""
-        tmp = self._path.with_name(self._path.name + ".tmp")
-        try:
-            with open(tmp, "w") as f:
-                json.dump(self._data, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-                if hasattr(fcntl, "F_FULLFSYNC"):  # macOS: fsync alone leaves the data in the drive's cache
-                    fcntl.fcntl(f.fileno(), fcntl.F_FULLFSYNC)
-            os.replace(tmp, self._path)
-        except BaseException:
-            tmp.unlink(missing_ok=True)
-            raise
+        atomic_write_text(self._path, json.dumps(self._data, indent=2))
 
     def get(self, key: str, default=None):
         return self._data.get(key, default)

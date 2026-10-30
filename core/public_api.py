@@ -14,6 +14,7 @@ their own stated workflow - "I'll upload them to the Mac Mini sometime
 later") - no Twitch API integration, no automated pulling. This endpoint
 just reflects whatever's actually sitting in that folder.
 """
+import asyncio
 from pathlib import Path
 
 import aiohttp
@@ -63,8 +64,9 @@ async def live_status(request: web.Request) -> web.Response:
         live = await is_channel_live(channel)
         return web.json_response({"live": live})
     except Exception as e:
-        log.warning(f"Live status check failed: {e}")
-        return web.json_response({"error": str(e)}, status=UPSTREAM_FAILED_STATUS)
+        # Never str(e) on a public route: an upstream error can carry request details.
+        log.warning(f"Live status check failed: {type(e).__name__} {getattr(e, 'status', '')}")
+        return web.json_response({"error": "Twitch live check failed"}, status=UPSTREAM_FAILED_STATUS)
 
 
 def video_id(raw: str) -> str:
@@ -75,38 +77,29 @@ def video_id(raw: str) -> str:
     return raw.split("&", 1)[0].split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
 
 
+async def _oembed(session, vid):
+    """Title and thumbnail from YouTube's public oEmbed endpoint: no API key, no quota."""
+    url = f"https://www.youtube.com/watch?v={vid}"
+    try:
+        async with session.get("https://www.youtube.com/oembed", params={"format": "json", "url": url}) as resp:
+            resp.raise_for_status()
+            d = await resp.json()
+        return {"id": vid, "title": d["title"], "thumbnail": d["thumbnail_url"], "url": url}
+    except Exception as e:  # deleted/private video or a blip: skip that one, show the rest
+        log.warning(f"YouTube oEmbed failed for {vid}: {type(e).__name__} {getattr(e, 'status', '')}")
+        return None
+
+
 async def list_videos(request: web.Request) -> web.Response:
     video_ids = [v for v in (video_id(x) for x in config.get("youtube_video_ids", []) or []) if v]
-    api_key = config.get("youtube_api_key", "")
-
     if not video_ids:
         return web.json_response({"videos": []})
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://www.googleapis.com/youtube/v3/videos",
-                params={"part": "snippet", "id": ",".join(video_ids), "key": api_key},
-            ) as resp:
-                resp.raise_for_status()
-                data = await resp.json()
-    except Exception as e:
-        # Never str(e): aiohttp's message includes the request URL, which carries the API key,
-        # and this route is public.
-        status = getattr(e, "status", None)
-        log.warning(f"YouTube video fetch failed: {type(e).__name__} {status or ''}")
-        return web.json_response({"error": f"YouTube request failed ({status or type(e).__name__})"},
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+        found = await asyncio.gather(*(_oembed(session, v) for v in video_ids))
+    videos = [v for v in found if v]
+    if not videos:
+        return web.json_response({"error": "YouTube did not answer for any of the videos"},
                                  status=UPSTREAM_FAILED_STATUS)
-
-    videos = [
-        {
-            "id": item["id"],
-            "title": item["snippet"]["title"],
-            "thumbnail": item["snippet"]["thumbnails"]["high"]["url"],
-            "url": f"https://www.youtube.com/watch?v={item['id']}",
-        }
-        for item in data.get("items", [])
-    ]
     return web.json_response({"videos": videos})
 
 

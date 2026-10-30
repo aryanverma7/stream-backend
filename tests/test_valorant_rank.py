@@ -122,6 +122,11 @@ class TestTheChatCommand:
         assert "Diamond 2 - 47 RR" in send.await_args[0][0]
 
     @pytest.mark.asyncio
+    async def test_a_bare_bang_is_ignored(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", dict(CONFIGURED))
+        await valorant_rank.handle_chat_command(self._event("!"))  # used to raise IndexError
+
+    @pytest.mark.asyncio
     async def test_rr_and_elo_are_aliases(self, monkeypatch):
         monkeypatch.setattr(config, "_data", dict(CONFIGURED))
         monkeypatch.setattr(

@@ -232,15 +232,43 @@ async def test_iteration_payload_includes_carried_comments_and_position(drive):
 
 
 @pytest.mark.asyncio
-async def test_only_the_editors_download_click_is_recorded():
+async def test_only_the_editors_download_click_is_recorded(monkeypatch):
     p, _, _, _ = _world()
+
+    async def down(*a, **k):
+        raise gdrive.DriveError("down", 500)
+    # No Drive call and no token: a Drive outage must not lose the click.
+    monkeypatch.setattr(gdrive, "access_token", down)
+    monkeypatch.setattr(gdrive, "get_file", down)
     async with api() as a:
         status, got = await a.admin("POST", f"/api/editor/projects/{p['id']}/download")
-        assert status == 200 and got["access_token"] == "TOKEN" and "TOKEN" not in got["url"]
+        assert (status, got) == (200, {"ok": True})
         assert es.get_project(p["id"])["download_clicked_at"] is None
         status, got = await a.editor("POST", f"/api/editor/projects/{p['id']}/download")
-        assert status == 200 and got["access_token"] == "TOKEN"
+        assert (status, got) == (200, {"ok": True})
     assert es.get_project(p["id"])["download_clicked_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_media_link_refuses_files_that_are_not_ready_and_maps_drive_404(drive, monkeypatch):
+    _, t, it, _ = _world()
+    gone = es.create_iteration(t["id"], "b.mp4", 10, "")
+    es.complete_iteration(gone["id"], "IT2")
+    db.get().execute("UPDATE iterations SET status='deleted' WHERE id=?", (gone["id"],))
+    async with api() as a:
+        assert await a.editor("GET", f"/api/editor/iterations/{gone['id']}/media-link") == (
+            409, {"error": "This file is not available"})
+
+        async def missing(fid):
+            raise gdrive.DriveError("File not found", 404)
+        monkeypatch.setattr(gdrive, "get_file", missing)
+        assert await a.editor("GET", f"/api/editor/iterations/{it['id']}/media-link") == (
+            404, {"error": "This file is no longer on Drive"})
+
+        async def offline():
+            raise gdrive.DriveNotConnected("no")
+        monkeypatch.setattr(gdrive, "access_token", offline)
+        assert (await a.editor("GET", f"/api/editor/iterations/{it['id']}/media-link"))[0] == 503
 
 
 @pytest.mark.asyncio
@@ -444,8 +472,11 @@ async def test_editor_cannot_start_over():
 @pytest.mark.asyncio
 async def test_start_over_only_on_the_latest_version():
     p, t, it, c = _world()
-    v2 = es.create_iteration(t["id"], "b.mp4", 10, "", now=5.0)  # still uploading, but it is the latest
+    v2 = es.create_iteration(t["id"], "b.mp4", 10, "", now=5.0)  # still uploading: v1 is still the one in review
     async with api() as x:
+        assert await x.admin("POST", f"/api/editor/iterations/{v2['id']}/start-over") == \
+            (400, {"error": "Start over works on the latest version"})
+        es.complete_iteration(v2["id"], "IT2", now=6.0)
         assert await x.admin("POST", f"/api/editor/iterations/{it['id']}/start-over") == \
             (400, {"error": "Start over works on the latest version"})
         assert not ec.comments_for_iteration(it["id"])[0]["resolved"]
@@ -652,6 +683,16 @@ async def test_comment_route_201_then_200_on_repeat():
         s1, g1 = await a.editor("POST", path, {"kind": "fix", "body": "x", "client_id": "abcdefgh1"})
         s2, g2 = await a.editor("POST", path, {"kind": "fix", "body": "x", "client_id": "abcdefgh1"})
         assert (s1, s2, g1["id"] == g2["id"]) == (201, 200, True)
+
+
+@pytest.mark.asyncio
+async def test_someone_elses_client_id_is_a_409():
+    _, _, it, _ = _world()
+    path = f"/api/editor/iterations/{it['id']}/comments"
+    async with api() as a:
+        assert (await a.editor("POST", path, {"kind": "fix", "body": "x", "client_id": "abcdefgh1"}))[0] == 201
+        assert await a.admin("POST", path, {"kind": "fix", "body": "x", "client_id": "abcdefgh1"}) == (
+            409, {"error": "client_id already used"})
 
 
 @pytest.mark.asyncio

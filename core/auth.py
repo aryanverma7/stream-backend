@@ -115,6 +115,9 @@ def _safe_next_path(candidate: str) -> str:
     """
     if not candidate.startswith("/") or "\\" in candidate[:2] or candidate.startswith("//"):
         return DEFAULT_POST_LOGIN_PATH
+    # Printable ASCII only: browsers drop tab/newline, so "/\t/evil.example" would become "//evil.example".
+    if not re.fullmatch(r"/(?![/\\])[\x21-\x7e]*", candidate):
+        return DEFAULT_POST_LOGIN_PATH
     return candidate
 
 
@@ -165,7 +168,7 @@ async def handle_callback(request: web.Request) -> web.Response:
         return web.Response(status=400, text="Login session expired - visit /auth/login again")
     next_path = _pending_logins.pop(state)
 
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
         # Exchange the code for an access token
         async with session.post(
             GITHUB_TOKEN_URL,

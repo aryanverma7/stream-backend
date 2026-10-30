@@ -102,10 +102,9 @@ async def create_project(request):
             if free is not None and size > free:
                 raise svc.DriveFull(size, free)
             stem = Path(filename).stem
+            # The job's meta row commits with the project: a crash can never leave a project the job forgot.
             p = es.create_project(stem, stream_date, discord_live.last_live_title(stream_date) or stem,
-                                  filename, size, duration_s=duration_s)
-            # create_project commits its own transaction; no await between it and this write.
-            db.meta_set(key, str(p["id"]))
+                                  filename, size, duration_s=duration_s, meta_key=key)
             pid = p["id"]
         p = _live_project(int(pid))
         if p["vod_status"] == "ready":

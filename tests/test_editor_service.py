@@ -492,3 +492,46 @@ async def test_renewing_a_session_restarts_the_abandon_clock(_env):
     db.get().execute("UPDATE iterations SET status='abandoned', created_at=1.0, updated_at=1.0 WHERE id=?", (iid,))
     assert await svc.renew_iteration_upload(iid, "video/mp4") == "https://upload/s"
     assert es.get_iteration(iid)["updated_at"] > 1_000_000
+
+
+@pytest.mark.asyncio
+async def test_no_new_version_on_a_tape_whose_files_are_being_or_were_deleted(_env, monkeypatch):
+    from editor import deletions
+    t, iid = await _started(_env)
+    await svc.complete_iteration_upload(iid, "fid", "x")
+    deletions.request_delete("tape_files", t["id"], t["name"], username="aryan", role="admin")
+    with pytest.raises(ValueError, match="being deleted"):
+        await svc.start_iteration_upload(t["id"], "b.mp4", 10, "video/mp4")
+    db.get().execute("UPDATE delete_requests SET status='done'")
+    db.get().execute("UPDATE tapes SET files_deleted_at=5 WHERE id=?", (t["id"],))
+    with pytest.raises(ValueError, match="files were deleted"):
+        await svc.start_iteration_upload(t["id"], "b.mp4", 10, "video/mp4")
+    assert len(es.list_iterations(t["id"])) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_tape_delete_requested_during_the_awaits_is_seen_after_them(_env, monkeypatch):
+    from editor import deletions
+    t, iid = await _started(_env)
+    await svc.complete_iteration_upload(iid, "fid", "x")
+    real = svc.free_space
+
+    async def racing():
+        deletions.request_delete("tape_files", t["id"], t["name"], username="aryan", role="admin")
+        return await real()
+    monkeypatch.setattr(svc, "free_space", racing)
+    with pytest.raises(ValueError, match="being deleted"):
+        await svc.start_iteration_upload(t["id"], "b.mp4", 10, "video/mp4")
+    assert len(es.list_iterations(t["id"])) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_vod_share_still_completes(_env, monkeypatch):
+    monkeypatch.setitem(config.config._data, "editor_google_email", "e@x.com")
+    p, _ = _tape()
+    _vod_file(_env, p)
+
+    async def boom(*a, **k):
+        raise gdrive.DriveError("nope", 500)
+    monkeypatch.setattr(gdrive, "share_with", boom)
+    assert (await svc.vod_ready(p["id"], "vf", "agent"))["vod_status"] == "ready"

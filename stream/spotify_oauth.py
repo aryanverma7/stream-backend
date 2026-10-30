@@ -108,7 +108,7 @@ async def spotify_callback(request: web.Request) -> web.Response:
         "Content-Type": "application/x-www-form-urlencoded",
     }
 
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
         async with session.post(spotify.TOKEN_URL, data=body, headers=headers) as resp:
             data = await resp.json()
             if resp.status != 200 or "refresh_token" not in data:

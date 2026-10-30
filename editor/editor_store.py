@@ -67,11 +67,15 @@ def _set(table, id, now, **cols):
 
 # -- projects --
 
-def create_project(name, stream_date, stream_title, vod_filename, vod_size, now=None, duration_s=None):
-    """duration_s under CLIP_MAX_SECONDS makes a clip, which gets its one reel in the same transaction."""
+def create_project(name, stream_date, stream_title, vod_filename, vod_size, now=None, duration_s=None,
+                   meta_key=None):
+    """duration_s under CLIP_MAX_SECONDS makes a clip, which gets its one reel in the same transaction.
+    meta_key, when given, is set to the new project's id in that transaction too (the uploader's job id)."""
     now = time.time() if now is None else now
     kind = "clip" if duration_s is not None and duration_s < CLIP_MAX_SECONDS else "vod"
     _c()
+    if meta_key:
+        db.ensure(db._META_DDL)  # DDL before the transaction
     with db.transaction() as conn:
         pid = conn.execute(
             "INSERT INTO projects(name, stream_date, stream_title, vod_filename, vod_size, vod_status, kind,"
@@ -79,6 +83,8 @@ def create_project(name, stream_date, stream_title, vod_filename, vod_size, now=
             (name, stream_date, stream_title, vod_filename, vod_size, kind, duration_s, now, now)).lastrowid
         if kind == "clip":
             insert_reel(conn, pid, name, now)
+        if meta_key:
+            db.meta_set(meta_key, str(pid))
     return get_project(pid)
 
 

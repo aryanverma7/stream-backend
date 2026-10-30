@@ -62,6 +62,13 @@ class TestSafeNextPath:
         for bad in ("/\\evil.example", "\\\\evil.example", "\\/evil.example"):
             assert auth._safe_next_path(bad) == auth.DEFAULT_POST_LOGIN_PATH, bad
 
+    def test_rejects_control_characters_and_whitespace(self):
+        # Browsers strip tab/newline from a Location header: "/\t/evil.example" becomes //evil.example.
+        from urllib.parse import unquote
+        for bad in (unquote("/%09/evil.example"), unquote("/%0a/evil.example"), "/\t/evil.example",
+                    "/\r/evil", "/ /evil", "/admin\x00"):
+            assert auth._safe_next_path(bad) == auth.DEFAULT_POST_LOGIN_PATH, repr(bad)
+
     def test_rejects_a_bare_relative_path(self):
         assert auth._safe_next_path("admin") == auth.DEFAULT_POST_LOGIN_PATH
 

@@ -26,7 +26,7 @@ _KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _SB, _PT, _RL, _OC, _SP, _RK, _GR, _DL, _TY, _BR, _LS, _ED = SECTIONS[:12]
 _ROWS = {
     "http_host": (_LS, "text", "Listen address", "Network address the backend binds to; 0.0.0.0 means every interface."),
-    "http_port": (_LS, "number", "Listen port", "TCP port the backend serves on. Restart to apply."),
+    "http_port": (_LS, "number", "Listen port", "TCP port the backend serves on. Restart to apply.", {"integer": True, "min": 1024, "max": 65535}),
     "streamerbot_ws_url": (_SB, "text", "WebSocket URL", "Streamer.bot WebSocket address; must be the gaming PC's LAN address, not localhost.", {"needed": True}),
     "streamerbot_ws_password": (_SB, "secret", "WebSocket password", "Password for Streamer.bot's WebSocket authentication.", {"needed": True}),
     "streamerbot_send_as_bot": (_SB, "bool", "Send chat as bot", "Send chat replies from the bot account instead of the broadcaster."),
@@ -39,6 +39,7 @@ _ROWS = {
     "streamlabs_refresh_token": (_TY, "secret", "Streamlabs refresh token", "Streamlabs refresh token, written by the Connect flow."),
     "streamlabs_channel": (_TY, "text", "Streamlabs channel", "Streamer's channel name; also the default user allowed to set the roulette agent."),
     "cloudbot_reply_timeout_seconds": (_PT, "number", "Cloudbot reply timeout", "How long to wait for Cloudbot to answer a points command.", {"unit": "seconds"}),
+    "cloudbot_reply_usernames": (_PT, "list", "Cloudbot account names", "Chat names Cloudbot replies from; replies from anyone else are ignored. Empty accepts any sender (not recommended)."),
     "cloudbot_cache_ttl_seconds": (_PT, "number", "Balance cache time", "How long a viewer's balance read from Cloudbot is reused.", {"unit": "seconds"}),
     "points_exchange_rate_per_inr": (_PT, "number", "Points per rupee", "Points granted per rupee of a tip.", {"unit": "points"}),
     "streamlabs_tips_listener_enabled": (_PT, "bool", "Pay points for tips", "Grant points for Streamlabs tips; leave off while Cloudbot pays donors itself."),
@@ -59,7 +60,7 @@ _ROWS = {
     "roulette_pistol_round_max_creds": (_RL, "number", "Pistol round ceiling", "At or below this credit reading the round counts as a pistol round.", {"unit": "credits"}),
     "roulette_pistol_reserved_creds": (_RL, "number", "Pistol round reserve", "Credits held back on a pistol round.", {"unit": "credits"}),
     "roulette_current_agent": (_RL, "text", "Current agent", "Agent being played, used to size the ability reserve."),
-    "roulette_agent_command_users": (_RL, "json", "Agent command users", "Usernames allowed to set the agent; null means only the streamer."),
+    "roulette_agent_command_users": (_RL, "json", "Agent command users", "Usernames allowed to set the agent; null means only the streamer. A bare name is a Twitch login; write youtube:<name> for a YouTube one."),
     "roulette_agent_ability_costs": (_RL, "table", "Agent ability costs", "Credits to reserve for each agent's abilities."),
     "forced_buy_queued_duration_seconds": (_RL, "number", "Forced-buy queued badge", "How long the forced-buy badge shows as queued.", {"unit": "seconds"}),
     "forced_buy_active_duration_seconds": (_RL, "number", "Forced-buy active badge", "How long the forced-buy badge stays active.", {"unit": "seconds"}),
@@ -106,9 +107,8 @@ _ROWS = {
     "twitch_client_secret": (_TY, "secret", "Twitch client secret", "Client secret of the Twitch app.", {"needed": True}),
     "twitch_user_access_token": (_TY, "secret", "Twitch user token", "Twitch user access token for channel queries."),
     "twitch_channel": (_TY, "text", "Twitch channel", "Twitch channel name, used for live checks and the embed.", {"needed": True}),
-    "youtube_api_key": (_TY, "secret", "YouTube API key", "Key for the YouTube Data API."),
     "youtube_channel_id": (_TY, "text", "YouTube channel ID", "YouTube channel checked for a live broadcast."),
-    "youtube_video_ids": (_TY, "list", "Homepage videos", "YouTube video IDs shown on the homepage while offline (the part after v= in a link). Needs the YouTube API key."),
+    "youtube_video_ids": (_TY, "list", "Homepage videos", "YouTube video IDs shown on the homepage while offline (the part after v= in a link, or the whole link)."),
     "cloudflare_tunnel_domain": (_LS, "text", "Tunnel domain", "Cloudflare tunnel hostname that reaches this backend."),
     "site_out_dir": (_LS, "text", "Site folder", "Absolute path of the built site's out/ folder that the backend serves.", {"needed": True}),
     "app_db_path": (_LS, "text", "Database path", "Where the SQLite database lives; empty uses the default."),
@@ -195,6 +195,8 @@ def _check_type(spec: dict, value) -> "str | None":
             return "Must be a number"
         if not math.isfinite(value):
             return "Must be a finite number"
+        if spec.get("integer") and value != int(value):
+            return "Must be a whole number"
         if "min" in spec and value < spec["min"]:
             return f"Must be {spec['min']}{unit} or more"
         if "max" in spec and value > spec["max"]:

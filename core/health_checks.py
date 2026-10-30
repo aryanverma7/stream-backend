@@ -52,7 +52,7 @@ _task: "asyncio.Task | None" = None
 
 
 def public_health_url() -> "str | None":
-    base = config.get("public_base_url", "").strip()
+    base = str(config.get("public_base_url") or "").strip()  # null in config.json must not crash startup
     if not base:
         return None
     return base.rstrip("/") + "/health"
@@ -99,6 +99,7 @@ async def probe_once(session_factory=None) -> None:
                     _record(False, f"{url} answered {response.status} instead of 200.")
                     return
                 body = await response.json()
+        instance = body.get("instance") if isinstance(body, dict) else None
     except asyncio.TimeoutError:
         _record(False, f"No answer from {url} within {PROBE_TIMEOUT_SECONDS}s - the tunnel is most likely down.")
         return
@@ -106,7 +107,7 @@ async def probe_once(session_factory=None) -> None:
         _record(False, f"Couldn't reach {url}: {e}")
         return
 
-    if body.get("instance") != INSTANCE_ID:
+    if instance != INSTANCE_ID:
         # Reachable, but not us. Left as its own message because the fix is
         # completely different from the tunnel simply being down: something
         # else is answering on this hostname.

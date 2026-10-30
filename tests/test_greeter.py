@@ -182,3 +182,30 @@ class TestTheTwitchFirstMessageFlag:
     def test_its_absence_never_suppresses_one(self, monkeypatch, tmp_path):
         monkeypatch.setattr(config, "_data", enabled(tmp_path))
         assert greeter.should_greet("youtube", "brandnew", time.time(), first_message_flag=False) is True
+
+
+class TestSavingTheSeenList:
+    def test_only_a_newcomer_is_written(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, "_data", enabled(tmp_path))
+        writes = []
+        real = greeter.atomic_write_text
+        monkeypatch.setattr(greeter, "atomic_write_text", lambda p, t: (writes.append(t), real(p, t)))
+        greeter.remember("twitch", "a")
+        greeter.remember("twitch", "a")
+        greeter.remember("twitch", "a")
+        assert len(writes) == 1
+        assert (tmp_path / "seen.json").exists() and not (tmp_path / "seen.json.tmp").exists()
+
+
+def test_atomic_write_keeps_the_old_file_when_the_write_fails(tmp_path, monkeypatch):
+    from core import config as cfg
+    p = tmp_path / "s.json"
+    p.write_text('["old"]')
+
+    def boom(fd):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(cfg.os, "fsync", boom)
+    with pytest.raises(OSError):
+        cfg.atomic_write_text(p, '["new"]')
+    assert p.read_text() == '["old"]' and not (tmp_path / "s.json.tmp").exists()

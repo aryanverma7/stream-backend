@@ -50,7 +50,7 @@ async def fetch_socket_token() -> str:
     """GET /socket/token, per the socket.token scope - requires a valid access_token."""
     token = config.get("streamlabs_access_token", "")
     headers = {"Authorization": f"Bearer {token}", "X-Requested-With": "XMLHttpRequest"}
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
         async with session.get(SOCKET_TOKEN_URL, headers=headers) as resp:
             resp.raise_for_status()
             data = await resp.json()

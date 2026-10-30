@@ -169,3 +169,17 @@ class TestStatus:
         # replacing the token with a fixed string, which would silently
         # defeat the entire stale-tunnel check above.
         assert len(health_checks.INSTANCE_ID) >= 8
+
+
+def test_a_null_public_base_url_is_not_a_crash():
+    config._data["public_base_url"] = None
+    assert health_checks.public_health_url() is None
+
+
+@pytest.mark.asyncio
+async def test_a_non_object_body_is_a_failed_check_not_a_crash():
+    response = _FakeResponse(200)
+    response._body = None  # /health answered "null"
+    factory, _ = factory_for(response)
+    await health_checks.probe_once(session_factory=factory)
+    assert health_checks.status()["reachable"] is False

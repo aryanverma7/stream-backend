@@ -70,7 +70,7 @@ import aiohttp
 
 from core.config import config
 from core.logger import get_logger
-from stream.points import UnknownUser, grant_points, try_spend
+from stream.points import UnknownUser, UnusableName, grant_points, try_spend
 
 log = get_logger("Spotify")
 
@@ -547,6 +547,8 @@ async def request_song(username: str, query: str, platform: str = "twitch") -> d
     if cost > 0:
         try:
             paid, balance = await try_spend(username, cost, platform=platform)
+        except UnusableName:
+            return {"ok": False, "reason": "Your name can't be used with points (letters, digits, _ @ . - only) - nothing was charged"}
         except UnknownUser:
             return {"ok": False, "reason": "I can't find your points account - say something in chat first, then retry"}
         except Exception as e:
