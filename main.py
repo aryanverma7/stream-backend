@@ -52,6 +52,18 @@ async def _forward_chat_to_cloudbot_points(event: dict):
         await points_cloudbot.handle_chat_event(chat)
 
 
+async def shutdown(runner) -> None:
+    """Stops everything main() started, in reverse order, then the HTTP server."""
+    await discord_live.stop_poller()
+    await break_timer.stop_broadcaster()
+    await spotify.stop_now_playing_poller()
+    await stop_tips_listener()
+    await scheduler.stop()
+    await health_checks.stop()
+    await streamerbot.stop()
+    await runner.cleanup()
+
+
 async def main():
     log.info("Mac Mini backend starting up")
 
@@ -191,13 +203,7 @@ async def main():
     await stop_event.wait()
 
     log.info("Shutting down")
-    await break_timer.stop_broadcaster()
-    await spotify.stop_now_playing_poller()
-    await stop_tips_listener()
-    await scheduler.stop()
-    await health_checks.stop()
-    await streamerbot.stop()
-    await runner.cleanup()
+    await shutdown(runner)
 
 
 if __name__ == "__main__":
