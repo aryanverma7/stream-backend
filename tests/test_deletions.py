@@ -354,6 +354,13 @@ def test_project_delete_refused_while_its_vod_is_uploading():
     assert deletions.pending(now=T0) == []
 
 
+def test_project_delete_allowed_once_its_vod_upload_has_been_silent_for_8_days():
+    p = es.create_project("Ranked grind", "2026-10-20", "t", "vod-1020.mp4", 100, now=T0)
+    later = T0 + deletions.VOD_UPLOAD_STALE_SECONDS + 1
+    r = deletions.request_delete("project", p["id"], "Ranked grind", username="boss", role="admin", now=later)
+    assert r["request_id"]
+
+
 def test_overlapping_project_and_child_deletes_are_refused():
     p = _project()
     t = _tape_with_iterations(p["id"])
