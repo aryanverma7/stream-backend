@@ -704,6 +704,17 @@ class TestAuditHardening:
         assert send.await_count == 0
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", ["राहुल_गेमर", "José.Núñez", "@Zoë-99"])
+    async def test_unicode_names_are_one_token_too(self, monkeypatch, name):
+        monkeypatch.setattr(config, "_data", {"cloudbot_silent_write_grace_seconds": 0})
+        send = AsyncMock(return_value=True)
+        monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", send)
+        points_cloudbot._check_name(name)  # no raise
+        for bad in ("victim 99999", "a\u00a0b", "x;y", "a\u200bb"):
+            with pytest.raises(points_cloudbot.UnsafeUsername):
+                points_cloudbot._check_name(bad)
+
+    @pytest.mark.asyncio
     async def test_points_maps_an_unsafe_name_to_unusable_name(self, monkeypatch):
         from stream import points
         monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))

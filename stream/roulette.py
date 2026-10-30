@@ -657,9 +657,11 @@ async def trigger_roulette(username: str, platform: str = "twitch") -> dict:
         # Re-checked after the spend: a second !roulette a moment behind the first passes the checks at
         # the top while the first is still paying. Whoever wins opens the session (is_active and the
         # cooldown are set by _open_session before its first await), so the loser sees it here.
-        if _state.is_active or is_on_cooldown():
-            await _refund(username, cost, platform, "another roulette started first")
-            return {"ok": False, "reason": "A roulette is already in progress - your points are back"}
+        lost = _state.is_active or is_on_cooldown()
+
+    if lost:  # refunded outside the lock, so the new session's votes do not wait on a Cloudbot round trip
+        await _refund(username, cost, platform, "another roulette started first")
+        return {"ok": False, "reason": "A roulette is already in progress - your points are back"}
 
     # Paid. Everything from here to the broadcast is setup, and if any of
     # it fails the viewer is out the trigger cost with nothing running -
@@ -680,6 +682,11 @@ async def _open_session(username: str, platform: str, cost: int) -> dict:
     Sets up a paid-for session. Split out of trigger_roulette purely so
     the paid path has one boundary to catch at - see the call site.
     """
+    # Before any await: a session ended early (dashboard) leaves its timer behind; it must not end this one.
+    old = _state._end_task
+    if old is not None and not old.done() and old is not asyncio.current_task():
+        old.cancel()
+    _state._end_task = None
     # Read the prediction once, here, and hold it for the session. The OCR
     # window is still filling in the background while voting runs, so
     # re-reading it per vote would let the votable set shift underneath
@@ -727,10 +734,6 @@ async def _open_session(username: str, platform: str, cost: int) -> dict:
         log.info(f"{username} triggered a roulette - voting open for {duration}s, {len(votable)}/{len(WEAPONS)} "
                  f"weapons affordable at {predicted} predicted creds")
 
-    # A session ended early (dashboard) leaves its timer behind; it must not end this one.
-    old = _state._end_task
-    if old is not None and not old.done() and old is not asyncio.current_task():
-        old.cancel()
     _state._end_task = asyncio.create_task(_end_after_delay(duration))
     return {"ok": True}
 

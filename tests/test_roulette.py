@@ -2063,14 +2063,20 @@ class TestAuditRaces:
     @pytest.mark.asyncio
     async def test_two_simultaneous_triggers_charge_one_and_refund_the_other(self, monkeypatch):
         monkeypatch.setattr(config, "_data", {"roulette_trigger_cost": 500})
-        spent = []
+        spent, seen = [], {}
 
         async def spend(username, cost, platform="twitch"):
             spent.append(username)
             await asyncio.sleep(0.01)  # a chat round trip
+            if username == "second":
+                # The first session is open by now and a paid vote has landed on it.
+                seen["first_end"] = roulette._state._end_task
+                roulette._state.weights["vandal"] = 1
             return True, None
 
-        refund = AsyncMock()
+        async def refund(username, amount, platform="twitch"):
+            seen["lock_held_during_refund"] = roulette._spend_lock.locked()
+
         monkeypatch.setattr(roulette, "_spend_lock", asyncio.Lock())  # contended: must belong to this loop
         monkeypatch.setattr(roulette, "try_spend", spend)
         monkeypatch.setattr(roulette, "grant_points", refund)
@@ -2079,12 +2085,33 @@ class TestAuditRaces:
         try:
             assert a["ok"] is True and b["ok"] is False
             assert spent == ["first", "second"]
-            refund.assert_awaited_once_with("second", 500, platform="twitch")
-            first_end = roulette._state._end_task
-            roulette._state.weights["vandal"] = 3
-            assert roulette._state.weights["vandal"] == 3 and roulette._state._end_task is first_end
+            assert seen["lock_held_during_refund"] is False  # votes never wait behind the refund
+            assert roulette._state.weights["vandal"] == 1  # the second trigger did not wipe the vote
+            assert seen["first_end"] is not None and roulette._state._end_task is seen["first_end"]
+            assert not seen["first_end"].cancelled()
         finally:
             roulette._state._end_task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_the_old_end_timer_is_cancelled_before_the_first_await(self, monkeypatch):
+        monkeypatch.setattr(config, "_data", {"roulette_cooldown_seconds": 0})
+        monkeypatch.setattr(roulette, "try_spend", AsyncMock(return_value=(True, None)))
+        old = asyncio.create_task(asyncio.sleep(60))
+        roulette._state._end_task = old
+        at_first_await = []
+
+        async def broadcast(*a, **k):
+            at_first_await.append(old.cancelling() > 0 or old.cancelled())
+            await asyncio.sleep(0)
+
+        monkeypatch.setattr(roulette.widget_hub, "broadcast", broadcast)
+        roulette._state.forced_buy_weapon = "vandal"  # clear_forced_buy broadcasts: the session's first await
+        await roulette.trigger_roulette("someone")
+        try:
+            assert at_first_await[0] is True
+        finally:
+            roulette._state._end_task.cancel()
+            old.cancel()
 
     @pytest.mark.asyncio
     async def test_a_new_session_cancels_the_previous_end_timer(self, monkeypatch):

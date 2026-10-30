@@ -97,6 +97,7 @@ Requirements this backend has that the others don't:
 import asyncio
 import re
 import time
+import unicodedata
 
 from core.config import config
 from core.logger import get_logger
@@ -182,11 +183,14 @@ class UnsafeUsername(Exception):
     """
 
 
-_SAFE_NAME = re.compile(r"[A-Za-z0-9_@.-]+")
+def _safe_char(ch: str) -> bool:
+    # Letters, digits and combining marks of any script (Devanagari's vowel signs are marks, which \w
+    # does not match), plus _ @ . -. Whitespace, controls and punctuation are refused.
+    return ch in "_@.-" or unicodedata.category(ch)[0] in "LNM"
 
 
 def _check_name(username: str) -> None:
-    if not _SAFE_NAME.fullmatch(username or ""):
+    if not username or not all(_safe_char(c) for c in username):
         raise UnsafeUsername(username)
 
 

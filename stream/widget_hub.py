@@ -17,6 +17,9 @@ from core.logger import get_logger
 
 SEND_TIMEOUT_SECONDS = 5
 
+# Close tasks in flight: the loop holds only a weak reference, so an unreferenced task can vanish mid-close.
+_closing: set = set()
+
 log = get_logger("WidgetHub")
 
 
@@ -73,7 +76,9 @@ class WidgetHub:
                 log.warning(f"Dropping widget {client_id}: send failed ({type(result).__name__})")
                 self._clients.pop(client_id, None)
                 if not ws.closed:
-                    asyncio.ensure_future(ws.close())
+                    task = asyncio.ensure_future(ws.close())
+                    _closing.add(task)
+                    task.add_done_callback(_closing.discard)
 
     def connected_count(self, tag: str | None = None) -> int:
         if tag is None:

@@ -44,3 +44,15 @@ async def test_a_client_leaving_mid_broadcast_does_not_break_it():
     hub._clients = {"l": (Leaver(), "t"), "k": (keep, "t")}
     await hub.broadcast({"y": 2})
     assert keep.sent == [{"y": 2}]
+
+
+@pytest.mark.asyncio
+async def test_the_close_task_is_held_until_it_finishes():
+    hub = wh.WidgetHub()
+    bad = FakeWS("raise")
+    hub._clients = {"b": (bad, "t")}
+    await hub.broadcast({"z": 3})
+    assert len(wh._closing) == 1  # referenced, so it cannot be collected mid-close
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert bad.closed and wh._closing == set()
