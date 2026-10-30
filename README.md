@@ -43,7 +43,22 @@ launchctl load ~/Library/LaunchAgents/com.dualbladex.backend.plist
 curl -s http://localhost:8765/health
 ```
 
-First install: `cp deploy/com.dualbladex.backend.plist ~/Library/LaunchAgents/` and `launchctl load` it.
+### Install or reinstall the launchd job
+
+Needed on first install and whenever `deploy/com.dualbladex.backend.plist` changes (a `git pull`
+alone does not update the installed copy). The `sed` fills in your macOS user name:
+
+```bash
+cd ~/Documents/Stream && git pull
+launchctl unload ~/Library/LaunchAgents/com.dualbladex.backend.plist
+sed "s/YOUR_MAC_USER/$(whoami)/g" deploy/com.dualbladex.backend.plist > ~/Library/LaunchAgents/com.dualbladex.backend.plist
+plutil -lint ~/Library/LaunchAgents/com.dualbladex.backend.plist
+launchctl load ~/Library/LaunchAgents/com.dualbladex.backend.plist
+curl -s http://localhost:8765/health
+rm -f /tmp/mac_mini_backend.out.log     # stdout now goes to /dev/null; the old file is no longer written
+```
+
+On first install `launchctl unload` reports that nothing is loaded; that is harmless.
 It is a LaunchAgent, so it starts at login; power-cut recovery needs macOS automatic login and
 `sudo pmset autorestart 1`. Crash logs: `/tmp/mac_mini_backend.err.log`.
 The public hostname is a Cloudflare tunnel (`cloudflared`, installed as a LaunchDaemon) to port 8765.
