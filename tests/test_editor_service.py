@@ -414,6 +414,16 @@ def test_no_combine_into_a_project_being_deleted():
         svc.combine_clips([a["id"], b["id"]], "x", "aryan")
 
 
+def test_no_combine_with_a_clip_whose_vod_is_being_deleted():
+    from editor import deletions
+    a, b = _clip("A"), _clip("B")
+    es.mark_vod_ready(b["id"], "VB")
+    deletions.request_delete("vod", b["id"], "B.mp4", username="aryan", role="admin")
+    with pytest.raises(ValueError, match="B is being deleted"):
+        svc.combine_clips([a["id"], b["id"]], "x", "aryan")
+    assert _events("reels_combined") == []
+
+
 @pytest.mark.asyncio
 async def test_reel_works_like_a_tape(_env):
     from editor import editor_comments as ec

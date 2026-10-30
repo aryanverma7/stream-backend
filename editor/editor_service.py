@@ -100,6 +100,8 @@ def combine_clips(project_ids, name, actor, now=None) -> dict:
             if p is None or p["deleted_at"] is not None or p["kind"] != "clip":
                 raise ValueError("Only clips can be combined")
             deletions.ensure_project_not_deleting(pid)
+            if deletions.has_live_request("vod", pid):  # its file is going: nothing left to cut a reel from
+                raise ValueError(f"{p['name']} is being deleted - it cannot be combined")
             reel = es.reel_for_clip(pid)
             if reel["id"] not in [r["id"] for r in reels]:
                 reels.append(reel)
