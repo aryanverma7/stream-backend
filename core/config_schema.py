@@ -6,8 +6,10 @@ config.example.json; keys it does not know come from `_custom_fields` or are
 inferred. Secrets never leave the server - GET sends SECRET_MASK instead, and
 a PUT carrying the mask back is treated as "unchanged".
 """
+import json
 import math
 import re
+from pathlib import Path
 
 SECRET_MASK = "•" * 8
 FIELD_TYPES = ("number", "text", "bool", "list", "table", "json", "secret")
@@ -161,9 +163,32 @@ def _infer(value, secret: bool) -> str:
     return "secret" if secret else "text"
 
 
+_EXAMPLE = Path(__file__).parent.parent / "config.example.json"
+
+
+def _example_defaults() -> dict:
+    try:
+        return json.loads(_EXAMPLE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
 def with_needed(data: dict) -> dict:
-    """data plus every "needed" key it lacks, empty, so the settings page can show and fill it."""
-    return {**{k: [] if f["type"] == "list" else "" for k, f in FIELDS.items() if "needed" in f}, **data}
+    """
+    data plus every FIELDS key it lacks, so the settings page shows (and can fill) settings added after
+    config.json was written. A needed key comes in empty, so the red banner flags it; any other key gets
+    config.example.json's default. Nothing is written until a save.
+    """
+    example = _example_defaults()
+    missing = {}
+    for k, f in FIELDS.items():
+        if k in data:
+            continue
+        if "needed" in f:
+            missing[k] = [] if f["type"] == "list" else ""
+        elif k in example:
+            missing[k] = example[k]
+    return {**missing, **data}
 
 
 def schema_for(data: dict) -> dict:

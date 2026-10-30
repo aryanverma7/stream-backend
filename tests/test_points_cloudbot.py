@@ -710,16 +710,37 @@ class TestAuditHardening:
         send = AsyncMock(return_value=True)
         monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", send)
         points_cloudbot._check_name(name)  # no raise
-        for bad in ("victim 99999", "a\u00a0b", "x;y", "a\u200bb"):
+        for bad in ("victim 99999", "a\u00a0b", "x;y", "a\u200bb", "a  b", " a", "x -5", "y 1,000"):
             with pytest.raises(points_cloudbot.UnsafeUsername):
                 points_cloudbot._check_name(bad)
+
+    @pytest.mark.parametrize("name", ["Rahul Kumar", "राहुल कुमार", "Zoë the Great"])
+    def test_youtube_names_with_spaces_are_allowed(self, name):
+        points_cloudbot._check_name(name)  # no raise
+
+    @pytest.mark.parametrize("text,user", [
+        ("@Rahul Kumar, you have 19 Bunds.", "Rahul Kumar"),
+        ("राहुल कुमार, you have 7 Bunds", "राहुल कुमार"),
+    ])
+    def test_balance_replies_match_names_with_spaces_and_any_script(self, text, user):
+        assert points_cloudbot._POINTS_RE.search(text).group("user") == user
+
+    @pytest.mark.parametrize("text,user", [
+        ("DualBladeX has successfully removed 500 Bunds from Rahul Kumar.", "Rahul Kumar"),
+        ("DualBladeX has successfully removed 5 Bunds from राहुल", "राहुल"),
+    ])
+    def test_write_replies_match_names_with_spaces_and_any_script(self, text, user):
+        assert points_cloudbot._REMOVED_RE.search(text).group("user") == user
+        added = text.replace("removed", "added").replace(" from ", " to ")
+        assert points_cloudbot._ADDED_RE.search(added).group("user") == user
+        assert points_cloudbot._NOT_FOUND_RE.search(f"Unable to find {user}.").group("user") == user
 
     @pytest.mark.asyncio
     async def test_points_maps_an_unsafe_name_to_unusable_name(self, monkeypatch):
         from stream import points
         monkeypatch.setattr(points_cloudbot.streamerbot, "send_chat_message", AsyncMock(return_value=True))
         with pytest.raises(points.UnusableName):
-            await points.try_spend("two words", 10, "youtube")
+            await points.try_spend("two 2", 10, "youtube")
 
     @pytest.mark.asyncio
     async def test_replies_from_a_sender_not_on_the_list_are_ignored(self, monkeypatch):
