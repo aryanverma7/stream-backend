@@ -17,9 +17,10 @@ truth; if a decision changes, change the spec first, then this map.
 | 1 | Foundation: security, roles, settings page | `2026-10-25-editor-app-1-foundation.md` | shipped 2026-10-26 (stream-backend#1, stream-site#1) |
 | 2 | Editor backend: data, Drive, deletes, recovery, clips | `2026-10-26-editor-app-2-backend.md` | shipped (stream-backend#2 merged, deployed 2026-10-26) |
 | 3 | Discord DMs and notifications | `2026-10-27-editor-app-3-discord.md` | Shipped 2026-10-26 (stream-backend#3) |
-| 4 | Gaming PC uploader | `2026-10-27-editor-app-4-uploader.md` | PRs open 2026-10-28: stream-backend#4, pc-ocr#1 |
+| 4 | Gaming PC uploader | `2026-10-27-editor-app-4-uploader.md` | shipped (stream-backend#4, pc-ocr#1) |
 | 5A | Editor site: navigation, cards, uploads, checks, deletes, bell, Home, Fix list, Storage, CSP | `2026-10-28-editor-app-5a-site.md` | shipped 2026-10-28 (stream-backend#10, stream-site#4) |
-| 5B | Review player and comments | `2026-10-29-editor-app-5b-player.md` | PRs open 2026-10-29: stream-backend#13, stream-site#7 (merge backend first) |
+| 5B | Review player and comments | `2026-10-29-editor-app-5b-player.md` | shipped (stream-backend#13, stream-site#7) |
+| 6 | Frame.io round (6A–6E; 6F later) | `2026-10-31-editor-app-6-frameio.md` | 6A done 2026-10-31 |
 
 ## Coverage map
 
@@ -71,8 +72,8 @@ truth; if a decision changes, change the spec first, then this map.
 - [x] 2 · Start over: resolve all open comments on the latest version (admin)
 - [x] 2 · Project delete refused for a clip hosting a combined reel until the reel's files are deleted
 - [x] 4 · Uploader reports each file's duration; multi-file right-click makes one clip each
-- [ ] 5 · Clips list oldest first, "used in" link, Combine/Uncombine UI, Start over button
-- [ ] 5 · CSP + frame-ancestors + nosniff headers; recommend an extension-free browser profile
+- [x] 5 · Clips list oldest first, "used in" link, Combine/Uncombine UI, Start over button (5A, stream-site#9)
+- [x] 5 · CSP + frame-ancestors + nosniff headers; recommend an extension-free browser profile (no CSP on `/` and `'unsafe-inline'` kept: spec note 2026-10-31; profile advice in `GDRIVE_SETUP.md`)
 
 ### Discord (spec: "Threads and notifications", "Flows")
 - [x] 3 · Bot via REST (no gateway); token + both user IDs in config
@@ -92,7 +93,7 @@ truth; if a decision changes, change the spec first, then this map.
 
 ### Editor frontend (spec: "Pages and navigation", "Flow 4", "Checks")
 - [x] 5 · Zoom navigation + breadcrumb; Back/Esc zooms out (5A)
-- [ ] 5 · Iteration cards: thumbnail, version, check badges, checklist summary card, hover/tap menu
+- [ ] 5 · Iteration cards: thumbnail, version, check badges, checklist summary card, hover/tap menu. Built except (a) the "Edit checklist" menu item and (b) the summary as a card, not inline text: moved to Plan 6B task 5
 - [x] 5 · Status labels with filter and sort (5A)
 - [x] 5 · Editor Home, Fix list, Storage page, Transfers panel, To-do, Brand kit link (5A)
 - [x] 5 · Iteration upload by drag and drop (resumable, pauses and resumes) (5A)
@@ -100,22 +101,27 @@ truth; if a decision changes, change the spec first, then this map.
 - [x] 5 · Comments in the player: C to capture time, ranges, general comments, scrub markers, list follows playback, jump on click (5B)
 - [x] 5 · Player keys: frame step, speed, `?` sheet; resume position; compare versions (low priority) (5B)
 - [x] 5 · Unsent comments kept in browser storage and resent (5B)
-- [ ] 5 · Checks: resolution, fps, bitrate (>= 50 Mbps); pass/warn/fail badges (no loudness/peak/length, streamer 2026-10-28)
+- [x] 5 · Checks: resolution, fps, bitrate (>= 50 Mbps); pass/warn/fail badges (no loudness/peak/length, streamer 2026-10-28). fps: only 60/59.94 passes, everything lower fails (streamer 2026-10-30, stream-site#9)
 - [x] 5 · Thread UI, New badges, bell, VOD-ready popup, search UI (5B)
-- [ ] 5 · Visual design pass in the site's style (wireframes are layout only)
+- [ ] 5 · Visual design pass in the site's style (wireframes are layout only). Waiting on the Persona 5 decision (stream-site branch theme/persona5)
+
+### Plan 6: Frame.io round (spec: "Frame.io round"; plan `2026-10-31-editor-app-6-frameio.md`)
+- [x] 6A · Roadmap and spec clean-up
+- [ ] 6B · Playability bar (codec named, "can't play H.265" bar on the video); Export markers (.edl/.xml/.csv); card summary + Edit checklist
+- [ ] 6C · Side-by-side compare, synced, sound switch
+- [ ] 6D · Comment attachments (images, 20 MB, browser to Drive, deleted with the tape's files)
+- [ ] 6E · Share links (streamer only, 1/2/10/24 h/7 d, Live links + Revoke, revoked early on an untrusted clock) and guest notes (approved by the streamer before the editor sees them)
+- [ ] Later · 6F Hinglish auto transcript on the gaming PC (postponed 2026-10-31: no access to the gaming PC)
 
 ### Carried from Plan 2's final review (do first in Plan 3)
 - [x] 3 · `complete_iteration_upload` refuses while a tape_files delete for that tape is pending/running (an abandoned iteration completed during the hour would escape the request)
 - [x] 3 · deletions' clock-jump check: compare wall-clock delta against `time.monotonic()` delta so a slow job is not mistaken for a jump
 
 ### Later (not in any plan yet)
-- Audit 2026-10-30 leftovers: forged Cloudbot replies still possible on YouTube (display names; needs a stable id or Streamer.bot bot flag); session tokens stored unhashed; the raw `drive.file` token handed to both roles can also delete files (proxy media or per-file links); brand kit not re-shared when `editor_google_email` changes, stale folder ids after reconnecting another account, `ensure_layout` not under the folder lock; project delete allowed while the VOD itself is uploading (unverified); public routes uncached (`/api/public/live-status`, `/videos`); `/api/status` waits on Spotify each poll; `_pending_logins` cap 32 can evict the streamer's login; `discord_live.stop_poller` never called; plist stdout log unrotated; `/api/logs` reads only the current rotated file; uploader drops a job on a Drive 403 rateLimitExceeded and after >5 failed job-file writes; `stream_date` uses mtime; unsent-queue entries from before the username change are never sent; 29.97 fps graded warn though the spec says under 30 fails (streamer to decide); checks/thumbnail missing when the tab closed during checking or reconcile completed the upload; a second tab can cancel another tab's upload
-- 5B follow-ups (reviews, parked): V while playing auto-starts a partner that is not fully downloaded (streams; one-line change to require complete); `editor.resumePlaying` flag can linger if the partner never mounts; storage-only + video error Try again remounts instead of reloading; shift+reload leaves the page uncontrolled by the worker (shows "Reload"; could claim via a message); stale `media` message / timed-out need-link waiters / cancel race in media-sw.js; abort not checked in the download prelude; edit-in-place and composer draft polish; double GET /iterations in useComments; scrollIntoView pulls ancestors; SearchBox arrow keys and listbox semantics; StrictMode dev double-effect clears the composer flag; a Drive 403 rate limit reads as "no longer on Drive"; New badges ignore edits (created_at, spec says last-changed); test gaps listed in the 5B ledger
-- 5A follow-ups (final review, parked): VodReadyPopup Esc test flaky (useLayoutEffect); download_project should record the click before minting a Drive token / return {ok}; cancel during "waiting for Mac Mini" orphans the finished file; Combine count can include a limbo clip; Home ignores project-delete limbo; native confirm/prompt dialogs to restyle in a design pass
-- Verify in a real browser: Google exposes Range to CORS (Firefox), fps measuring, ProRes/HEVC thumbnails, Drive direct download for both accounts
-- Restructure stream-backend into folders (streamer asked 2026-10-28): after PR #4 and #5 merge, before Plan 5
-- Chat overlay blank after the gaming PC was off: Streamer.bot socket heartbeat, PR stream-backend#5
-- Fix tests/test_credit_ocr.py (pre-existing, found 2026-10-26 on the Mac Mini): fixture images lack the "MIN NEXT ROUND" label the code now requires, and credits_5700_comma.png, credits_113_not_multiple_of_10.png, credits_no_label_120.png were never committed
+- Done 2026-10-30 (stream-backend#15, #16; stream-site#9, #10; pc-ocr#4): every 5A/5B follow-up above this line was fixed (in-site dialogs replace confirm/prompt, V while playing, SW claim, SW waiters, edits count as New, SearchBox keys, legacy unsent, Run checks, Web Lock per upload, Home/Combine limbo), plus hashed session tokens, Cloudbot `id:` matching, Brand kit re-share, public-route caching, credit-OCR fixtures and skip, plist fix, Playwright browser checks (which found and fixed: reload deleted every downloaded version).
+- Still to verify on real machines: Google exposes Range to CORS, 2 GB+ files, H.265 playback and thumbnails on the laptop and on a guest's phone, fps measuring, Safari; a YouTube name with a space spending points (does Cloudbot accept it?); the credit-OCR fixtures against the Mac's MacPorts tesseract.
+- Widget theme: Persona 5 merged to stream-widgets main (#1); theme/backrooms and theme/valorant-hud kept. Persona 5 preview of the site on stream-site branch theme/persona5 (streamer decides whether to adopt).
+- Known limit: after a Drive reconnect to a different Google account, existing projects keep their old-account folder ids.
 - Mac Mini: backend is back to a LaunchAgent (a LaunchDaemon can't read ~/Documents under Catalina's privacy protection: PermissionError on venv/pyvenv.cfg); power-cut recovery relies on automatic login
 - Export spec thresholds: supplied 2026-10-28 (spec "Checks on every iteration")
 - Optional: editor side to Cloudflare; UPS
@@ -132,7 +138,7 @@ truth; if a decision changes, change the spec first, then this map.
 - Site: `lib/settingsModel.ts`, `lib/useConfigEditor.ts` (schema + `schemaMissing` fallback), `components/admin/ConfigEditor.tsx` + `SettingsField.tsx` (Settings page), `eslint.config.mjs`, next 16.4.3.
 - Deps: aiohttp 3.14.5, Pillow 13.0.0 (Mac Mini; gaming PC `Pillow>=11.0.0`), aioresponses 0.7.9 (dev, shimmed in `conftest.py`).
 - Tests run in WSL via uv (see CLAUDE.md); `tsconfig.tsbuildinfo` is tracked and dirtied by tsc.
-- Known gap: `README.md` in stream-backend still describes the LaunchAgent install; the real setup is LaunchDaemons (backend and cloudflared).
+- Known gap: `README.md` in stream-backend still describes the LaunchAgent install; the real setup is a LaunchAgent for the backend and a LaunchDaemon for cloudflared (see CLAUDE.md).
 
 ### Plan 2
 - Docs: `GDRIVE_SETUP.md` (streamer's one-time Google setup + "If the database is ever corrupted"); CLAUDE.md subsection "The editor backend keeps its state in `app.db`...".

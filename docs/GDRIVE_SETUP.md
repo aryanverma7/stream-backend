@@ -82,6 +82,9 @@ the apps with access, and run step 10 again.
 
 Only files made by this app are visible to it. It cannot see the rest of your Drive.
 
+Open the dashboard and the editor in a browser profile with no extensions: an extension can read
+every page you open, including your comments and the editor's Drive links.
+
 ## If the database is ever corrupted
 
 The app's database (`app.db` on the Mac Mini) holds the projects, comments and logins. A corrupt
