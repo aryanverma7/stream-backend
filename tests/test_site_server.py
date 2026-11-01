@@ -9,7 +9,7 @@ from core.config import config
 
 EDITOR_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; "
               "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
-              "img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://www.googleapis.com https://*.googleusercontent.com; "
+              "img-src 'self' data: blob:; media-src 'self' blob: https://www.googleapis.com https://*.googleusercontent.com; connect-src 'self' https://www.googleapis.com https://*.googleusercontent.com; "
               "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
 

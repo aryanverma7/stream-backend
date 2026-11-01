@@ -85,7 +85,8 @@ def _comment(id):
 
 
 def add_comment(iteration_id, author, kind, body, start_s=None, end_s=None, now=None,
-                client_id=None, attachment_ids=None):
+                client_id=None, attachment_ids=None, actor=None):
+    """`actor` records the event under someone else's name (an approved guest note is the streamer's news)."""
     now = time.time() if now is None else now
     if kind not in KINDS:
         raise ValueError(f"unknown comment kind {kind!r}")
@@ -109,7 +110,7 @@ def add_comment(iteration_id, author, kind, body, start_s=None, end_s=None, now=
             (iteration_id, author, kind, start_s, end_s, body, now, now, client_id)).lastrowid
         conn.execute("INSERT INTO comment_state(comment_id, iteration_id) VALUES(?,?)", (cid, iteration_id))
         ea.link(conn, attachment_ids, author, tape_id, comment_id=cid)  # raising rolls the comment back too
-        es.record_event(author, "comment_added", f"{author} commented: {_short(body)}", project_id=project_id,
+        es.record_event(actor or author, "comment_added", f"{author} commented: {_short(body)}", project_id=project_id,
                         tape_id=tape_id, iteration_id=iteration_id, comment_id=cid, now=now)
     return _comment(cid)
 

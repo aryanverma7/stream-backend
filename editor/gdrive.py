@@ -201,6 +201,18 @@ async def share_with(file_id: str, email: str, role: str = "reader") -> None:
                    json={"type": "user", "role": role, "emailAddress": email})
 
 
+async def share_anyone(file_id: str) -> str:
+    """An "anyone with the link" reader permission on one file; returns its permission id."""
+    _, d = await _request("POST", f"{API}/files/{file_id}/permissions", params={"fields": "id"},
+                          json={"type": "anyone", "role": "reader"})
+    return d["id"]
+
+
+async def unshare(file_id: str, permission_id: str) -> None:
+    """Removes one permission; a 404 (file or permission already gone) counts as done."""
+    await _request("DELETE", f"{API}/files/{file_id}/permissions/{permission_id}", ok_404=True)
+
+
 async def delete_file(file_id: str) -> None:
     await _request("DELETE", f"{API}/files/{file_id}", ok_404=True)
 

@@ -18,6 +18,7 @@ OUTAGE_SECONDS = 600
 _CURSOR = "notify_cursor"
 _OTHER = {"admin": "editor", "editor": "streamer"}
 _DIGEST_KINDS = ("comment_added", "reply_added", "comment_resolved", "start_over")
+_COUNTED = (*_DIGEST_KINDS, "guest_notes_added")  # guest notes: always the streamer's, never the editor's
 _READY = "ready"  # digest_pending pseudo-recipient for finished uploads; DMed to the editor
 _READY_NAMES = 5
 _boot_last_seen: "float | None" = None
@@ -50,6 +51,9 @@ def _handle(ev: dict, now: float) -> None:
                 return
             notify_outbox.enqueue("streamer", f"{tape['name']} v{it['version']} is ready to review.",
                                   f"iteration_ready:{it['id']}", now)
+    elif kind == "guest_notes_added":
+        db.get().execute("INSERT OR IGNORE INTO digest_pending(recipient_role, event_id, actor, at)"
+                         " VALUES(?,?,?,?)", ("streamer", ev["id"], actor, ev["at"]))
     elif kind in _DIGEST_KINDS:
         recipient = _OTHER.get(role_for_username(actor))
         if recipient:
@@ -64,6 +68,8 @@ def _count(kind: str, n: int) -> str:
         return f"{n} repl{'y' if n == 1 else 'ies'}"
     if kind == "comment_resolved":
         return f"{n} resolved"
+    if kind == "guest_notes_added":
+        return f"{n} guest note{'' if n == 1 else 's'} to approve"
     return "started over" if n == 1 else f"started over {n} times"
 
 
@@ -82,7 +88,7 @@ def _digest(rows) -> str:
         group[r["kind"]] = group.get(r["kind"], 0) + 1
     lines = []
     for actor, groups in by_actor.items():
-        parts = [", ".join(_count(k, c[k]) for k in _DIGEST_KINDS if k in c) + " on " + label(*key)
+        parts = [", ".join(_count(k, c[k]) for k in _COUNTED if k in c) + " on " + label(*key)
                  for key, c in groups.items()]
         lines.append(f"{display_name(actor)}: " + "; ".join(parts))
     return "; ".join(lines) + "."

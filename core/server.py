@@ -30,6 +30,7 @@ from core import site_server
 from stream import spotify_oauth
 from editor import gdrive_oauth
 from stream import streamlabs_oauth
+from editor import share_api
 from editor import uploader_api
 from core.logger import get_logger
 from stream.widget_hub import widget_hub
@@ -54,7 +55,7 @@ async def handle_widget_ws(request: web.Request) -> web.WebSocketResponse:
 # 'unsafe-inline' scripts: Next's static export inlines its bootstrap, and a nonce needs a server.
 PAGE_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
-            "img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://www.googleapis.com https://*.googleusercontent.com; "
+            "img-src 'self' data: blob:; media-src 'self' blob: https://www.googleapis.com https://*.googleusercontent.com; connect-src 'self' https://www.googleapis.com https://*.googleusercontent.com; "
             "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
 
@@ -72,6 +73,8 @@ async def _security_headers(request: web.Request, response: web.StreamResponse) 
         h.setdefault("Content-Security-Policy", PAGE_CSP)
     h.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
     h.setdefault("X-Content-Type-Options", "nosniff")
+    # The browser default, stated: the share page's API key is restricted to this site by its Referer.
+    h.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     if path == "/editor/media-sw.js":  # default scope /editor/ would miss the page /editor itself
         h["Service-Worker-Allowed"] = "/editor"
 
@@ -114,6 +117,8 @@ def build_app() -> web.Application:
     editor_api.register_routes(app)
     # The gaming-PC VOD uploader: no session, X-Agent-Secret checked in the handlers.
     uploader_api.register_routes(app)
+    # Share-link guests: no session, the token in the body is checked in the handlers.
+    share_api.register_routes(app)
 
     # Registered LAST, deliberately - confirmed by testing that aiohttp
     # resolves the more specific routes above before falling through to

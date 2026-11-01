@@ -73,6 +73,23 @@ If the folder does not appear, run step 10 again. It is safe to repeat. If Googl
 token came back, open your Google account's security page, remove the "DualBladeX Editor" app from
 the apps with access, and run step 10 again.
 
+## Part 4: Share links (only if you want no-login links for guests)
+
+A share link lets someone without an account watch one version and leave notes for you to approve.
+Their browser plays the file straight from Google, which needs a public API key. That key is public
+by design: it only identifies the app, and you restrict it to your site.
+
+1. In the same Google Cloud project, open **APIs & Services > Credentials > Create credentials > API key**.
+2. Click the new key. Under **Application restrictions** choose **Websites** and add
+   `https://hub.dualbladex.org/*`.
+3. Under **API restrictions** choose **Restrict key** and tick **Google Drive API**. Save.
+4. In the dashboard, open **Settings > Editor app > Drive public API key**, paste the key and save.
+
+While a link is live, that one file is viewable by anyone who has the link. Google limits how often
+a public file can be downloaded, so links suit a few viewers, not an audience. If the Mac Mini is off
+when a link expires, the file stays shared until it is back on; if it starts with a clock it cannot
+trust, it revokes every live link at once, and you make a new one.
+
 ## What lives where
 
 - **Projects**: one folder per stream VOD, named like `2026-10-24 Stream title`, with a subfolder for
