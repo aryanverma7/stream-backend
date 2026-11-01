@@ -272,3 +272,6 @@ async def test_guest_notes_ring_the_streamers_bell_and_digest_only(drive):
     rows = [dict(r) for r in db.get().execute("SELECT recipient_role FROM digest_pending")]
     assert rows == [{"recipient_role": "streamer"}]
     assert notifier._count("guest_notes_added", 3) == "3 guest notes to approve"
+    rows = db.get().execute("SELECT d.actor, e.kind, e.project_id, e.tape_id, e.iteration_id FROM digest_pending d"
+                            " JOIN events e ON e.id=d.event_id").fetchall()
+    assert notifier._digest(rows) == "Rahul: 1 guest note to approve on Clutch v1."

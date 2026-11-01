@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS digest_pending(
 
 
 def display_name(username: str) -> str:
-    return username
+    return username.removeprefix("guest:")  # a share-link guest's notes name the guest, not the account
 
 
 def _handle(ev: dict, now: float) -> None:
