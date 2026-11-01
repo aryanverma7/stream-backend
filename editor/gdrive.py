@@ -30,7 +30,7 @@ _TIMEOUT = aiohttp.ClientTimeout(total=60)
 # A backup PUT on a slow home uplink can legitimately take minutes: bound the
 # stalls, not the total.
 _UPLOAD_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=120)
-_FILE_FIELDS = "id,name,size,parents,appProperties,webViewLink"
+_FILE_FIELDS = "id,name,size,mimeType,parents,appProperties,webViewLink"
 
 _token: "str | None" = None
 _token_expires_at: float = 0.0
