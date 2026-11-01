@@ -14,6 +14,7 @@ treats a 404 as success, so the retry is idempotent. Deletes are permanent
 import time
 
 from core import db
+from editor import editor_attachments as ea
 from editor import editor_store as es
 from editor import gdrive
 from core import scheduler
@@ -61,6 +62,7 @@ class NotFound(ValueError):
 def _c():
     # Both DDLs before any transaction: executescript COMMITs, which would end one early.
     es._c()
+    ea._c()
     db.ensure(_DDL)
     return db.get()
 
@@ -91,6 +93,8 @@ def _target(kind, target_id, now):
         if any(i["status"] == "uploading" for i in its):
             raise ValueError("Wait for the upload to finish first")
         files = _iteration_files(its)
+        if ea.folder_of(t["id"]) and t["files_deleted_at"] is None:  # the folder takes every image on the tape's comments
+            files.append((ea.folder_of(t["id"]), "folder", t["id"], None))
         if not files:  # an empty request would still set files_deleted_at, which unlocks a host clip's delete
             raise ValueError("Nothing to delete")
         return t["name"], t["project_id"], t["id"], files
@@ -298,8 +302,10 @@ def _finalize(req, now):
                      (now, req["id"]))
         if kind == "tape_files":
             conn.execute("UPDATE tapes SET files_deleted_at=?, updated_at=? WHERE id=?", (now, now, tid))
+            ea.mark_deleted(conn, [tid], now)
         elif kind == "project":
             conn.execute("UPDATE projects SET deleted_at=?, updated_at=? WHERE id=?", (now, now, tid))
+            ea.mark_deleted(conn, [r["id"] for r in conn.execute("SELECT id FROM tapes WHERE project_id=?", (tid,))], now)
         conn.execute("UPDATE delete_requests SET status='done' WHERE id=?", (req["id"],))
         project_id, tape_id = _event_ids(req)
         es.record_event("system", "delete_done", f"Deleted {req['label']}",

@@ -6,6 +6,7 @@ import time
 from core.config import config
 from core import db
 from editor import deletions
+from editor import editor_attachments as ea
 from editor import editor_comments
 from editor import editor_store as es
 from editor import gdrive
@@ -235,6 +236,62 @@ async def complete_iteration_upload(iteration_id, file_id, actor) -> dict:
         except Exception as e:
             log.warning(f"could not share iteration {iteration_id} with the editor: {e}")
     return row
+
+
+async def start_attachment_upload(iteration_id, author, name, size, mime) -> dict:
+    """A resumable Drive session for one image on this iteration's tape: {id, upload_url}."""
+    name = ea.validate(name, size, mime)
+    it = es.get_iteration(iteration_id)
+    if it is None:
+        raise ValueError("No such iteration")
+    tape_id = it["tape_id"]
+    _ensure_tape_open(tape_id)
+    parent = await ensure_tape_folder(tape_id)
+    async with _folder_lock:  # one Attachments folder per tape, however many uploads start at once
+        folder = ea.folder_of(tape_id)
+        if not folder:
+            folder = await gdrive.create_folder("Attachments", parent)
+            ea.set_folder(tape_id, folder)
+    _ensure_tape_open(tape_id)  # again after the awaits, right before the insert
+    aid = ea.create(tape_id, author, name, size, mime)
+    try:
+        url = await gdrive.start_resumable_upload(name, folder, size, mime, {"attachment_id": str(aid)},
+                                                  config.get("public_base_url") or None)
+    except BaseException:
+        ea.forget(aid)
+        raise
+    return {"id": aid, "upload_url": url}
+
+
+async def complete_attachment_upload(aid, author, file_id) -> dict:
+    """Checks Drive's file is this upload (folder, id, size, type) before it can be attached."""
+    a = ea.get(aid)
+    if a is None or a["status"] == "deleted":
+        raise ValueError("No such attachment")
+    if a["author"] != author:
+        raise PermissionError("Only the uploader can finish this")
+    if a["status"] == "ready":
+        return a
+    f = await gdrive.get_file(file_id)
+    if (ea.folder_of(a["tape_id"]) not in f.get("parents", [])
+            or f.get("appProperties", {}).get("attachment_id") != str(aid)
+            or f.get("size") != a["size"] or f.get("mimeType") != a["mime"]):
+        # Wrong type or size slipped past the browser: never leave it on Drive (a 404 counts as done).
+        await gdrive.delete_file(file_id)
+        ea.set_status(aid, "deleted")
+        raise ValueError("That file is not this attachment's upload")
+    deletions.ensure_tape_not_deleting(a["tape_id"])
+    ea.set_status(aid, "ready", file_id)
+    return ea.get(aid)
+
+
+async def attachment_media_link(aid) -> dict:
+    a = ea.get(aid)
+    if a is None or a["status"] != "ready":
+        raise Unavailable(404, "This image is not available")
+    # the same drive.file token as media_link, so the same accepted ceiling
+    return {"url": f"{gdrive.API}/files/{a['drive_file_id']}?alt=media", "access_token": await gdrive.access_token(),
+            "expires_in": max(0, int(gdrive.token_expires_at() - time.time()))}
 
 
 async def vod_ready(project_id, file_id, actor) -> dict:

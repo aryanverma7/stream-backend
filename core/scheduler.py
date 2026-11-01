@@ -39,6 +39,7 @@ _internet_checked_mono: float | None = None
 _internet_check: dict = {"at": None, "agreed": None}
 _disagree_logged = False
 _on_auto_reset: list[Callable[[float], object]] = []
+_on_paused: list[Callable[[float], Awaitable[None]]] = []
 
 
 def backoff_seconds(attempts: int) -> float:
@@ -71,6 +72,11 @@ def _last_seen() -> float | None:
 def on_auto_reset(fn: Callable[[float], object]) -> None:
     """fn(now) runs right after an internet-confirmed reset, as the reset-clock route does by hand."""
     _on_auto_reset.append(fn)
+
+
+def on_paused(fn: Callable[[float], Awaitable[None]]) -> None:
+    """await fn(now) once each time the clock gate shuts: for work that is safe early (revoking a share link)."""
+    _on_paused.append(fn)
 
 
 def last_seen() -> float | None:
@@ -143,6 +149,11 @@ async def tick(now: float | None = None) -> bool:
             _disagree_logged = False
             log.warning("Clock (%s) is behind the last time seen (%s); scheduled jobs paused",
                         now, _last_seen())
+            for fn in _on_paused:
+                try:
+                    await fn(now)
+                except Exception:
+                    log.exception("On-pause callback failed")
         if not await _internet_confirms(now):
             return False
     _insane = False
@@ -191,6 +202,7 @@ def _reset_for_tests() -> None:
     global _boot_time, _insane, _paused_since, _garbage_logged, _internet_checked_mono, _disagree_logged
     _jobs.clear()
     _on_auto_reset.clear()
+    _on_paused.clear()
     _internet_checked_mono = None
     _internet_check.update(at=None, agreed=None)
     _disagree_logged = False

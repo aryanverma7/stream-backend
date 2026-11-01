@@ -728,3 +728,125 @@ async def test_reply_route_on_old_db_without_client_id_column():
         assert (await a.editor("POST", path, {"body": "x", "client_id": "abcdefgh1"}))[0] == 200
         status, got = await a.editor("POST", path, {"body": "x", "client_id": "x"})
         assert (status, got) == (400, {"error": "client_id is not valid"})
+
+
+# -- attachments (Plan 6D) --
+
+from editor import editor_attachments as ea  # noqa: E402
+
+PNG = {"name": "shot.png", "size": 1000, "mime": "image/png"}
+
+
+async def _attachment(a, it, who="admin", file_id="IMG", drive=None, **over):
+    status, got = await a.call(who, "POST", f"/api/editor/iterations/{it['id']}/attachments", {**PNG, **over})
+    assert status == 201, got
+    pending = drive["files"].pop("pending")
+    drive["files"][file_id] = {**pending, "mimeType": pending["mime"]}
+    status, done = await a.call(who, "POST", f"/api/editor/attachments/{got['id']}/complete", {"file_id": file_id})
+    assert status == 200, done
+    return got["id"]
+
+
+@pytest.mark.asyncio
+async def test_attachment_refuses_other_types_and_big_files(drive):
+    p, t, it, c = _world()
+    async with api() as a:
+        for over in ({"mime": "image/svg+xml"}, {"mime": "video/mp4"}, {"size": 20 * 1024 * 1024 + 1}, {"size": 0},
+                     {"name": "../x.png"}):
+            status, got = await a.admin("POST", f"/api/editor/iterations/{it['id']}/attachments", {**PNG, **over})
+            assert status == 400, over
+
+
+@pytest.mark.asyncio
+async def test_attachment_uploads_into_one_attachments_folder_per_tape(drive):
+    p, t, it, c = _world()
+    async with api() as a:
+        await _attachment(a, it, file_id="IMG1", drive=drive)
+        await _attachment(a, it, file_id="IMG2", drive=drive)
+    assert drive["folders"] == 1  # the tape folder TF already existed; one Attachments folder under it
+    assert drive["files"]["IMG1"]["parents"] == [ea.folder_of(t["id"])]
+    assert drive["files"]["IMG1"]["origin"] == "https://x.example"
+
+
+@pytest.mark.asyncio
+async def test_attachment_with_wrong_size_on_drive_is_deleted(drive):
+    p, t, it, c = _world()
+    async with api() as a:
+        _, got = await a.admin("POST", f"/api/editor/iterations/{it['id']}/attachments", PNG)
+        drive["files"]["BAD"] = {**drive["files"].pop("pending"), "size": 999, "mimeType": "image/png"}
+        status, err = await a.admin("POST", f"/api/editor/attachments/{got['id']}/complete", {"file_id": "BAD"})
+    assert status == 400
+    assert drive["deleted"] == ["BAD"]
+    assert ea.get(got["id"])["status"] == "deleted"
+
+
+@pytest.mark.asyncio
+async def test_comment_and_reply_carry_attachments_and_a_retry_is_harmless(drive):
+    p, t, it, c = _world()
+    async with api() as a:
+        aid = await _attachment(a, it, file_id="IMG", drive=drive)
+        post = {"kind": "fix", "body": "see this", "client_id": "client-abc-1", "attachment_ids": [aid]}
+        assert (await a.admin("POST", f"/api/editor/iterations/{it['id']}/comments", post))[0] == 201
+        assert (await a.admin("POST", f"/api/editor/iterations/{it['id']}/comments", post))[0] == 200
+        rid = await _attachment(a, it, who="editor", file_id="IMG9", drive=drive)
+        status, _ = await a.editor("POST", f"/api/editor/comments/{c['id']}/replies",
+                                   {"body": "here", "client_id": "client-rep-1", "attachment_ids": [rid]})
+        assert status == 201
+        _, view = await a.editor("GET", f"/api/editor/iterations/{it['id']}")
+    mine = next(x for x in view["comments"] if x["body"] == "see this")
+    assert [x["drive_file_id"] for x in mine["attachments"]] == ["IMG"]
+    theirs = next(x for x in view["comments"] if x["id"] == c["id"])
+    assert theirs["attachments"] == []
+    assert [x["drive_file_id"] for x in theirs["replies"][0]["attachments"]] == ["IMG9"]
+
+
+@pytest.mark.asyncio
+async def test_someone_elses_or_used_attachment_is_refused_and_posts_nothing(drive):
+    p, t, it, c = _world()
+    async with api() as a:
+        aid = await _attachment(a, it, file_id="IMG", drive=drive)
+        status, _ = await a.editor("POST", f"/api/editor/iterations/{it['id']}/comments",
+                                   {"kind": "fix", "body": "stolen", "client_id": "client-xyz-1", "attachment_ids": [aid]})
+        assert status == 400
+        assert (await a.admin("POST", f"/api/editor/iterations/{it['id']}/comments",
+                              {"kind": "fix", "body": "one", "client_id": "client-one-1", "attachment_ids": [aid]}))[0] == 201
+        status, _ = await a.admin("POST", f"/api/editor/iterations/{it['id']}/comments",
+                                  {"kind": "fix", "body": "two", "client_id": "client-two-1", "attachment_ids": [aid]})
+        assert status == 400
+    bodies = [x["body"] for x in ec.comments_for_iteration(it["id"])]
+    assert "stolen" not in bodies and "two" not in bodies
+
+
+@pytest.mark.asyncio
+async def test_attachment_link_is_no_store_and_needs_a_ready_one(drive):
+    p, t, it, c = _world()
+    async with api() as a:
+        aid = await _attachment(a, it, file_id="IMG", drive=drive)
+        resp = await a.client.get(f"/api/editor/attachments/{aid}/link",
+                                  headers={"Cookie": f"{auth.SESSION_COOKIE_NAME}={a.tokens['editor']}"})
+        body = await resp.json()
+        assert resp.headers["Cache-Control"] == "no-store"
+        assert body["url"].endswith("/files/IMG?alt=media") and body["access_token"] == "TOKEN"
+        assert (await a.editor("GET", "/api/editor/attachments/999/link"))[0] == 404
+
+
+@pytest.mark.asyncio
+async def test_tape_files_delete_takes_the_attachments_folder(drive, monkeypatch):
+    monkeypatch.setattr(deletions, "_grace_applied", True)  # not the first run after a boot
+    p, t, it, c = _world()
+    async with api() as a:
+        aid = await _attachment(a, it, file_id="IMG", drive=drive)
+    folder = ea.folder_of(t["id"])
+    deletions.request_delete("tape_files", t["id"], "Clutch", username="aryan", role="admin", now=5.0)
+    await deletions.run_due(5.0 + 3600)
+    assert folder in drive["deleted"] and "IT1" in drive["deleted"]
+    assert ea.get(aid)["status"] == "deleted"
+    with pytest.raises(ValueError, match="Nothing to delete"):
+        deletions.request_delete("tape_files", t["id"], "Clutch", username="aryan", role="admin", now=9000.0)
+
+
+def test_a_day_old_unfinished_upload_is_dropped():
+    p, t, it, c = _world()
+    old = ea.create(t["id"], "aryan", "a.png", 10, "image/png", now=100.0)
+    ea.create(t["id"], "aryan", "b.png", 10, "image/png", now=100.0 + ea.STALE_SECONDS + 1)
+    assert ea.get(old)["status"] == "deleted"

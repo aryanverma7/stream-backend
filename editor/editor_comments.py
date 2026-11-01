@@ -5,6 +5,7 @@ A comment row is shared across versions; only comment_state (resolved or not) is
 import time
 
 from core import db
+from editor import editor_attachments as ea
 from editor import editor_store as es
 from editor.editor_store import _all, _c, _one
 
@@ -29,6 +30,7 @@ _ALTERS = (("comments", "client_id"), ("replies", "client_id"))
 
 def _cc():
     es._c()  # events/iterations tables
+    ea._c()
     db.ensure(_DDL)
     conn = db.get()
     for table, col in _ALTERS:
@@ -83,7 +85,8 @@ def _comment(id):
 
 
 def add_comment(iteration_id, author, kind, body, start_s=None, end_s=None, now=None,
-                client_id=None):
+                client_id=None, attachment_ids=None, actor=None):
+    """`actor` records the event under someone else's name (an approved guest note is the streamer's news)."""
     now = time.time() if now is None else now
     if kind not in KINDS:
         raise ValueError(f"unknown comment kind {kind!r}")
@@ -106,7 +109,8 @@ def add_comment(iteration_id, author, kind, body, start_s=None, end_s=None, now=
             " client_id) VALUES(?,?,?,?,?,?,?,?,?)",
             (iteration_id, author, kind, start_s, end_s, body, now, now, client_id)).lastrowid
         conn.execute("INSERT INTO comment_state(comment_id, iteration_id) VALUES(?,?)", (cid, iteration_id))
-        es.record_event(author, "comment_added", f"{author} commented: {_short(body)}", project_id=project_id,
+        ea.link(conn, attachment_ids, author, tape_id, comment_id=cid)  # raising rolls the comment back too
+        es.record_event(actor or author, "comment_added", f"{author} commented: {_short(body)}", project_id=project_id,
                         tape_id=tape_id, iteration_id=iteration_id, comment_id=cid, now=now)
     return _comment(cid)
 
@@ -127,7 +131,7 @@ def edit_comment(id, author, *, body=None, kind=None, now=None):
     return es._set("comments", id, now, **cols)
 
 
-def add_reply(comment_id, author, body, now=None, client_id=None):
+def add_reply(comment_id, author, body, now=None, client_id=None, attachment_ids=None):
     now = time.time() if now is None else now
     body = (body or "").strip()
     if not body:
@@ -144,6 +148,7 @@ def add_reply(comment_id, author, body, now=None, client_id=None):
                 return _one("SELECT * FROM replies WHERE id=?", (old,))
         rid = conn.execute("INSERT INTO replies(comment_id, author, body, created_at, client_id) VALUES(?,?,?,?,?)",
                            (comment_id, author, body, now, client_id)).lastrowid
+        ea.link(conn, attachment_ids, author, tape_id, reply_id=rid)
         es.record_event(author, "reply_added", f"{author} replied: {_short(body)}", project_id=project_id,
                         tape_id=tape_id, iteration_id=c["iteration_id"], comment_id=comment_id, now=now)
     return _one("SELECT * FROM replies WHERE id=?", (rid,))
@@ -190,10 +195,15 @@ def comments_for_iteration(iteration_id):
         " oi.version AS origin_version FROM comment_state s JOIN comments c ON c.id=s.comment_id"
         " JOIN iterations oi ON oi.id=c.iteration_id WHERE s.iteration_id=? ORDER BY c.created_at, c.id",
         (iteration_id,))
+    on_comments = ea.grouped("comment_id", [r["id"] for r in rows])
     for r in rows:
         r["resolved"] = bool(r["resolved"])
         r["carried"] = r["origin_iteration_id"] != iteration_id
         r["replies"] = _all("SELECT * FROM replies WHERE comment_id=? ORDER BY created_at, id", (r["id"],))
+        r["attachments"] = on_comments.get(r["id"], [])
+        on_replies = ea.grouped("reply_id", [x["id"] for x in r["replies"]])
+        for x in r["replies"]:
+            x["attachments"] = on_replies.get(x["id"], [])
     return rows
 
 

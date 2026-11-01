@@ -25,6 +25,7 @@ from editor import editor_store as es
 from editor import gdrive
 from editor import gdrive_oauth
 from editor import notify_outbox
+from editor import share_links as sl
 from core import scheduler
 
 ONLY_STREAMER = "Only the streamer can do this."
@@ -450,7 +451,8 @@ async def add_comment(request, me):
     cid = _client_id(body)
     repeat = ec.by_client_id("comments", cid, me["username"], it["id"]) is not None
     return _ok(ec.add_comment(it["id"], me["username"], body["kind"], text,
-                              _seconds(body.get("start_s")), _seconds(body.get("end_s")), client_id=cid),
+                              _seconds(body.get("start_s")), _seconds(body.get("end_s")), client_id=cid,
+                              attachment_ids=body.get("attachment_ids")),
                200 if repeat else 201)
 
 
@@ -473,7 +475,72 @@ async def add_reply(request, me):
         raise _Fail(400, "body must be a string")
     cid = _client_id(body)
     repeat = ec.by_client_id("replies", cid, me["username"], c["id"]) is not None
-    return _ok(ec.add_reply(c["id"], me["username"], text, client_id=cid), 200 if repeat else 201)
+    return _ok(ec.add_reply(c["id"], me["username"], text, client_id=cid, attachment_ids=body.get("attachment_ids")),
+               200 if repeat else 201)
+
+
+# -- share links and guest notes (streamer only) --
+
+@_route
+async def create_share(request, me):
+    _admin(me)
+    it = _iteration(_id(request))
+    hours = (await _body(request)).get("hours", sl.DEFAULT_HOURS)
+    return _no_store(_ok(await sl.create(it["id"], hours, me["username"]), 201))
+
+
+@_route
+async def list_shares(request, me):
+    _admin(me)
+    return _ok({"links": sl.list_live()})
+
+
+@_route
+async def revoke_share(request, me):
+    _admin(me)
+    return _ok({"revoked": await sl.revoke(_id(request))})
+
+
+@_route
+async def guest_notes(request, me):
+    _admin(me)
+    return _ok({"guests": sl.pending(_iteration(_id(request))["id"])})
+
+
+@_route
+async def approve_notes(request, me):
+    _admin(me)
+    return _ok({"approved": sl.approve((await _body(request)).get("ids"), me["username"])})
+
+
+@_route
+async def reject_notes(request, me):
+    _admin(me)
+    return _ok({"rejected": sl.reject((await _body(request)).get("ids"))})
+
+
+# -- attachments --
+
+@_route
+async def start_attachment(request, me):
+    it = _iteration(_id(request))
+    body = await _body(request)
+    return _no_store(_ok(await svc.start_attachment_upload(it["id"], me["username"], body.get("name"),
+                                                           body.get("size"), body.get("mime")), 201))
+
+
+@_route
+async def complete_attachment(request, me):
+    file_id = _text(await _body(request), "file_id")
+    if not _FILE_ID.fullmatch(file_id):
+        raise _Fail(400, "file_id is not a Drive file id")
+    a = await svc.complete_attachment_upload(_id(request), me["username"], file_id)
+    return _ok({k: a[k] for k in ("id", "name", "mime", "size", "drive_file_id", "status")})
+
+
+@_route
+async def attachment_link(request, me):
+    return _no_store(_ok(await svc.attachment_media_link(_id(request))))
 
 
 @_route
@@ -638,6 +705,15 @@ def register_routes(app: web.Application) -> None:
     r.add_patch(f"{p}/comments/{{id:{_ID}}}", edit_comment)
     r.add_post(f"{p}/comments/{{id:{_ID}}}/replies", add_reply)
     r.add_put(f"{p}/iterations/{{iid:{_ID}}}/comments/{{cid:{_ID}}}/resolved", set_resolved)
+    r.add_post(f"{p}/iterations/{{id:{_ID}}}/share", create_share)
+    r.add_get(f"{p}/share-links", list_shares)
+    r.add_post(f"{p}/share-links/{{id:{_ID}}}/revoke", revoke_share)
+    r.add_get(f"{p}/iterations/{{id:{_ID}}}/guest-notes", guest_notes)
+    r.add_post(f"{p}/guest-notes/approve", approve_notes)
+    r.add_post(f"{p}/guest-notes/reject", reject_notes)
+    r.add_post(f"{p}/iterations/{{id:{_ID}}}/attachments", start_attachment)
+    r.add_post(f"{p}/attachments/{{id:{_ID}}}/complete", complete_attachment)
+    r.add_get(f"{p}/attachments/{{id:{_ID}}}/link", attachment_link)
     r.add_get(f"{p}/search", search)
     r.add_get(f"{p}/notifications", notifications)
     r.add_post(f"{p}/notifications/seen", notifications_seen)
