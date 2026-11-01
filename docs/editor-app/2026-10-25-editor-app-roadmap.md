@@ -20,7 +20,7 @@ truth; if a decision changes, change the spec first, then this map.
 | 4 | Gaming PC uploader | `2026-10-27-editor-app-4-uploader.md` | shipped (stream-backend#4, pc-ocr#1) |
 | 5A | Editor site: navigation, cards, uploads, checks, deletes, bell, Home, Fix list, Storage, CSP | `2026-10-28-editor-app-5a-site.md` | shipped 2026-10-28 (stream-backend#10, stream-site#4) |
 | 5B | Review player and comments | `2026-10-29-editor-app-5b-player.md` | shipped (stream-backend#13, stream-site#7) |
-| 6 | Frame.io round (6A–6E; 6F later) | `2026-10-31-editor-app-6-frameio.md` | 6A done 2026-10-31 |
+| 6 | Frame.io round (6A–6E; 6F later) | `2026-10-31-editor-app-6-frameio.md` | 6A–6E built 2026-11-01, branch editor-app-plan-6 in stream-backend and stream-site |
 
 ## Coverage map
 
@@ -93,7 +93,7 @@ truth; if a decision changes, change the spec first, then this map.
 
 ### Editor frontend (spec: "Pages and navigation", "Flow 4", "Checks")
 - [x] 5 · Zoom navigation + breadcrumb; Back/Esc zooms out (5A)
-- [ ] 5 · Iteration cards: thumbnail, version, check badges, checklist summary card, hover/tap menu. Built except (a) the "Edit checklist" menu item and (b) the summary as a card, not inline text: moved to Plan 6B task 5
+- [x] 5 · Iteration cards: thumbnail, version, check badges, checklist summary card, hover/tap menu. Finished in 6B; was missing (a) the "Edit checklist" menu item and (b) the summary as a card, not inline text: moved to Plan 6B task 5
 - [x] 5 · Status labels with filter and sort (5A)
 - [x] 5 · Editor Home, Fix list, Storage page, Transfers panel, To-do, Brand kit link (5A)
 - [x] 5 · Iteration upload by drag and drop (resumable, pauses and resumes) (5A)
@@ -107,10 +107,10 @@ truth; if a decision changes, change the spec first, then this map.
 
 ### Plan 6: Frame.io round (spec: "Frame.io round"; plan `2026-10-31-editor-app-6-frameio.md`)
 - [x] 6A · Roadmap and spec clean-up
-- [ ] 6B · Playability bar (codec named, "can't play H.265" bar on the video); Export markers (.edl/.xml/.csv); card summary + Edit checklist
-- [ ] 6C · Side-by-side compare, synced, sound switch
-- [ ] 6D · Comment attachments (images, 20 MB, browser to Drive, deleted with the tape's files)
-- [ ] 6E · Share links (streamer only, 1/2/10/24 h/7 d, Live links + Revoke, revoked early on an untrusted clock) and guest notes (approved by the streamer before the editor sees them)
+- [x] 6B · Playability bar (codec named, "can't play H.265" bar on the video); Export markers (.edl/.xml/.csv); card summary + Edit checklist
+- [x] 6C · Side-by-side compare, synced, sound switch
+- [x] 6D · Comment attachments (images, 20 MB, browser to Drive, deleted with the tape's files)
+- [x] 6E · Share links (streamer only, 1/2/10/24 h/7 d, Live links + Revoke, revoked early on an untrusted clock) and guest notes (approved by the streamer before the editor sees them)
 - [ ] Later · 6F Hinglish auto transcript on the gaming PC (postponed 2026-10-31: no access to the gaming PC)
 
 ### Carried from Plan 2's final review (do first in Plan 3)

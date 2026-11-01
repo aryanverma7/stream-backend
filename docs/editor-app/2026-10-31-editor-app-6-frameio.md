@@ -451,6 +451,21 @@ Record wall time, VRAM, and a quality sample for the streamer. **The streamer ap
 
 ---
 
+## As built (2026-11-01), where it differs from the tasks above
+
+- 6B: the Markerbox CSV is **not built**: Markerbox documents no CSV format. Waiting on one file exported from
+  Premiere (File > Export > Markers) by the editor; the .edl and .xml downloads ship.
+- 6C: the side-by-side view has no comment panel (comment from the single-version view); route
+  `#/p/<p>/t/<t>/v/<i>/vs/<j>`, Esc goes to `v/<i>`; one Playwright case.
+- 6D: attachments live in one `Attachments` Drive folder per tape (meta `attachments_folder_<tape>`); the tape's
+  file delete removes that folder as a `folder` row (no change to `delete_files`' CHECK). Drive flows are in
+  `editor_service` (start/complete/attachment_media_link), rows in `editor_attachments`. Stale uploads are dropped
+  lazily on the next start, not by a scheduler job.
+- 6E: the share URL is `/s#<token>`. The fragment is **kept** in the address bar (not cleared), so a reload still
+  works; it never reaches a server or Referer. Guest notes waiting to be sent are stored by file id, never with the
+  token. No Playwright case for `/s` (it plays from googleapis.com, which the mock Drive cannot stand in for).
+  `find()` checks `scheduler.clock_is_sane(now)` directly, so a link is refused even before the first tick.
+
 ## Review focus (whole plan)
 
 1. **A share link outliving its expiry:** the Mac Mini off at expiry, the clock booting in 2001, Drive 500s on revoke. Pinned in 6E task 2.
