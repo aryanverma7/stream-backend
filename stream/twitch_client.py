@@ -18,6 +18,8 @@ log = get_logger("TwitchClient")
 
 TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 STREAMS_URL = "https://api.twitch.tv/helix/streams"
+USERS_URL = "https://api.twitch.tv/helix/users"
+CHANNELS_URL = "https://api.twitch.tv/helix/channels"
 
 TIMEOUT = aiohttp.ClientTimeout(total=15)
 
@@ -94,3 +96,35 @@ async def stream_info(channel_name: str) -> "dict | None":
 
 async def is_channel_live(channel_name: str) -> bool:
     return (await stream_info(channel_name)) is not None
+
+
+_user_ids: dict[str, str] = {}
+
+
+async def _helix_data(session, url: str, params: dict) -> list:
+    global _cached_token
+    token = await get_app_token()
+    headers = {"Authorization": f"Bearer {token}", "Client-Id": config.get("twitch_client_id", "")}
+    async with session.get(url, params=params, headers=headers) as resp:
+        if resp.status == 401:
+            _cached_token = None
+        if resp.status >= 400:
+            raise TwitchError("Twitch channel lookup failed", resp.status)
+        return (await resp.json()).get("data", []) or []
+
+
+async def channel_title(channel_name: str) -> "str | None":
+    """
+    The channel's current stream title, live or not (unlike stream_info, which
+    only has it while live): the streamer sets it before going live, and the
+    starting-soon screen shows it. None when the channel does not exist.
+    """
+    login = channel_name.strip().lower()
+    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+        if login not in _user_ids:
+            users = await _helix_data(session, USERS_URL, {"login": login})
+            if not users:
+                return None
+            _user_ids[login] = users[0]["id"]
+        channels = await _helix_data(session, CHANNELS_URL, {"broadcaster_id": _user_ids[login]})
+    return (channels[0].get("title") or None) if channels else None
