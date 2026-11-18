@@ -344,6 +344,22 @@ async def _youtube_thumbnail_with_wait(fetch=None, sleep=asyncio.sleep) -> str:
         waited += YOUTUBE_RETRY_SECONDS
 
 
+async def _live_video_match(session, page: str):
+    async with session.get(page) as resp:
+        html = await resp.text()
+    return re.search(r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([\w-]{11})"', html)
+
+
+async def youtube_live_video_id() -> str:
+    """The live (or scheduled) broadcast's video id from /live, or "" - same rule as the thumbnail below."""
+    page = _youtube_live_page()
+    if not page:
+        return ""
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+        match = await _live_video_match(session, page)
+    return match.group(1) if match else ""
+
+
 async def youtube_live_thumbnail(session_factory=None) -> str:
     """
     The thumbnail you already uploaded to YouTube, read back off their CDN.
@@ -370,9 +386,7 @@ async def youtube_live_thumbnail(session_factory=None) -> str:
             return aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
     try:
         async with session_factory() as session:
-            async with session.get(page) as resp:
-                html = await resp.text()
-            match = re.search(r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([\w-]{11})"', html)
+            match = await _live_video_match(session, page)
             if not match:
                 log.info("YouTube /live is not showing a broadcast yet")
                 return ""
