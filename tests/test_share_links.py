@@ -78,12 +78,54 @@ async def test_create_refuses_other_durations_a_missing_key_and_an_unready_versi
 
 
 @pytest.mark.asyncio
-async def test_a_failed_insert_after_sharing_unshares_at_once(drive, monkeypatch):
+async def test_a_share_whose_drive_reply_is_lost_is_still_removed_later(drive, monkeypatch):
     t, it = _version()
-    monkeypatch.setattr(sl, "_hash", lambda tok: (_ for _ in ()).throw(RuntimeError("disk")))
-    with pytest.raises(RuntimeError):
+
+    async def applied_but_lost(fid):
+        drive["shared"].append(fid)
+        raise gdrive.DriveError("Could not reach Google Drive: TimeoutError", 0)
+
+    monkeypatch.setattr(gdrive, "share_anyone", applied_but_lost)
+    with pytest.raises(gdrive.DriveError):
         await sl.create(it["id"], 2, "aryan", now=T0)
-    assert drive["unshared"] == [("FILE1", "PERM1")]
+    row = db.get().execute("SELECT state, revoke_reason FROM share_links").fetchone()
+    assert (row["state"], row["revoke_reason"]) == ("revoking", "unfinished")
+    assert sl.list_live(T0) == []  # not shown as a link while it is being made
+    await sl.run(T0 + 60)
+    assert drive["unshared"] == []  # still within its making window
+    await sl.run(T0 + sl.PENDING_SECONDS)
+    assert drive["unshared"] == [("FILE1", sl.ANYONE)]
+
+
+@pytest.mark.asyncio
+async def test_expiring_one_link_keeps_the_share_for_another_live_link_to_the_same_file(drive):
+    t, it = _version()
+    await sl.create(it["id"], 1, "aryan", now=T0)
+    later = _token((await sl.create(it["id"], 168, "aryan", now=T0))["url"])
+    await sl.run(T0 + 3600)
+    assert drive["unshared"] == []  # one anyone-permission per file: removing it would cut off the 7-day link
+    assert sl.find(later, now=T0 + 3600)["drive_file_id"] == "FILE1"
+    assert [r["state"] for r in db.get().execute("SELECT state FROM share_links ORDER BY id")] == ["revoked", "live"]
+    await sl.revoke(2, now=T0 + 3700)
+    assert drive["unshared"] == [("FILE1", "PERM2")]
+
+
+@pytest.mark.asyncio
+async def test_no_link_is_made_while_the_clock_is_untrusted(drive):
+    t, it = _version()
+    db.meta_set("clock_last_seen", str(T0 + 100))
+    with pytest.raises(ValueError, match="clock"):
+        await sl.create(it["id"], 2, "aryan", now=T0)
+    assert drive["shared"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_revoke_stays_listed_until_drive_confirms(drive):
+    t, it = _version()
+    await sl.create(it["id"], 2, "aryan", now=T0)
+    drive["fail_unshare"] = True
+    assert await sl.revoke(1, now=T0 + 10) is False
+    assert [(x["id"], x["state"]) for x in sl.list_live(T0 + 10)] == [(1, "revoking")]
 
 
 @pytest.mark.asyncio
@@ -120,30 +162,23 @@ async def test_expiry_revokes_and_a_drive_failure_retries_with_backoff(drive):
 
 
 @pytest.mark.asyncio
-async def test_the_clock_gate_shutting_revokes_every_link_once_per_pause(drive):
+async def test_while_the_clock_is_untrusted_every_link_is_revoked_and_a_failed_revoke_retried(drive):
     t, it = _version()
     await sl.create(it["id"], 168, "aryan", now=T0)
     await sl.create(it["id"], 168, "aryan", now=T0)
-    calls = []
-
-    async def spy(now):
-        calls.append(now)
-        await sl.revoke_all_live(now)
-
-    scheduler.on_paused(spy)
+    scheduler.on_paused(sl.revoke_all_live)
     scheduler._internet_checked_mono = 0.0
     scheduler._monotonic = lambda: 1.0  # the internet check is throttled away
     try:
         db.meta_set("clock_last_seen", str(T0 + 1000))
+        drive["fail_unshare"] = True  # the network is not up yet after the power cut
         assert await scheduler.tick(T0) is False
-        assert await scheduler.tick(T0 + 30) is False
-        assert len(calls) == 1
-        assert len(drive["unshared"]) == 2
-        scheduler.reset_clock(T0 + 2000)
-        assert await scheduler.tick(T0 + 2000)
-        db.meta_set("clock_last_seen", str(T0 + 5000))
-        assert await scheduler.tick(T0 + 2030) is False
-        assert len(calls) == 2
+        assert drive["unshared"] == []
+        assert [r["state"] for r in db.get().execute("SELECT state FROM share_links")] == ["revoked", "revoking"]
+        drive["fail_unshare"] = False
+        assert await scheduler.tick(T0 + 30) is False  # still paused, backoff (30 s) is due: retried
+        assert drive["unshared"] == [("FILE1", "PERM2")]
+        assert {r["state"] for r in db.get().execute("SELECT state FROM share_links")} == {"revoked"}
     finally:
         scheduler._monotonic = __import__("time").monotonic
 
@@ -272,6 +307,18 @@ async def test_guest_notes_ring_the_streamers_bell_and_digest_only(drive):
     rows = [dict(r) for r in db.get().execute("SELECT recipient_role FROM digest_pending")]
     assert rows == [{"recipient_role": "streamer"}]
     assert notifier._count("guest_notes_added", 3) == "3 guest notes to approve"
+    from editor import editor_personal as ep
+    assert ep.tape_has_new("cutguy", t["id"]) is False  # an unapproved note must not light the editor's New badge
+    assert ep.tape_has_new("aryan", t["id"]) is True
     rows = db.get().execute("SELECT d.actor, e.kind, e.project_id, e.tape_id, e.iteration_id FROM digest_pending d"
                             " JOIN events e ON e.id=d.event_id").fetchall()
     assert notifier._digest(rows) == "Rahul: 1 guest note to approve on Clutch v1."
+
+
+@pytest.mark.asyncio
+async def test_approving_never_collides_with_a_browser_client_id(drive):
+    t, it = _version()
+    link = sl.find(_token((await sl.create(it["id"], 2, "aryan", now=T0))["url"]), now=T0)
+    note = sl.add_note(link, "Rahul", "fix", "slow", 1.0, None, "client-guest-1", now=T0)
+    ec.add_comment(it["id"], "aryan", "fix", "mine", client_id=f"guest-note-{note['id']}")
+    assert sl.approve([note["id"]], "aryan") == 1

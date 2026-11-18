@@ -75,7 +75,7 @@ def on_auto_reset(fn: Callable[[float], object]) -> None:
 
 
 def on_paused(fn: Callable[[float], Awaitable[None]]) -> None:
-    """await fn(now) once each time the clock gate shuts: for work that is safe early (revoking a share link)."""
+    """await fn(now) on every tick while the clock gate is shut: for work that is safe early (revoking a share link)."""
     _on_paused.append(fn)
 
 
@@ -149,11 +149,11 @@ async def tick(now: float | None = None) -> bool:
             _disagree_logged = False
             log.warning("Clock (%s) is behind the last time seen (%s); scheduled jobs paused",
                         now, _last_seen())
-            for fn in _on_paused:
-                try:
-                    await fn(now)
-                except Exception:
-                    log.exception("On-pause callback failed")
+        for fn in _on_paused:  # every paused tick: a revoke that failed (network not up yet) is retried
+            try:
+                await fn(now)
+            except Exception:
+                log.exception("On-pause callback failed")
         if not await _internet_confirms(now):
             return False
     _insane = False

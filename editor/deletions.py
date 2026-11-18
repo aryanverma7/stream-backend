@@ -93,8 +93,9 @@ def _target(kind, target_id, now):
         if any(i["status"] == "uploading" for i in its):
             raise ValueError("Wait for the upload to finish first")
         files = _iteration_files(its)
-        if ea.folder_of(t["id"]) and t["files_deleted_at"] is None:  # the folder takes every image on the tape's comments
-            files.append((ea.folder_of(t["id"]), "folder", t["id"], None))
+        folder = ea.folder_of(t["id"])
+        if folder and t["files_deleted_at"] is None:  # the folder takes every image on the tape's comments
+            files.append((folder, "folder", t["id"], None))
         if not files:  # an empty request would still set files_deleted_at, which unlocks a host clip's delete
             raise ValueError("Nothing to delete")
         return t["name"], t["project_id"], t["id"], files

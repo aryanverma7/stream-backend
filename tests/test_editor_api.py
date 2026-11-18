@@ -781,6 +781,17 @@ async def test_attachment_with_wrong_size_on_drive_is_deleted(drive):
 
 
 @pytest.mark.asyncio
+async def test_completing_with_someone_elses_file_id_refuses_and_deletes_nothing(drive):
+    p, t, it, c = _world()
+    async with api() as a:
+        _, got = await a.editor("POST", f"/api/editor/iterations/{it['id']}/attachments", PNG)
+        drive["files"]["VOD"] = {"parents": ["PROJ"], "appProperties": {"project_id": "1"}, "size": 5, "mimeType": "video/mp4"}
+        status, _ = await a.editor("POST", f"/api/editor/attachments/{got['id']}/complete", {"file_id": "VOD"})
+    assert status == 400
+    assert drive["deleted"] == []  # a crafted complete must never become a delete outside the two-step flow
+
+
+@pytest.mark.asyncio
 async def test_comment_and_reply_carry_attachments_and_a_retry_is_harmless(drive):
     p, t, it, c = _world()
     async with api() as a:

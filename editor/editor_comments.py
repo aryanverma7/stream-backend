@@ -201,9 +201,9 @@ def comments_for_iteration(iteration_id):
         r["carried"] = r["origin_iteration_id"] != iteration_id
         r["replies"] = _all("SELECT * FROM replies WHERE comment_id=? ORDER BY created_at, id", (r["id"],))
         r["attachments"] = on_comments.get(r["id"], [])
-        on_replies = ea.grouped("reply_id", [x["id"] for x in r["replies"]])
-        for x in r["replies"]:
-            x["attachments"] = on_replies.get(x["id"], [])
+    on_replies = ea.grouped("reply_id", [x["id"] for r in rows for x in r["replies"]])
+    for x in (x for r in rows for x in r["replies"]):
+        x["attachments"] = on_replies.get(x["id"], [])
     return rows
 
 

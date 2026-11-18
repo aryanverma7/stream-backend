@@ -33,6 +33,8 @@ BURST = 30  # notes per link per BURST_SECONDS
 BURST_SECONDS = 600
 TOTAL_MAX = 200  # notes per link, ever
 GONE = "This link has expired or was revoked."
+ANYONE = "anyoneWithLink"  # Drive gives every anyone-permission on a file this one id
+PENDING_SECONDS = 3600  # a link still being made; if its Drive call never answers, the job removes the share then
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS share_links(
@@ -73,18 +75,24 @@ async def create(iteration_id, hours, by, now=None) -> dict:
     tape = es.get_tape(it["tape_id"])
     deletions.ensure_project_not_deleting(tape["project_id"])
     deletions.ensure_tape_not_deleting(tape["id"])
+    if not scheduler.clock_is_sane(now):  # its expiry would be wrong, and the pause has already revoked the rest
+        raise ValueError("The Mac Mini's clock can't be trusted right now; try again once it is corrected")
     conn = _c()
     token = secrets.token_urlsafe(32)
+    # The row exists before Drive is asked, so a permission that lands while its reply is lost still has a
+    # row: it waits as 'unfinished' and the job removes the share once PENDING_SECONDS pass.
+    with db.transaction():
+        lid = conn.execute(
+            "INSERT INTO share_links(token_hash, iteration_id, drive_file_id, permission_id, created_by, created_at,"
+            " expires_at, state, revoke_reason, next_try) VALUES(?,?,?,?,?,?,?,'revoking','unfinished',?)",
+            (_hash(token), iteration_id, it["drive_file_id"], ANYONE, by, now, now + hours * 3600,
+             now + PENDING_SECONDS)).lastrowid
     permission = await gdrive.share_anyone(it["drive_file_id"])
-    try:
-        with db.transaction():
-            lid = conn.execute(
-                "INSERT INTO share_links(token_hash, iteration_id, drive_file_id, permission_id, created_by,"
-                " created_at, expires_at, state) VALUES(?,?,?,?,?,?,?,'live')",
-                (_hash(token), iteration_id, it["drive_file_id"], permission, by, now, now + hours * 3600)).lastrowid
-    except BaseException:
-        await gdrive.unshare(it["drive_file_id"], permission)  # never a public file with no row to revoke it
-        raise
+    with db.transaction():
+        made = conn.execute("UPDATE share_links SET state='live', permission_id=?, revoke_reason=NULL, next_try=0"
+                            " WHERE id=? AND state='revoking' AND revoke_reason='unfinished'", (permission, lid)).rowcount
+    if not made:
+        raise ValueError("The link was revoked while it was being made; make a new one")
     base = (config.get("public_base_url") or "").rstrip("/")
     # The token is returned once, here, and never again.
     return {"id": lid, "url": f"{base}/s#{token}", "expires_at": now + hours * 3600}
@@ -108,8 +116,14 @@ async def _revoke(link, reason, now) -> bool:
     with db.transaction():
         conn.execute("UPDATE share_links SET state='revoking', revoke_reason=COALESCE(revoke_reason, ?)"
                      " WHERE id=? AND state IN ('live','revoking')", (reason, link["id"]))
+    # Every anyone-permission on a file is the same one, so while another link to it is live (or still being
+    # made) removing it would cut that link off too: this one is simply marked revoked.
+    shared = conn.execute(
+        "SELECT 1 FROM share_links WHERE drive_file_id=? AND id<>? AND (state='live' OR (state='revoking'"
+        " AND revoke_reason='unfinished' AND next_try>?))", (link["drive_file_id"], link["id"], now)).fetchone()
     try:
-        await gdrive.unshare(link["drive_file_id"], link["permission_id"])  # a 404 is success
+        if not shared:
+            await gdrive.unshare(link["drive_file_id"], link["permission_id"])  # a 404 is success
     except (gdrive.DriveError, gdrive.DriveNotConnected) as e:
         with db.transaction():
             conn.execute("UPDATE share_links SET attempts=attempts+1, next_try=? WHERE id=?",
@@ -139,19 +153,22 @@ async def run(now) -> None:
 
 
 async def revoke_all_live(now) -> None:
-    """The clock cannot be trusted, so no expiry can be: revoke every link now (early is the safe side)."""
+    """On every paused tick: the clock cannot be trusted, so no expiry can be. Revoke every live link now
+    (early is the safe side) and retry any revoke Drive refused, since the job itself is paused too."""
     _c()
-    for link in _all("SELECT * FROM share_links WHERE state IN ('live','revoking') ORDER BY id"):
+    for link in _all("SELECT * FROM share_links WHERE state='live' OR (state='revoking' AND next_try<=?) ORDER BY id",
+                     (now,)):
         await _revoke(link, "clock", now)
 
 
 def list_live(now=None) -> list:
     now = time.time() if now is None else now
     _c()
-    rows = _all("SELECT l.id, l.iteration_id, l.created_at, l.expires_at, i.version, t.id AS tape_id, t.name AS tape,"
-                " t.project_id FROM share_links l JOIN iterations i ON i.id=l.iteration_id JOIN tapes t ON t.id=i.tape_id"
-                " WHERE l.state='live' AND l.expires_at>? ORDER BY l.expires_at", (now,))
-    return rows
+    # 'revoking' rows are listed too: until Drive confirms, the file is still public and the streamer must see it.
+    return _all("SELECT l.id, l.iteration_id, l.created_at, l.expires_at, l.state, i.version, t.id AS tape_id,"
+                " t.name AS tape, t.project_id FROM share_links l JOIN iterations i ON i.id=l.iteration_id"
+                " JOIN tapes t ON t.id=i.tape_id WHERE (l.state='live' AND l.expires_at>?)"
+                " OR (l.state='revoking' AND COALESCE(l.revoke_reason, '')<>'unfinished') ORDER BY l.expires_at", (now,))
 
 
 def view(link) -> dict:
@@ -159,14 +176,14 @@ def view(link) -> dict:
     it = es.get_iteration(link["iteration_id"])
     tape = es.get_tape(it["tape_id"])
     try:
-        checks = json.loads(it["checks_json"] or "null") or {}
+        checks = json.loads(it["checks_json"] or "null")
     except ValueError:
+        checks = None
+    if not isinstance(checks, dict):
         checks = {}
     return {"title": f"{tape['name']} v{it['version']}", "file_id": link["drive_file_id"],
             "api_key": config.get("gdrive_public_api_key", ""), "expires_at": link["expires_at"],
-            "duration_s": checks.get("duration_s") if isinstance(checks, dict) else None,
-            "codec": checks.get("codec") if isinstance(checks, dict) else None,
-            "playable": checks.get("playable") if isinstance(checks, dict) else None}
+            "duration_s": checks.get("duration_s"), "codec": checks.get("codec"), "playable": checks.get("playable")}
 
 
 def add_note(link, name, kind, body, start_s, end_s, client_id, now=None) -> dict:
@@ -223,7 +240,7 @@ def approve(ids, by, now=None) -> int:
         if n["status"] == "rejected":
             continue
         c = ec.add_comment(n["iteration_id"], f"guest:{n['name']}", n["kind"], n["body"], n["start_s"], n["end_s"],
-                           now=now, client_id=f"guest-note-{n['id']}", actor=by)
+                           now=now, client_id=f"guest:note:{n['id']}", actor=by)  # ':' can't pass a browser client_id, so no collision
         with db.transaction() as conn:
             conn.execute("UPDATE guest_notes SET status='approved', comment_id=? WHERE id=?", (c["id"], n["id"]))
         done += 1

@@ -276,8 +276,10 @@ async def complete_attachment_upload(aid, author, file_id) -> dict:
     if (ea.folder_of(a["tape_id"]) not in f.get("parents", [])
             or f.get("appProperties", {}).get("attachment_id") != str(aid)
             or f.get("size") != a["size"] or f.get("mimeType") != a["mime"]):
-        # Wrong type or size slipped past the browser: never leave it on Drive (a 404 counts as done).
-        await gdrive.delete_file(file_id)
+        # Only this upload's own file is deleted (its wrong type or size slipped past the browser); any other
+        # id is refused untouched, or a crafted /complete could delete a VOD outside the two-step delete.
+        if f.get("appProperties", {}).get("attachment_id") == str(aid):
+            await gdrive.delete_file(file_id)
         ea.set_status(aid, "deleted")
         raise ValueError("That file is not this attachment's upload")
     deletions.ensure_tape_not_deleting(a["tape_id"])
