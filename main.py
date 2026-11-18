@@ -16,6 +16,7 @@ import signal
 
 from editor import backup
 from stream import break_timer
+from stream import stream_title
 from stream import credit_ocr
 from editor import deletions
 from stream import discord_live
@@ -56,6 +57,7 @@ async def _forward_chat_to_cloudbot_points(event: dict):
 async def shutdown(runner) -> None:
     """Stops everything main() started, in reverse order, then the HTTP server."""
     await discord_live.stop_poller()
+    await stream_title.stop()
     await break_timer.stop_broadcaster()
     await spotify.stop_now_playing_poller()
     await stop_tips_listener()
@@ -186,6 +188,9 @@ async def main():
     # Keeps a reloaded break overlay in sync - it cannot ask, so it is
     # re-told every few seconds.
     await break_timer.start_broadcaster()
+
+    # The stream title for the starting-soon overlay; idle while none is connected.
+    await stream_title.start()
 
     # Announces the stream in Discord, once. Does nothing at all while
     # discord_live_enabled is off or no webhook is set, and logs which.
