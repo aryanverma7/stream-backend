@@ -7,6 +7,7 @@ data. Confirmed in the spec (Section 6) as the reason this needs no OAuth
 consent screen, unlike the GitHub/Streamlabs flows elsewhere in this
 project.
 """
+import asyncio
 import time
 
 import aiohttp
@@ -20,6 +21,7 @@ TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 STREAMS_URL = "https://api.twitch.tv/helix/streams"
 USERS_URL = "https://api.twitch.tv/helix/users"
 CHANNELS_URL = "https://api.twitch.tv/helix/channels"
+FOLLOWERS_URL = "https://api.twitch.tv/helix/channels/followers"
 
 TIMEOUT = aiohttp.ClientTimeout(total=15)
 
@@ -101,16 +103,33 @@ async def is_channel_live(channel_name: str) -> bool:
 _user_ids: dict[str, str] = {}
 
 
-async def _helix_data(session, url: str, params: dict) -> list:
-    global _cached_token
-    token = await get_app_token()
+async def _helix(session, url: str, params: dict, user_token: "str | None" = None) -> dict:
+    """One Helix GET with the app token, or with `user_token` when given."""
+    global _cached_token, _user_token
+    token = user_token or await get_app_token()
     headers = {"Authorization": f"Bearer {token}", "Client-Id": config.get("twitch_client_id", "")}
     async with session.get(url, params=params, headers=headers) as resp:
         if resp.status == 401:
-            _cached_token = None
+            if user_token:
+                _user_token = None
+            else:
+                _cached_token = None
         if resp.status >= 400:
             raise TwitchError("Twitch channel lookup failed", resp.status)
-        return (await resp.json()).get("data", []) or []
+        return await resp.json()
+
+
+async def _helix_data(session, url: str, params: dict) -> list:
+    return (await _helix(session, url, params)).get("data", []) or []
+
+
+async def _user_id(session, login: str) -> "str | None":
+    if login not in _user_ids:
+        users = await _helix_data(session, USERS_URL, {"login": login})
+        if not users:
+            return None
+        _user_ids[login] = users[0]["id"]
+    return _user_ids[login]
 
 
 async def channel_title(channel_name: str) -> "str | None":
@@ -121,10 +140,64 @@ async def channel_title(channel_name: str) -> "str | None":
     """
     login = channel_name.strip().lower()
     async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
-        if login not in _user_ids:
-            users = await _helix_data(session, USERS_URL, {"login": login})
-            if not users:
-                return None
-            _user_ids[login] = users[0]["id"]
-        channels = await _helix_data(session, CHANNELS_URL, {"broadcaster_id": _user_ids[login]})
+        uid = await _user_id(session, login)
+        if uid is None:
+            return None
+        channels = await _helix_data(session, CHANNELS_URL, {"broadcaster_id": uid})
     return (channels[0].get("title") or None) if channels else None
+
+
+# ---------- the streamer's own user token (Connect Twitch, twitch_oauth.py) ----------
+# Only the follower total needs it: Get Channel Followers refuses app tokens.
+# The durable credential is twitch_refresh_token; the access token is memory-only.
+
+_user_token: "str | None" = None
+_user_token_expiry: float = 0
+_user_lock = asyncio.Lock()
+
+
+def forget_user_token() -> None:
+    global _user_token
+    _user_token = None
+
+
+async def user_token() -> "str | None":
+    """A fresh user access token, or None when Twitch was never connected."""
+    global _user_token, _user_token_expiry
+    refresh = config.get("twitch_refresh_token", "")
+    if not refresh:
+        return None
+    async with _user_lock:
+        if _user_token and time.time() < _user_token_expiry:
+            return _user_token
+        async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+            async with session.post(TOKEN_URL, data={
+                "client_id": config.get("twitch_client_id", ""),
+                "client_secret": config.get("twitch_client_secret", ""),
+                "grant_type": "refresh_token",
+                "refresh_token": refresh,
+            }) as resp:
+                if resp.status >= 400:
+                    raise TwitchError("Twitch user token refresh failed", resp.status)
+                data = await resp.json()
+        _user_token = data["access_token"]
+        _user_token_expiry = time.time() + int(data.get("expires_in", 3600)) - 300
+        new_refresh = data.get("refresh_token")
+        if new_refresh and new_refresh != refresh:
+            config.set("twitch_refresh_token", new_refresh)
+            config.save()
+        return _user_token
+
+
+async def follower_total(channel_name: str) -> "int | None":
+    """The channel's follower count, or None while Twitch is not connected."""
+    token = await user_token()
+    if not token:
+        return None
+    login = channel_name.strip().lower()
+    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+        uid = await _user_id(session, login)
+        if uid is None:
+            return None
+        data = await _helix(session, FOLLOWERS_URL, {"broadcaster_id": uid, "first": 1}, user_token=token)
+    return int(data.get("total", 0))

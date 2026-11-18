@@ -28,6 +28,7 @@ from core import health_checks
 from core import public_api
 from core import site_server
 from stream import spotify_oauth
+from stream import twitch_oauth
 from editor import gdrive_oauth
 from stream import streamlabs_oauth
 from editor import share_api
@@ -98,6 +99,8 @@ def build_app() -> web.Application:
     # same reason for it.
     app.router.add_get("/auth/spotify/login", spotify_oauth.spotify_login)
     app.router.add_get("/auth/spotify/callback", spotify_oauth.spotify_callback)
+    app.router.add_get("/auth/twitch/login", twitch_oauth.twitch_login)
+    app.router.add_get("/auth/twitch/callback", twitch_oauth.twitch_callback)
     app.router.add_get("/auth/gdrive/login", gdrive_oauth.gdrive_login)
     app.router.add_get("/auth/gdrive/callback", gdrive_oauth.gdrive_callback)
     # Task #8's credit OCR reporting - IS in auth.py's open_paths (exempt

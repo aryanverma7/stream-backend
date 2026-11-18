@@ -16,7 +16,7 @@ FIELD_TYPES = ("number", "text", "bool", "list", "table", "json", "secret")
 SECTIONS = [
     "Streamer.bot", "Points (Cloudbot)", "Roulette", "Credit OCR", "Spotify",
     "Rank (!rank)", "Greeter", "Discord go-live", "Twitch & YouTube",
-    "Break screen", "Login & site", "Editor app", "Other",
+    "Break screen", "Login & site", "Editor app", "Follower goal", "Other",
 ]
 
 _SECRET_RE = re.compile(r"secret|token|password|api_key|webhook", re.I)
@@ -25,7 +25,7 @@ _KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 # key: (section, type, label, description, extras)
 # extras "needed": True means the settings page flags the key while it is empty;
 # a key name instead flags it only while that bool setting is on.
-_SB, _PT, _RL, _OC, _SP, _RK, _GR, _DL, _TY, _BR, _LS, _ED = SECTIONS[:12]
+_SB, _PT, _RL, _OC, _SP, _RK, _GR, _DL, _TY, _BR, _LS, _ED, _FG = SECTIONS[:13]
 _ROWS = {
     "http_host": (_LS, "text", "Listen address", "Network address the backend binds to; 0.0.0.0 means every interface."),
     "http_port": (_LS, "number", "Listen port", "TCP port the backend serves on. Restart to apply.", {"integer": True, "min": 1024, "max": 65535}),
@@ -110,7 +110,11 @@ _ROWS = {
     "twitch_client_secret": (_TY, "secret", "Twitch client secret", "Client secret of the Twitch app.", {"needed": True}),
     "twitch_user_access_token": (_TY, "secret", "Twitch user token", "Twitch user access token for channel queries."),
     "twitch_channel": (_TY, "text", "Twitch channel", "Twitch channel name, used for live checks and the embed.", {"needed": True}),
-    "youtube_channel_id": (_TY, "text", "YouTube channel ID", "YouTube channel checked for a live broadcast."),
+    "twitch_refresh_token": (_TY, "secret", "Twitch refresh token", "Written by Connect Twitch; lets the follower goal read the follower count."),
+    "youtube_api_key": (_TY, "secret", "YouTube API key", "YouTube Data API v3 key (not the Drive key) for subscriber and live viewer counts."),
+    "follower_goal_title": (_FG, "text", "Goal title", "Shown above the follower goal bar, e.g. Road to 10K."),
+    "follower_goal_target": (_FG, "number", "Goal", "Twitch followers plus YouTube subscribers to reach; 0 hides the bar.", {"unit": "followers", "min": 0}),
+    "youtube_channel_id": (_TY, "text", "YouTube channel ID", "YouTube channel checked for a live broadcast and its subscriber count."),
     "youtube_video_ids": (_TY, "list", "Homepage videos", "YouTube video IDs shown on the homepage while offline (the part after v= in a link, or the whole link)."),
     "cloudflare_tunnel_domain": (_LS, "text", "Tunnel domain", "Cloudflare tunnel hostname that reaches this backend."),
     "site_out_dir": (_LS, "text", "Site folder", "Absolute path of the built site's out/ folder that the backend serves.", {"needed": True}),
