@@ -20,6 +20,7 @@ from stream import stream_title
 from stream import stream_stats
 from stream import credit_ocr
 from editor import deletions
+from editor import editor_quota
 from stream import discord_live
 from core import health_checks
 from editor import notifier
@@ -110,6 +111,7 @@ async def main():
     notifier.set_boot_last_seen(scheduler.last_seen())
     scheduler.register("notifier", notifier.run)
     scheduler.register("reminders", reminders.run)
+    scheduler.register("quota", editor_quota.run)
     scheduler.register("dm_outbox", notify_outbox.deliver_due)
     scheduler.register("back_online", notifier.back_online_once)
     await scheduler.start()

@@ -86,6 +86,8 @@
   "gdrive_public_api_key": "",
   "editor_google_email": "",
   "editor_discord_user_id": "",
+  "editor_quota_friday_reminder": true,
+  "editor_quota_monday_summary": true,
   "discord_bot_token": "",
   "streamer_discord_user_id": "",
   "discord_notifications_enabled": false,

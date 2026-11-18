@@ -43,9 +43,23 @@ CREATE TABLE IF NOT EXISTS events(
 """
 
 
+# Quota columns (editor_quota.py): when a tape became Final, the upload time of the version that was Final
+# (the week that gets the credit), and the streamer's "doesn't count" switch.
+_TAPE_ALTERS = (("final_at", "REAL"), ("final_upload_at", "REAL"), ("quota_exempt", "INTEGER NOT NULL DEFAULT 0"))
+
+
 def _c():
     db.ensure(_DDL)
-    return db.get()
+    conn = db.get()
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(tapes)")}
+    for col, decl in _TAPE_ALTERS:
+        if col not in have:
+            db.ensure(f"ALTER TABLE tapes ADD COLUMN {col} {decl};")
+            if col == "final_upload_at":  # tapes already Final: credit the week their last version was uploaded
+                db.ensure("UPDATE tapes SET final_upload_at=(SELECT MAX(COALESCE(i.uploaded_at, i.created_at))"
+                          " FROM iterations i WHERE i.tape_id=tapes.id AND i.status IN ('ready','deleted'))"
+                          " WHERE status='final';")
+    return conn
 
 
 def _one(sql, args=()):
@@ -165,10 +179,23 @@ def reel_for_clip(project_id):
                               (project_id,)))
 
 
-def update_tape(id, *, name=None, notes=None, status=None, now=None):
+def update_tape(id, *, name=None, notes=None, status=None, quota_exempt=None, now=None):
     if status is not None and status not in TAPE_STATUSES:
         raise ValueError(f"unknown tape status {status!r}")
+    now = time.time() if now is None else now
     cols = {k: v for k, v in (("name", name), ("notes", notes), ("status", status)) if v is not None}
+    if quota_exempt is not None:
+        cols["quota_exempt"] = 1 if quota_exempt else 0
+    was = get_tape(id) if status is not None else None
+    if was and status == "final" and was["status"] != "final":
+        # The quota credits the week the Final version was uploaded, so a late approval never costs the editor.
+        up = _one("SELECT MAX(COALESCE(uploaded_at, created_at)) AS at FROM iterations WHERE tape_id=? AND status='ready'",
+                  (id,))
+        cols["final_at"] = now
+        cols["final_upload_at"] = up["at"] if up and up["at"] is not None else now
+    elif was and status != "final" and was["status"] == "final":
+        cols["final_at"] = None
+        cols["final_upload_at"] = None
     _set("tapes", id, now, **cols)
     return get_tape(id)
 
