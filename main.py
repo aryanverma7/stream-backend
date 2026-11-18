@@ -26,6 +26,7 @@ from stream import points_cloudbot
 from stream import greeter
 from editor import reconcile
 from editor import reminders
+from editor import share_links
 from stream import roulette
 from core import scheduler
 from stream import spotify
@@ -90,6 +91,10 @@ async def main():
     scheduler.register("deletions", deletions.run_due)
     scheduler.register("backup", backup.run_if_due)
     scheduler.register("reconcile", reconcile.run_if_due)
+    # Share links expire on the scheduler's clock; while that clock cannot be trusted no expiry can be,
+    # so every live link is revoked the moment the gate shuts (early is the safe side).
+    scheduler.on_paused(share_links.revoke_all_live)
+    scheduler.register("share_links", share_links.run)
 
     # Discord DMs for the editor app. Events become outbox rows, reminders
     # add theirs, and only then does deliver_due send, so a DM written this

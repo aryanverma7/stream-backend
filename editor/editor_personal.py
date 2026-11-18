@@ -4,6 +4,7 @@ Every read is keyed by the caller's username, so another user's row is simply no
 import time
 
 from core import db
+from core.auth import role_for_username
 from editor import editor_store as es
 
 _DDL = """
@@ -84,8 +85,10 @@ def mark_tape_seen(username, tape_id, now=None):
 
 def tape_has_new(username, tape_id) -> bool:
     """True when someone else did something on the tape after this user last opened it."""
+    # Guest notes are the streamer's until approved: they must not light the editor's New badge.
+    guests = "" if role_for_username(username) == "admin" else " AND e.kind<>'guest_notes_added'"
     return _c().execute(
-        "SELECT 1 FROM events e WHERE e.tape_id=? AND e.actor<>?"
+        "SELECT 1 FROM events e WHERE e.tape_id=? AND e.actor<>?" + guests +
         " AND e.at > COALESCE((SELECT seen_at FROM tape_seen WHERE username=? AND tape_id=?), -1e300)"
         " LIMIT 1", (tape_id, username, username, tape_id)).fetchone() is not None
 

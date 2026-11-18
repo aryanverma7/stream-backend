@@ -77,6 +77,7 @@ _ROWS = {
     "gdrive_client_secret": (_ED, "secret", "Drive client secret", "Client secret of the Google Cloud OAuth app used for Google Drive.", {"needed": True}),
     "gdrive_redirect_uri": (_ED, "text", "Drive redirect URI", "OAuth callback URL registered with the Google Cloud app.", {"needed": True}),
     "gdrive_refresh_token": (_ED, "secret", "Drive refresh token", "Google Drive refresh token, written by the Drive connect flow.", {"needed": True}),
+    "gdrive_public_api_key": (_ED, "secret", "Drive public API key", "Website-restricted Google API key that lets share-link guests play a video. Public by design; not your OAuth secret.", {}),
     "editor_google_email": (_ED, "text", "Editor Google account", "The editor's Google account, which VODs and the brand kit are shared with.", {"needed": True}),
     "editor_discord_user_id": (_ED, "text", "Editor Discord user ID", "The editor's Discord user ID, which reminders and notifications are DMed to.", {"needed": "discord_notifications_enabled"}),
     "discord_bot_token": (_ED, "secret", "Discord bot token", "The bot token from the Discord Developer Portal, used to send DMs.", {"needed": "discord_notifications_enabled"}),

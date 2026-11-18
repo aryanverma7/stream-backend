@@ -363,7 +363,64 @@ Agreed with the streamer to ship alongside the editor app (wireframe board "Sett
 - Reel-specific technical checks (vertical 9:16, length): **on hold** by the streamer's choice.
 - **Page hardening (Plan 5):** a Content-Security-Policy header allowing scripts only from the site
   and the CDN hosts the hero uses, `frame-ancestors 'none'`, and `nosniff`. Recommend both users open
-  the dashboard in a browser profile with no extensions.
+  the dashboard in a browser profile with no extensions. As built: the CSP is on every page except the
+  homepage (`/`), whose hero loads third-party scripts; `script-src` keeps `'unsafe-inline'` because
+  Next's static export inlines its bootstrap scripts. Both accepted 2026-10-31.
+
+## Frame.io round (added 2026-10-31, streamer's answers)
+
+Goal: a personalised Frame.io on free Drive storage. Plan: `docs/superpowers/plans/2026-10-31-editor-app-6-frameio.md`.
+
+**Playability.** The editor renders H.265 (HEVC) MP4; there is no ProRes path. An upload is never
+refused for its codec. The upload check names the codec (from the MP4's sample description) and
+records whether the uploader's browser could decode it. A version that cannot play shows a bar **on
+top of the video**: "This browser can't play H.265, open it in Chrome" (other codecs: "This browser
+can't play this video's format, open it in Chrome"), so whoever sees it can ask for a fix. No
+automatic H.264 conversion (declined; revisit if guests complain).
+
+**Export markers (Resolve and Premiere).** The player's "Export markers" menu offers three downloads:
+Resolve `.edl` (Timelines > Import > Timeline Markers from EDL; lands on the open timeline with
+colour, length and note), Premiere `.xml` (FCP7 XML; Premiere imports it as a *new* sequence carrying
+the markers, no colours) and `.csv` for the free Markerbox Premiere extension (markers onto the active
+sequence). Only open, timestamped comments on that version; name = kind + author; note = text plus
+replies; range = duration; colours Fix red, Question yellow, Keep green. The dialog fills the frame
+rate from the version's check and defaults the timeline start to `01:00:00:00`; both are remembered
+per browser.
+
+**Share links (no login, expiring).** Only the streamer creates them. One link = one version.
+Expiry 1 h / **2 h (default)** / 10 h / 24 h / 7 days. A Live links list shows every active link with
+Revoke. While a link is live, that one Drive file has an "anyone with the link" permission and the
+guest's browser plays it straight from Google with a public, referrer-restricted API key (the key is
+public by Google's design; the drive.file token is never given to a guest). The link secret travels
+in the URL fragment (`/s/#<token>`), which never reaches a server log or `Referer`; the backend stores
+only its hash. Expiry removes the permission. **If the Mac Mini boots with an untrusted clock, every
+live link is revoked at once** (early is the safe direction; the streamer makes a new one). Limits
+accepted: Google caps downloads per public file (fine for a few viewers, not an audience), and a file
+id plus key already loaded in a guest's browser keeps working until the permission is removed.
+
+**Guest notes.** A guest types a name and can watch and leave timestamped or general notes (Fix /
+Keep / Question); no replies, no resolve, no attachments, rate-limited. A guest sees only their own
+notes. Notes go to the **streamer only**, listed under each guest's name on that version, and appear
+in the streamer's bell. The streamer approves all or some; approved notes become ordinary comments
+tagged "guest: <name>" that the editor then sees (and is notified about like any streamer comment);
+rejected ones are hidden. The editor never sees unapproved notes.
+
+**Side-by-side compare.** Two versions of a tape play side by side in sync from one play bar; sound
+from the left, with a switch. The existing V key (switch at the same time) stays.
+
+**Comment attachments.** Images only (PNG, JPEG, WebP, GIF), up to 20 MB each, on comments and
+replies, uploaded from the browser straight to Drive into the tape's folder, and deleted with the
+tape's files.
+
+**Auto transcript (Hinglish), postponed 2026-10-31** (no access to the gaming PC). Off by default. A switch in the editor's top bar (either user)
+turns it on for every new version; each version also has a "Make transcript" button. Only review
+versions are transcribed, never VODs. Output is **romanized Hinglish** ("ye clutch dekho"), from the
+Hindi2Hinglish Whisper fine-tune, run on the **gaming PC's NVIDIA GPU** while the PC is on and not
+live. The PC downloads the version, extracts the audio, transcribes, posts the segments to the
+backend (stored in `app.db`) and deletes its temporary files. The player shows the transcript beside
+the comments (click a line to seek), and search covers it.
+
+**Roadmap clean-up.** Tick what is built; the rest becomes tasks in the plan above.
 
 ## Left to the builder
 

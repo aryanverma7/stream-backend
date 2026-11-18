@@ -83,6 +83,7 @@
   "gdrive_client_secret": "",
   "gdrive_redirect_uri": "https://hub.dualbladex.org/auth/gdrive/callback",
   "gdrive_refresh_token": "",
+  "gdrive_public_api_key": "",
   "editor_google_email": "",
   "editor_discord_user_id": "",
   "discord_bot_token": "",
