@@ -20,6 +20,7 @@ from editor import deletions
 from editor import editor_bell
 from editor import editor_comments as ec
 from editor import editor_personal as ep
+from editor import editor_quota as eq
 from editor import editor_service as svc
 from editor import editor_store as es
 from editor import gdrive
@@ -330,7 +331,54 @@ async def update_tape(request, me):
     notes = body.get("notes")
     if notes is not None and not isinstance(notes, str):
         raise _Fail(400, "notes must be a string")
-    return _ok(es.update_tape(t["id"], name=_text(body, "name", required=False), notes=notes, status=status))
+    exempt = body.get("quota_exempt")
+    if exempt is not None:
+        _admin(me)  # whether a tape counts toward the quota is the streamer's call
+        if not isinstance(exempt, bool):
+            raise _Fail(400, "quota_exempt must be true or false")
+    return _ok(es.update_tape(t["id"], name=_text(body, "name", required=False), notes=notes, status=status,
+                              quota_exempt=exempt))
+
+
+@_route
+async def quota(request, me):
+    return _ok(eq.summary())
+
+
+@_route
+async def quota_targets(request, me):
+    _admin(me)
+    body = await _body(request)
+    try:
+        return _ok(eq.set_targets(body.get("videos"), body.get("reels"), time.time()))
+    except ValueError as e:
+        raise _Fail(400, str(e))
+
+
+@_route
+async def quota_start(request, me):
+    _admin(me)
+    body = await _body(request)
+    try:
+        eq.set_start_week(str(body.get("week", "")), time.time())
+    except ValueError as e:
+        raise _Fail(400, str(e))
+    return _ok(eq.summary())
+
+
+@_route
+async def quota_excused(request, me):
+    _admin(me)
+    body = await _body(request)
+    excused = body.get("excused")
+    note = body.get("note", "")
+    if not isinstance(excused, bool) or not isinstance(note, str):
+        raise _Fail(400, "excused must be true or false and note a string")
+    try:
+        eq.set_excused(str(body.get("week", "")), excused, note)
+    except ValueError as e:
+        raise _Fail(400, str(e))
+    return _ok(eq.summary())
 
 
 @_route
@@ -690,6 +738,10 @@ def register_routes(app: web.Application) -> None:
     r.add_post(f"{p}/tapes/{{id:{_ID}}}/uncombine", uncombine)
     r.add_get(f"{p}/tapes/{{id:{_ID}}}", get_tape)
     r.add_patch(f"{p}/tapes/{{id:{_ID}}}", update_tape)
+    r.add_get(f"{p}/quota", quota)
+    r.add_put(f"{p}/quota/targets", quota_targets)
+    r.add_put(f"{p}/quota/start", quota_start)
+    r.add_put(f"{p}/quota/excused", quota_excused)
     r.add_post(f"{p}/tapes/{{id:{_ID}}}/iterations", start_iteration)
     r.add_post(f"{p}/iterations/{{id:{_ID}}}/complete", complete_iteration)
     r.add_post(f"{p}/iterations/{{id:{_ID}}}/session", renew_session)

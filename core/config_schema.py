@@ -79,6 +79,8 @@ _ROWS = {
     "gdrive_refresh_token": (_ED, "secret", "Drive refresh token", "Google Drive refresh token, written by the Drive connect flow.", {"needed": True}),
     "gdrive_public_api_key": (_ED, "secret", "Drive public API key", "Website-restricted Google API key that lets share-link guests play a video. Public by design; not your OAuth secret.", {}),
     "editor_google_email": (_ED, "text", "Editor Google account", "The editor's Google account, which VODs and the brand kit are shared with.", {"needed": True}),
+    "editor_quota_friday_reminder": (_ED, "bool", "Quota reminder", "DM the editor on Friday evening while the week's quota is behind."),
+    "editor_quota_monday_summary": (_ED, "bool", "Quota summary", "DM the streamer on Monday morning with last week's quota."),
     "editor_discord_user_id": (_ED, "text", "Editor Discord user ID", "The editor's Discord user ID, which reminders and notifications are DMed to.", {"needed": "discord_notifications_enabled"}),
     "discord_bot_token": (_ED, "secret", "Discord bot token", "The bot token from the Discord Developer Portal, used to send DMs.", {"needed": "discord_notifications_enabled"}),
     "streamer_discord_user_id": (_ED, "text", "Streamer Discord user ID", "The streamer's Discord user ID, for new-version DMs.", {"needed": "discord_notifications_enabled"}),
