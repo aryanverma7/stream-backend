@@ -49,6 +49,8 @@ _TAPE_ALTERS = (("final_at", "REAL"), ("final_upload_at", "REAL"), ("quota_exemp
 
 
 def _c():
+    if _DDL in db._ensured:  # the column check below runs once per database, not on every query
+        return db.get()
     db.ensure(_DDL)
     conn = db.get()
     have = {r["name"] for r in conn.execute("PRAGMA table_info(tapes)")}
