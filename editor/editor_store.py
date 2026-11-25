@@ -225,8 +225,9 @@ def detect_kind(edit, width, height, duration_s, now=None, save=True) -> str:
     every later version must keep it. Only abandoned uploads so far: the kind is detected afresh."""
     if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in (width, height, duration_s)):
         raise ValueError("width, height and duration_s of the file are needed")
-    short = duration_s < SHORT_MAX_SECONDS + 0.05  # the site rounds to 0.1 s: 179.96 shows as 180.0
-    shaped = "clip" if short and height > width else "video" if not short and width > height else None
+    # shape first; the site rounds to 0.1 s, so 179.96 shows as 180.0 and still counts as short when vertical
+    shaped = ("clip" if height > width and duration_s < SHORT_MAX_SECONDS + 0.05
+              else "video" if width > height and duration_s >= SHORT_MAX_SECONDS else None)
     kept = edit["kind"]
     if kept != "reel" and not _c().execute(
             "SELECT 1 FROM iterations WHERE edit_id=? AND status!='abandoned' LIMIT 1", (edit["id"],)).fetchone():

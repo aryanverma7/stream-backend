@@ -258,6 +258,10 @@ def test_short_limit_allows_for_the_site_rounding_to_a_tenth(tmp_path):
     p = es.create_project("Ranked", "2026-10-20", "", "v.mp4", 5)
     assert es.detect_kind(es.create_edit(p["id"], "a"), 1080, 1920, 180.04) == "clip"
     assert es.detect_kind(es.create_edit(p["id"], "b"), 1920, 1080, 180.05) == "video"
+    assert es.detect_kind(es.create_edit(p["id"], "c"), 1920, 1080, 180.0) == "video"
+    assert es.detect_kind(es.create_edit(p["id"], "d"), 1080, 1920, 180.0) == "clip"
+    with pytest.raises(ValueError):
+        es.detect_kind(es.create_edit(p["id"], "e"), 1920, 1080, 179.9)
 
 
 def test_old_schema_is_migrated_in_place_and_keeps_its_data(tmp_path):
