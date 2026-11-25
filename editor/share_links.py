@@ -72,9 +72,9 @@ async def create(iteration_id, hours, by, now=None) -> dict:
     it = es.get_iteration(iteration_id)
     if it is None or it["status"] != "ready" or not it["drive_file_id"]:
         raise ValueError("Only an uploaded version can be shared")
-    tape = es.get_tape(it["tape_id"])
-    deletions.ensure_project_not_deleting(tape["project_id"])
-    deletions.ensure_tape_not_deleting(tape["id"])
+    edit = es.get_edit(it["edit_id"])
+    deletions.ensure_project_not_deleting(edit["project_id"])
+    deletions.ensure_edit_not_deleting(edit["id"])
     if not scheduler.clock_is_sane(now):  # its expiry would be wrong, and the pause has already revoked the rest
         raise ValueError("The Mac Mini's clock can't be trusted right now; try again once it is corrected")
     conn = _c()
@@ -165,23 +165,23 @@ def list_live(now=None) -> list:
     now = time.time() if now is None else now
     _c()
     # 'revoking' rows are listed too: until Drive confirms, the file is still public and the streamer must see it.
-    return _all("SELECT l.id, l.iteration_id, l.created_at, l.expires_at, l.state, i.version, t.id AS tape_id,"
-                " t.name AS tape, t.project_id FROM share_links l JOIN iterations i ON i.id=l.iteration_id"
-                " JOIN tapes t ON t.id=i.tape_id WHERE (l.state='live' AND l.expires_at>?)"
+    return _all("SELECT l.id, l.iteration_id, l.created_at, l.expires_at, l.state, i.version, t.id AS edit_id,"
+                " t.name AS edit, t.project_id FROM share_links l JOIN iterations i ON i.id=l.iteration_id"
+                " JOIN edits t ON t.id=i.edit_id WHERE (l.state='live' AND l.expires_at>?)"
                 " OR (l.state='revoking' AND COALESCE(l.revoke_reason, '')<>'unfinished') ORDER BY l.expires_at", (now,))
 
 
 def view(link) -> dict:
     """What a guest's page needs, and nothing more (no project names, no comments)."""
     it = es.get_iteration(link["iteration_id"])
-    tape = es.get_tape(it["tape_id"])
+    edit = es.get_edit(it["edit_id"])
     try:
         checks = json.loads(it["checks_json"] or "null")
     except ValueError:
         checks = None
     if not isinstance(checks, dict):
         checks = {}
-    return {"title": f"{tape['name']} v{it['version']}", "file_id": link["drive_file_id"],
+    return {"title": f"{edit['name']} v{it['version']}", "file_id": link["drive_file_id"],
             "api_key": config.get("gdrive_public_api_key", ""), "expires_at": link["expires_at"],
             "duration_s": checks.get("duration_s"), "codec": checks.get("codec"), "playable": checks.get("playable")}
 
@@ -209,14 +209,14 @@ def add_note(link, name, kind, body, start_s, end_s, client_id, now=None) -> dic
     if len(times) >= BURST or total >= TOTAL_MAX:
         raise OverflowError("Slow down a little")
     it = es.get_iteration(link["iteration_id"])
-    tape = es.get_tape(it["tape_id"])
+    edit = es.get_edit(it["edit_id"])
     with db.transaction():
         nid = conn.execute(
             "INSERT INTO guest_notes(link_id, iteration_id, name, kind, start_s, end_s, body, client_id, created_at,"
             " status) VALUES(?,?,?,?,?,?,?,?,?,'pending')",
             (link["id"], link["iteration_id"], name, kind, start_s, end_s, body, client_id, now)).lastrowid
         es.record_event(f"guest:{name}", "guest_notes_added", f"{name} left a guest note",
-                        project_id=tape["project_id"], tape_id=tape["id"], iteration_id=it["id"], now=now)
+                        project_id=edit["project_id"], edit_id=edit["id"], iteration_id=it["id"], now=now)
     _recent[link["id"]] = times + [now]
     return _one("SELECT * FROM guest_notes WHERE id=?", (nid,))
 

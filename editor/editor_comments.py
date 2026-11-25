@@ -73,11 +73,11 @@ def _short(body):
 
 
 def _ctx(iteration_id):
-    """(project_id, tape_id) for an iteration, or ValueError if it does not exist."""
+    """(project_id, edit_id) for an iteration, or ValueError if it does not exist."""
     it = es.get_iteration(iteration_id)
     if it is None:
         raise ValueError(f"no iteration {iteration_id}")
-    return es.get_tape(it["tape_id"])["project_id"], it["tape_id"]
+    return es.get_edit(it["edit_id"])["project_id"], it["edit_id"]
 
 
 def _comment(id):
@@ -98,7 +98,7 @@ def add_comment(iteration_id, author, kind, body, start_s=None, end_s=None, now=
     if end_s is not None and (start_s is None or end_s <= start_s):
         raise ValueError("end_s needs a start_s and must be after it")
     _cc()
-    project_id, tape_id = _ctx(iteration_id)
+    project_id, edit_id = _ctx(iteration_id)
     with db.transaction() as conn:
         if client_id:
             old = _repeat(conn, "comments", client_id, author, iteration_id)
@@ -109,9 +109,9 @@ def add_comment(iteration_id, author, kind, body, start_s=None, end_s=None, now=
             " client_id) VALUES(?,?,?,?,?,?,?,?,?)",
             (iteration_id, author, kind, start_s, end_s, body, now, now, client_id)).lastrowid
         conn.execute("INSERT INTO comment_state(comment_id, iteration_id) VALUES(?,?)", (cid, iteration_id))
-        ea.link(conn, attachment_ids, author, tape_id, comment_id=cid)  # raising rolls the comment back too
+        ea.link(conn, attachment_ids, author, edit_id, comment_id=cid)  # raising rolls the comment back too
         es.record_event(actor or author, "comment_added", f"{author} commented: {_short(body)}", project_id=project_id,
-                        tape_id=tape_id, iteration_id=iteration_id, comment_id=cid, now=now)
+                        edit_id=edit_id, iteration_id=iteration_id, comment_id=cid, now=now)
     return _comment(cid)
 
 
@@ -140,7 +140,7 @@ def add_reply(comment_id, author, body, now=None, client_id=None, attachment_ids
     c = _comment(comment_id)
     if c is None:
         raise ValueError(f"no comment {comment_id}")
-    project_id, tape_id = _ctx(c["iteration_id"])
+    project_id, edit_id = _ctx(c["iteration_id"])
     with db.transaction() as conn:
         if client_id:
             old = _repeat(conn, "replies", client_id, author, comment_id)
@@ -148,9 +148,9 @@ def add_reply(comment_id, author, body, now=None, client_id=None, attachment_ids
                 return _one("SELECT * FROM replies WHERE id=?", (old,))
         rid = conn.execute("INSERT INTO replies(comment_id, author, body, created_at, client_id) VALUES(?,?,?,?,?)",
                            (comment_id, author, body, now, client_id)).lastrowid
-        ea.link(conn, attachment_ids, author, tape_id, reply_id=rid)
+        ea.link(conn, attachment_ids, author, edit_id, reply_id=rid)
         es.record_event(author, "reply_added", f"{author} replied: {_short(body)}", project_id=project_id,
-                        tape_id=tape_id, iteration_id=c["iteration_id"], comment_id=comment_id, now=now)
+                        edit_id=edit_id, iteration_id=c["iteration_id"], comment_id=comment_id, now=now)
     return _one("SELECT * FROM replies WHERE id=?", (rid,))
 
 
@@ -160,31 +160,31 @@ def set_resolved(comment_id, iteration_id, resolved, by, now=None):
     if _one("SELECT 1 AS x FROM comment_state WHERE comment_id=? AND iteration_id=?",
             (comment_id, iteration_id)) is None:
         raise ValueError("comment is not on that iteration")
-    project_id, tape_id = _ctx(iteration_id)
+    project_id, edit_id = _ctx(iteration_id)
     with db.transaction() as conn:
         conn.execute("UPDATE comment_state SET resolved=?, resolved_by=?, resolved_at=?"
                      " WHERE comment_id=? AND iteration_id=?",
                      (1, by, now, comment_id, iteration_id) if resolved else (0, None, None, comment_id, iteration_id))
         if resolved:
             es.record_event(by, "comment_resolved", f"{by} resolved a comment", project_id=project_id,
-                            tape_id=tape_id, iteration_id=iteration_id, comment_id=comment_id, now=now)
+                            edit_id=edit_id, iteration_id=iteration_id, comment_id=comment_id, now=now)
     return _one("SELECT * FROM comment_state WHERE comment_id=? AND iteration_id=?", (comment_id, iteration_id))
 
 
 def start_over(iteration_id, by, now=None) -> int:
-    """Resolves every open comment on the tape's latest iteration (earlier versions keep their state)."""
+    """Resolves every open comment on the edit's latest iteration (earlier versions keep their state)."""
     now = time.time() if now is None else now
     _cc()
-    project_id, tape_id = _ctx(iteration_id)
+    project_id, edit_id = _ctx(iteration_id)
     # The latest READY version: a newer one still uploading (or abandoned) is not what anyone is reviewing.
-    latest = es.previous_ready_iteration(tape_id, 2**62)
+    latest = es.previous_ready_iteration(edit_id, 2**62)
     if latest is None or latest["id"] != iteration_id:
         raise ValueError("Start over works on the latest version")
     with db.transaction() as conn:
         n = conn.execute("UPDATE comment_state SET resolved=1, resolved_by=?, resolved_at=?"
                          " WHERE iteration_id=? AND resolved=0", (by, now, iteration_id)).rowcount
         es.record_event(by, "start_over", f"{by} started over, resolving {n} comment{'' if n == 1 else 's'}",
-                        project_id=project_id, tape_id=tape_id, iteration_id=iteration_id, now=now)
+                        project_id=project_id, edit_id=edit_id, iteration_id=iteration_id, now=now)
     return n
 
 
@@ -212,7 +212,7 @@ def carry_over(iteration_id, now=None):
     it = es.get_iteration(iteration_id)
     if it is None:
         raise ValueError(f"no iteration {iteration_id}")
-    prev = es.previous_ready_iteration(it["tape_id"], it["version"])
+    prev = es.previous_ready_iteration(it["edit_id"], it["version"])
     if prev is None:
         return 0
     with db.transaction() as conn:
@@ -228,9 +228,9 @@ def search(query, limit=50):
         return []
     like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     _cc()
-    base = ("SELECT '{k}' AS kind, c.id AS comment_id, c.iteration_id, i.tape_id, t.project_id, i.version,"
+    base = ("SELECT '{k}' AS kind, c.id AS comment_id, c.iteration_id, i.edit_id, t.project_id, i.version,"
             " {b}.body AS snippet, c.start_s, {b}.created_at AS at FROM {src}"
-            " JOIN iterations i ON i.id=c.iteration_id JOIN tapes t ON t.id=i.tape_id"
+            " JOIN iterations i ON i.id=c.iteration_id JOIN edits t ON t.id=i.edit_id"
             " JOIN projects p ON p.id=t.project_id"
             " WHERE p.deleted_at IS NULL AND lower({b}.body) LIKE ? ESCAPE '\\'")
     sql = (base.format(k="comment", b="c", src="comments c") + " UNION ALL " +

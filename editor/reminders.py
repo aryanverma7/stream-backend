@@ -43,10 +43,10 @@ async def run(now: float) -> None:
                 nxt = float(nxt) if nxt is not None else p["download_clicked_at"] + REMINDER_DELAY_SECONDS
                 if now < nxt:
                     continue
-                what = "clip" if p["kind"] == "clip" else "VOD"
+                what = "tape" if p["kind"] == "tape" else "VOD"
                 text = (f"Reminder: you downloaded {p['name']} — delete it from the editor page "
                         f"so it stops using Drive space." if what == "VOD" else
-                        f"Reminder: you downloaded the clip {p['name']} — delete it from the editor page "
+                        f"Reminder: you downloaded the tape {p['name']} — delete it from the editor page "
                         f"so it stops using Drive space.")
                 with db.transaction():
                     db.get().execute(  # a backlog from an outage must not arrive as a burst

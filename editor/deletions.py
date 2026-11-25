@@ -32,7 +32,7 @@ CLOCK_JUMP_SECONDS = 600  # run_due runs every 30 s tick; a bigger step is the c
 _DDL = """
 CREATE TABLE IF NOT EXISTS delete_requests(
   id INTEGER PRIMARY KEY,
-  kind TEXT NOT NULL CHECK (kind IN ('vod','tape_files','project')),
+  kind TEXT NOT NULL CHECK (kind IN ('vod','edit_files','project')),
   target_id INTEGER NOT NULL, label TEXT NOT NULL, requested_by TEXT NOT NULL,
   requested_at REAL NOT NULL, delete_at REAL NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('pending','running','done','cancelled')));
@@ -75,7 +75,7 @@ VOD_UPLOAD_STALE_SECONDS = 8 * 86400  # reconcile.ABANDON_AFTER_SECONDS, for ite
 
 
 def _target(kind, target_id, now):
-    """(label, project_id, tape_id, files) where files = [(drive_id, target_kind, target_id, prev_status)]."""
+    """(label, project_id, edit_id, files) where files = [(drive_id, target_kind, target_id, prev_status)]."""
     if kind == "vod":
         p = es.get_project(target_id)
         if p is None or p["deleted_at"] is not None:
@@ -85,18 +85,18 @@ def _target(kind, target_id, now):
         if not p["vod_file_id"]:
             raise ValueError("The VOD has no file to delete")
         return p["vod_filename"], p["id"], None, [(p["vod_file_id"], "vod", p["id"], p["vod_status"])]
-    if kind == "tape_files":
-        t = es.get_tape(target_id)
+    if kind == "edit_files":
+        t = es.get_edit(target_id)
         if t is None:
-            raise ValueError("No such tape")
+            raise ValueError("No such video, clip or reel")
         its = es.list_iterations(t["id"])
         if any(i["status"] == "uploading" for i in its):
             raise ValueError("Wait for the upload to finish first")
         files = _iteration_files(its)
         folder = ea.folder_of(t["id"])
-        if folder and t["files_deleted_at"] is None:  # the folder takes every image on the tape's comments
+        if folder and t["files_deleted_at"] is None:  # the folder takes every image on the edit's comments
             files.append((folder, "folder", t["id"], None))
-        if not files:  # an empty request would still set files_deleted_at, which unlocks a host clip's delete
+        if not files:  # an empty request would still set files_deleted_at, which unlocks a host tape's delete
             raise ValueError("Nothing to delete")
         return t["name"], t["project_id"], t["id"], files
     if kind == "project":
@@ -112,9 +112,9 @@ def _target(kind, target_id, now):
         files = [(p["drive_folder_id"], "folder", p["id"], None)] if p["drive_folder_id"] else []
         if p["vod_file_id"] and p["vod_status"] != "deleted":
             files.append((p["vod_file_id"], "vod", p["id"], p["vod_status"]))
-        for t in es.list_tapes(p["id"]):
+        for t in es.list_edits(p["id"]):
             if len(t["source_project_ids"]) >= 2 and t["files_deleted_at"] is None:
-                raise ValueError("This clip holds a combined reel - delete the reel's files first")
+                raise ValueError("This tape holds a combined reel - delete the reel's files first")
             its = es.list_iterations(t["id"])
             if any(i["status"] == "uploading" for i in its):
                 raise ValueError("Wait for the upload to finish first")
@@ -144,7 +144,7 @@ def request_delete(kind, target_id, confirm: str, *, username: str, role: str, n
     _check_allowed(kind, target_id, role)
     delete_at = now + DELETE_GRACE_SECONDS
     with db.transaction():
-        label, project_id, tape_id, files = _target(kind, target_id, now)
+        label, project_id, edit_id, files = _target(kind, target_id, now)
         if not label.strip():
             raise ValueError("Nothing to confirm against - rename it first")
         if (confirm or "").strip() != label:
@@ -166,17 +166,17 @@ def request_delete(kind, target_id, confirm: str, *, username: str, role: str, n
             elif tkind == "iteration":
                 conn.execute("UPDATE iterations SET status='deleting', updated_at=? WHERE id=?", (now, tid))
         es.record_event(username, "delete_scheduled", f"{username} scheduled deletion of {label}",
-                        project_id=project_id, tape_id=tape_id, now=now)
+                        project_id=project_id, edit_id=edit_id, now=now)
     return {"request_id": rid, "delete_at": delete_at, "label": label}
 
 
 def _overlapping(conn, kind, target_id, project_id) -> bool:
-    """A project delete and a vod/tape_files delete inside it must never both be live."""
+    """A project delete and a vod/edit_files delete inside it must never both be live."""
     live = "status IN ('pending','running')"
     if kind == "project":
         return conn.execute(
             f"SELECT 1 FROM delete_requests WHERE {live} AND ((kind='vod' AND target_id=?)"
-            " OR (kind='tape_files' AND target_id IN (SELECT id FROM tapes WHERE project_id=?)))",
+            " OR (kind='edit_files' AND target_id IN (SELECT id FROM edits WHERE project_id=?)))",
             (target_id, target_id)).fetchone() is not None
     return conn.execute(f"SELECT 1 FROM delete_requests WHERE {live} AND kind='project' AND target_id=?",
                         (project_id,)).fetchone() is not None
@@ -190,17 +190,17 @@ def ensure_project_not_deleting(project_id) -> None:
         raise ValueError("This project is being deleted")
 
 
-def ensure_tape_not_deleting(tape_id) -> None:
-    """Raises ValueError while a tape_files delete for this tape is pending or running."""
-    if _c().execute("SELECT 1 FROM delete_requests WHERE kind='tape_files' AND target_id=?"
-                    " AND status IN ('pending','running')", (tape_id,)).fetchone():
-        raise ValueError("This tape's files are being deleted")
+def ensure_edit_not_deleting(edit_id) -> None:
+    """Raises ValueError while an edit_files delete for this edit is pending or running."""
+    if _c().execute("SELECT 1 FROM delete_requests WHERE kind='edit_files' AND target_id=?"
+                    " AND status IN ('pending','running')", (edit_id,)).fetchone():
+        raise ValueError("These files are being deleted")
 
 
 def _event_ids(req):
-    """(project_id, tape_id) for a request's events."""
-    if req["kind"] == "tape_files":
-        t = es.get_tape(req["target_id"])
+    """(project_id, edit_id) for a request's events."""
+    if req["kind"] == "edit_files":
+        t = es.get_edit(req["target_id"])
         return (t["project_id"] if t else None), req["target_id"]
     return req["target_id"], None
 
@@ -225,9 +225,9 @@ def undo(request_id, *, username, role, now=None) -> dict:
             elif f["target_kind"] == "iteration":
                 conn.execute("UPDATE iterations SET status=?, updated_at=? WHERE id=? AND status='deleting'",
                              (f["prev_status"], now, f["target_id"]))
-        project_id, tape_id = _event_ids(req)
+        project_id, edit_id = _event_ids(req)
         es.record_event(username, "delete_undone", f"{username} undid deletion of {req['label']}",
-                        project_id=project_id, tape_id=tape_id, now=now)
+                        project_id=project_id, edit_id=edit_id, now=now)
     return {"request_id": request_id, "status": "cancelled"}
 
 
@@ -301,16 +301,16 @@ def _finalize(req, now):
         conn.execute("UPDATE iterations SET status='deleted', updated_at=? WHERE id IN"
                      " (SELECT target_id FROM delete_files WHERE request_id=? AND target_kind='iteration')",
                      (now, req["id"]))
-        if kind == "tape_files":
-            conn.execute("UPDATE tapes SET files_deleted_at=?, updated_at=? WHERE id=?", (now, now, tid))
+        if kind == "edit_files":
+            conn.execute("UPDATE edits SET files_deleted_at=?, updated_at=? WHERE id=?", (now, now, tid))
             ea.mark_deleted(conn, [tid], now)
         elif kind == "project":
             conn.execute("UPDATE projects SET deleted_at=?, updated_at=? WHERE id=?", (now, now, tid))
-            ea.mark_deleted(conn, [r["id"] for r in conn.execute("SELECT id FROM tapes WHERE project_id=?", (tid,))], now)
+            ea.mark_deleted(conn, [r["id"] for r in conn.execute("SELECT id FROM edits WHERE project_id=?", (tid,))], now)
         conn.execute("UPDATE delete_requests SET status='done' WHERE id=?", (req["id"],))
-        project_id, tape_id = _event_ids(req)
+        project_id, edit_id = _event_ids(req)
         es.record_event("system", "delete_done", f"Deleted {req['label']}",
-                        project_id=project_id, tape_id=tape_id, now=now)
+                        project_id=project_id, edit_id=edit_id, now=now)
 
 
 async def run_due(now: float, mono: "float | None" = None) -> None:

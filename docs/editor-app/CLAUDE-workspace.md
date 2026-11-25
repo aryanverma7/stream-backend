@@ -147,7 +147,7 @@ The editor app (a second GitHub login, role `editor`) is the data, Drive and del
 - `gdrive.py` the Drive client (`drive.file` scope, aiohttp only); `gdrive_oauth.py` the admin-only
   one-time connect (`/auth/gdrive/login`, `/auth/gdrive/callback`, in neither `OPEN_PATHS` nor
   `EDITOR_PATHS`) and `ensure_layout()`. Streamer-facing setup is `GDRIVE_SETUP.md`.
-- `editor_store.py` projects, tapes, iterations and the `events` log; `editor_comments.py` comments,
+- `editor_store.py` projects, edits (outputs), iterations and the `events` log; `editor_comments.py` comments,
   replies, resolved state, carry-over and search; `editor_personal.py` private to-dos, per-user
   "new" state and playback position (every read is keyed by username, so another user's row is
   simply not found).
@@ -170,7 +170,7 @@ only through `/complete` (the browser's call, e.g. after a session renewal) - re
 not reconciled** - only iterations carry `appProperties`.
 
 **Plan 5A site routes** (both roles): `GET /api/editor/home` (`vods_ready`, `deletes_to_confirm`,
-`open_tapes`), `GET /api/editor/fix-list` (unresolved comments on each tape's latest ready version, oldest
+`open_edits`), `GET /api/editor/fix-list` (unresolved comments on each output's latest ready version, oldest
 first; both skip projects in project-delete limbo, both reuse `editor_api._open_comments`), and
 `POST /api/editor/iterations/{id}/session` (fresh resumable session for a version still `uploading`, same
 `svc._upload_session` as the upload start; an `abandoned` one goes back to `uploading`; 409 otherwise). `/me` adds `brand_kit_url`. Security headers are
@@ -203,9 +203,9 @@ trustworthy time (`main.py` deliberately does not call `apply_boot_grace`), and 
 safe direction). `reset-clock` (and the automatic internet reset) sets every pending `delete_at` to an hour from the
 corrected now when it was further out *or already past* (a past-due delete must not fire the moment the gate reopens) (`deletions.clamp_after_clock_reset`, called from the route so `scheduler` never
 imports `deletions`). A project delete is refused while any of its iterations is `uploading` and
-never overlaps a live `vod`/`tape_files` delete in that project; while one is live, new tapes,
+never overlaps a live `vod`/`edit_files` delete in that project; while one is live, new outputs,
 upload starts/completions and `vod_ready` refuse ("This project is being deleted"). Targets are `vod`,
-`tape_files` and `project`; a target is marked deleted only through its own `delete_files` row.
+`edit_files` and `project`; a target is marked deleted only through its own `delete_files` row.
 **An editor's Download click is what lets him delete the VOD** (`projects.download_clicked_at`,
 set once, only for role `editor`); the streamer's click does not count, or he could not be the one
 to confirm having the file. Admin-only checks happen **inside the `/api/editor` handlers** (the
@@ -223,22 +223,23 @@ Comment and reply posts carry a `client_id` (idempotent; the unsent queue in `lo
 resends with the same id), and `POST /iterations/{id}/seen` is what New badges compare against.
 
 **`POST /api/editor/iterations/{id}/abandon`** (both roles) is the site's Cancel: `uploading` ->
-`abandoned` (409 otherwise), so a cancelled upload stops blocking `tape_files`/project deletes for 8 days;
+`abandoned` (409 otherwise), so a cancelled upload stops blocking `edit_files`/project deletes for 8 days;
 renewing a session (`/session`) sets `updated_at`, and reconcile's 8-day abandon counts from
 `max(created_at, updated_at)`.
 **Every completed iteration is shared with `editor_google_email` as reader** (`complete_iteration_upload`,
 which reconcile also goes through), like `vod_ready` does; a failed share is a warning, never a failed completion.
 
-**A clip is a project with exactly one reel, and `reel_sources` is what a reel is made of.** An
-upload under `editor_store.CLIP_MAX_SECONDS` (300) is `projects.kind='clip'`, decided only in
-`create_project(duration_s=...)`, which creates its reel (`tapes.kind='reel'`) in the same
-transaction; `create_tape` on a clip refuses. A reel is otherwise a tape (versions, comments,
-carry-over, Final, deletes). `combine_clips` keeps the first clip's reel, renames it, repoints every
-listed clip's `reel_sources` row at it and deletes the other reels; `uncombine` gives each clip its
-own reel back (the hosting clip keeps the original). Both refuse once any involved reel has an
-iteration row of any status, and combining must list every clip already on an involved reel, so
-`reel_sources.project_id UNIQUE` (a clip in at most one reel) never has to be the error a user sees.
-The reel lives in the first clip's project, which therefore cannot be project-deleted until that
+**A tape is a project with exactly one reel, and `reel_sources` is what a reel is made of.** An
+upload under `editor_store.TAPE_MAX_SECONDS` (300) is `projects.kind='tape'`, decided only in
+`create_project(duration_s=...)`, which creates its reel (`edits.kind='reel'`) in the same
+transaction; `create_edit` on a tape refuses. A VOD's output (`edits.kind` `video` or `clip`, NULL until
+its first version: `detect_kind`) and a reel share everything else (versions, comments, carry-over,
+Final, deletes). `combine_tapes` keeps the first tape's reel, renames it, repoints every
+listed tape's `reel_sources` row at it and deletes the other reels; `uncombine` gives each tape its
+own reel back (the hosting tape keeps the original). Both refuse once any involved reel has an
+iteration row of any status, and combining must list every tape already on an involved reel, so
+`reel_sources.project_id UNIQUE` (a tape in at most one reel) never has to be the error a user sees.
+The reel lives in the first tape's project, which therefore cannot be project-deleted until that
 reel's files are deleted. `editor_comments.start_over` (admin, `POST iterations/{id}/start-over`)
 resolves every open comment on that one iteration; earlier versions keep their state.
 
@@ -272,7 +273,7 @@ app created, not just the requested one. Both users can already open them all, s
 or a repeat connect returns no refresh token), `TOKEN_URL` `oauth2.googleapis.com/token`, `API`
 `.../drive/v3`, `UPLOAD_API` `.../upload/drive/v3/files`. Folders: `DualBladeX Editor` holding
 `Projects`, `Brand kit` (shared read-only with `editor_google_email`) and `Backups`; a project
-folder is `"{stream_date} {name}"`, each tape its own subfolder; an iteration file is
+folder is `"{stream_date} {name}"`, each output its own subfolder; an iteration file is
 `"v{version} - {filename}"` with `appProperties {"iteration_id": "<id>"}`. Folder ids live in the
 `meta` table (`gdrive_root`, `gdrive_projects`, `gdrive_brand_kit`, `gdrive_backups`). The refresh
 token is rotated and saved like Spotify's. Limits: thumbnail 262144 bytes, checks JSON 16384,
@@ -334,7 +335,7 @@ one DM ("8 new clips are ready: ...", each project once, deleted ones skipped); 
 editor (so the streamer's own upload is not announced to himself). Comments, replies, resolves and
 start-overs go to `digest_pending` for the *other* role (`_OTHER`; `system` actors notify nobody)
 and flush as one DM per recipient once the newest of them is `DIGEST_QUIET_SECONDS` (600) old; a
-digest names actor, tape, version and counts, **never comment text**. `reminders.run` DMs the editor
+digest names actor, output, version and counts, **never comment text**. `reminders.run` DMs the editor
 hourly from `REMINDER_DELAY_SECONDS` (3 h) after `download_clicked_at` while the VOD is `ready`, no
 delete request is live, and `12 <= tm_hour < 22` (so the last of a day goes out before 22:00); its
 next-due time is `meta reminder_next_<pid>`, pruned when the project stops qualifying.
@@ -354,8 +355,8 @@ event. The bell works with Discord off.
 must call `notify_outbox.ensure_schema()` (or the owning module's `_c()`) *first*; `notifier.run` and
 `reminders.run` do this at the top. Plan 2 fixes carried here: `deletions` tells a clock jump from a
 slow tick by comparing the wall-clock delta with the `time.monotonic()` delta, and
-`complete_iteration_upload` refuses (`ensure_tape_not_deleting`, before and after its Drive await)
-while a `tape_files` delete for that tape is live. Setup for the streamer: `DISCORD_BOT_SETUP.md`.
+`complete_iteration_upload` refuses (`ensure_edit_not_deleting`, before and after its Drive await)
+while an `edit_files` delete for that output is live. Setup for the streamer: `DISCORD_BOT_SETUP.md`.
 
 ### Gaming-PC uploader: `/api/uploader`, secret-gated, idempotent by `job_id`
 

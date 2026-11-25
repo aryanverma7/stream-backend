@@ -14,7 +14,8 @@ The site can send Discord direct messages (DMs) to you and to your editor: a new
 
    If you added these earlier with "+ Add setting" under these exact keys, they are picked up automatically.
 6. **What each DM means.**
-   - VOD or clip ready (to the editor).
+   - VOD or tape ready (to the editor).
+   - A new notice from you (to the editor, with its text).
    - A new version to review (to the streamer).
    - Comment digests (to the other person), sent after 10 quiet minutes so a burst of comments is one message.
    - Delete reminders (to the editor), hourly between 12:00 and 22:00 Mac Mini time, starting 3 hours after he clicks Download, until he deletes the file.

@@ -25,6 +25,7 @@ from editor import editor_service as svc
 from editor import editor_store as es
 from editor import gdrive
 from editor import gdrive_oauth
+from editor import notices
 from editor import notify_outbox
 from editor import share_links as sl
 from core import scheduler
@@ -162,16 +163,16 @@ def _project_view(p):
     return {k: v for k, v in p.items() if k != "vod_upload_url"}
 
 
-def _tape(id):
-    """A tape, 404 if it or its project is gone."""
-    t = _found(es.get_tape(id))
+def _edit(id):
+    """An edit, 404 if it or its project is gone."""
+    t = _found(es.get_edit(id))
     _project(t["project_id"])
     return t
 
 
 def _iteration(id):
     it = _found(es.get_iteration(id))
-    _tape(it["tape_id"])
+    _edit(it["edit_id"])
     return it
 
 
@@ -186,12 +187,12 @@ def _no_store(resp):
     return resp
 
 
-def _latest_ready(tape_id):
-    return next((i for i in reversed(es.list_iterations(tape_id)) if i["status"] == "ready"), None)
+def _latest_ready(edit_id):
+    return next((i for i in reversed(es.list_iterations(edit_id)) if i["status"] == "ready"), None)
 
 
 def _open_comments(latest):
-    """Unresolved comments (carried-over ones included) on a tape's latest ready iteration."""
+    """Unresolved comments (carried-over ones included) on an edit's latest ready iteration."""
     return [] if latest is None else [c for c in ec.comments_for_iteration(latest["id"]) if not c["resolved"]]
 
 
@@ -218,10 +219,10 @@ def _live_projects():
     return [p for p in es.list_projects() if not deletions.has_live_request("project", p["id"])]
 
 
-def _open_tapes(projects):
-    """(project, tape, latest ready iteration, its unresolved comments) for every tape with any."""
+def _open_edits(projects):
+    """(project, edit, latest ready iteration, its unresolved comments) for every edit with any."""
     for p in projects:
-        for t in es.list_tapes(p["id"]):
+        for t in es.list_edits(p["id"]):
             latest = _latest_ready(t["id"])
             open_comments = _open_comments(latest)
             if open_comments:
@@ -232,19 +233,20 @@ def _open_tapes(projects):
 async def home(request, me):
     live = _live_projects()
     ready = [p for p in live if p["vod_status"] == "ready"]
-    open_tapes = [{"tape": t, "project_name": p["name"], "latest_iteration_id": it["id"],
-                   "latest_version": it["version"], "open_comments": len(cs)} for p, t, it, cs in _open_tapes(live)]
+    open_edits = [{"edit": t, "project_name": p["name"], "latest_iteration_id": it["id"],
+                   "latest_version": it["version"], "open_comments": len(cs)} for p, t, it, cs in _open_edits(live)]
     return _ok({"vods_ready": [_project_view(p) for p in ready if p["download_clicked_at"] is None],
                 "deletes_to_confirm": [_project_view(p) for p in ready if p["download_clicked_at"] is not None
                                        and not deletions.has_live_request("vod", p["id"])],
-                "open_tapes": sorted(open_tapes, key=lambda x: -x["open_comments"])})
+                "open_edits": sorted(open_edits, key=lambda x: -x["open_comments"]),
+                "notices": notices.list_all()})
 
 
 @_route
 async def fix_list(request, me):
-    items = [{"comment": c, "tape_id": t["id"], "tape_name": t["name"], "project_id": p["id"],
+    items = [{"comment": c, "edit_id": t["id"], "edit_name": t["name"], "project_id": p["id"],
               "iteration_id": it["id"], "version": it["version"]}
-             for p, t, it, cs in _open_tapes(_live_projects()) for c in cs]
+             for p, t, it, cs in _open_edits(_live_projects()) for c in cs]
     return _ok({"items": sorted(items, key=lambda i: (i["comment"]["created_at"], i["comment"]["id"]))})
 
 
@@ -252,7 +254,7 @@ async def fix_list(request, me):
 
 @_route
 async def list_projects(request, me):
-    projects = [{**_project_view(p), "has_new": any(ep.tape_has_new(me["username"], t["id"]) for t in es.list_tapes(p["id"]))}
+    projects = [{**_project_view(p), "has_new": any(ep.edit_has_new(me["username"], t["id"]) for t in es.list_edits(p["id"]))}
                 for p in es.list_projects()]
     return _ok({"projects": projects})
 
@@ -260,13 +262,13 @@ async def list_projects(request, me):
 @_route
 async def get_project(request, me):
     p = _project(_id(request))
-    tapes = []
-    for t in es.list_tapes(p["id"]):
+    edits = []
+    for t in es.list_edits(p["id"]):
         latest = _latest_ready(t["id"])
-        tapes.append({**t, "has_new": ep.tape_has_new(me["username"], t["id"]),
+        edits.append({**t, "has_new": ep.edit_has_new(me["username"], t["id"]),
                       "latest_version": latest and latest["version"],
                       "latest_iteration_id": latest and latest["id"], "open_comments": len(_open_comments(latest))})
-    return _ok({"project": _project_view(p), "tapes": tapes})
+    return _ok({"project": _project_view(p), "edits": edits})
 
 
 @_route
@@ -289,40 +291,41 @@ async def download_project(request, me):
 
 
 @_route
-async def create_tape(request, me):
+async def create_edit(request, me):
     p = _project(_id(request))
-    return _ok(svc.create_tape(p["id"], _text(await _body(request), "name"), me["username"]), 201)
+    body = await _body(request)
+    return _ok(svc.create_edit(p["id"], _text(body, "name"), me["username"]), 201)
 
 
-# -- clips and reels --
+# -- tapes and reels --
 
 @_route
-async def combine_clips(request, me):
+async def combine_tapes(request, me):
     body = await _body(request)
     ids = body.get("project_ids")
     if not isinstance(ids, list) or not all(isinstance(i, int) and not isinstance(i, bool) for i in ids):
         raise _Fail(400, "project_ids must be a list of whole numbers")
-    return _ok(svc.combine_clips(ids, _text(body, "name"), me["username"]))
+    return _ok(svc.combine_tapes(ids, _text(body, "name"), me["username"]))
 
 
 @_route
 async def uncombine(request, me):
-    t = _tape(_id(request))
+    t = _edit(_id(request))
     return _ok({"reels": svc.uncombine(t["id"], me["username"])})
 
 
-# -- tapes --
+# -- edits --
 
 @_route
-async def get_tape(request, me):
-    t = _tape(_id(request))
-    ep.mark_tape_seen(me["username"], t["id"])
-    return _ok({"tape": t, "iterations": [_iteration_view(i) for i in es.list_iterations(t["id"])]})
+async def get_edit(request, me):
+    t = _edit(_id(request))
+    ep.mark_edit_seen(me["username"], t["id"])
+    return _ok({"edit": t, "iterations": [_iteration_view(i) for i in es.list_iterations(t["id"])]})
 
 
 @_route
-async def update_tape(request, me):
-    t = _tape(_id(request))
+async def update_edit(request, me):
+    t = _edit(_id(request))
     body = await _body(request)
     status = body.get("status")
     # Finalising, or undoing a final, is the streamer's call.
@@ -333,10 +336,10 @@ async def update_tape(request, me):
         raise _Fail(400, "notes must be a string")
     exempt = body.get("quota_exempt")
     if exempt is not None:
-        _admin(me)  # whether a tape counts toward the quota is the streamer's call
+        _admin(me)  # whether an edit counts toward the quota is the streamer's call
         if not isinstance(exempt, bool):
             raise _Fail(400, "quota_exempt must be true or false")
-    return _ok(es.update_tape(t["id"], name=_text(body, "name", required=False), notes=notes, status=status,
+    return _ok(es.update_edit(t["id"], name=_text(body, "name", required=False), notes=notes, status=status,
                               quota_exempt=exempt))
 
 
@@ -383,12 +386,16 @@ async def quota_excused(request, me):
 
 @_route
 async def start_iteration(request, me):
-    t = _tape(_id(request))
+    t = _edit(_id(request))
     body = await _body(request)
     size = _int(body, "size")
     if size <= 0:
         raise _Fail(400, "size must be positive")
-    return _ok(await svc.start_iteration_upload(t["id"], _text(body, "filename"), size, _text(body, "mime")))
+    # The browser probes the file; its shape decides (or must keep) the kind. Checked here before Drive is asked,
+    # and again with the version row after the awaits, which is where it is saved.
+    shape = (body.get("width"), body.get("height"), body.get("duration_s"))
+    es.detect_kind(t, *shape, save=False)
+    return _ok(await svc.start_iteration_upload(t["id"], _text(body, "filename"), size, _text(body, "mime"), shape))
 
 
 # -- iterations --
@@ -659,6 +666,40 @@ async def delete_todo(request, me):
     return _ok({"deleted": True})
 
 
+# -- notice board (the streamer writes, the editor reads and says "Got it") --
+
+@_route
+async def list_notices(request, me):
+    return _ok({"notices": notices.list_all()})
+
+
+@_route
+async def add_notice(request, me):
+    _admin(me)
+    return _ok(notices.create((await _body(request)).get("text"), me["username"]), 201)
+
+
+@_route
+async def update_notice(request, me):
+    _admin(me)
+    return _ok(_found(notices.update(_id(request), (await _body(request)).get("text"))))
+
+
+@_route
+async def delete_notice(request, me):
+    _admin(me)
+    if not notices.delete(_id(request)):
+        raise _Fail(404, "Not found")
+    return _ok({"deleted": True})
+
+
+@_route
+async def notice_seen(request, me):
+    if me["role"] != "editor":
+        raise _Fail(403, "Only the editor can mark a notice seen.")
+    return _ok(_found(notices.mark_seen(_id(request))))
+
+
 # -- deletions (deletions.py enforces who may delete and undo what) --
 
 @_route
@@ -733,16 +774,16 @@ def register_routes(app: web.Application) -> None:
     r.add_get(f"{p}/projects/{{id:{_ID}}}", get_project)
     r.add_patch(f"{p}/projects/{{id:{_ID}}}", rename_project)
     r.add_post(f"{p}/projects/{{id:{_ID}}}/download", download_project)
-    r.add_post(f"{p}/projects/{{id:{_ID}}}/tapes", create_tape)
-    r.add_post(f"{p}/clips/combine", combine_clips)
-    r.add_post(f"{p}/tapes/{{id:{_ID}}}/uncombine", uncombine)
-    r.add_get(f"{p}/tapes/{{id:{_ID}}}", get_tape)
-    r.add_patch(f"{p}/tapes/{{id:{_ID}}}", update_tape)
+    r.add_post(f"{p}/projects/{{id:{_ID}}}/edits", create_edit)
+    r.add_post(f"{p}/tapes/combine", combine_tapes)
+    r.add_post(f"{p}/edits/{{id:{_ID}}}/uncombine", uncombine)
+    r.add_get(f"{p}/edits/{{id:{_ID}}}", get_edit)
+    r.add_patch(f"{p}/edits/{{id:{_ID}}}", update_edit)
     r.add_get(f"{p}/quota", quota)
     r.add_put(f"{p}/quota/targets", quota_targets)
     r.add_put(f"{p}/quota/start", quota_start)
     r.add_put(f"{p}/quota/excused", quota_excused)
-    r.add_post(f"{p}/tapes/{{id:{_ID}}}/iterations", start_iteration)
+    r.add_post(f"{p}/edits/{{id:{_ID}}}/iterations", start_iteration)
     r.add_post(f"{p}/iterations/{{id:{_ID}}}/complete", complete_iteration)
     r.add_post(f"{p}/iterations/{{id:{_ID}}}/session", renew_session)
     r.add_post(f"{p}/iterations/{{id:{_ID}}}/abandon", abandon_iteration)
@@ -769,6 +810,11 @@ def register_routes(app: web.Application) -> None:
     r.add_get(f"{p}/search", search)
     r.add_get(f"{p}/notifications", notifications)
     r.add_post(f"{p}/notifications/seen", notifications_seen)
+    r.add_get(f"{p}/notices", list_notices)
+    r.add_post(f"{p}/notices", add_notice)
+    r.add_patch(f"{p}/notices/{{id:{_ID}}}", update_notice)
+    r.add_delete(f"{p}/notices/{{id:{_ID}}}", delete_notice)
+    r.add_post(f"{p}/notices/{{id:{_ID}}}/seen", notice_seen)
     r.add_get(f"{p}/todos", list_todos)
     r.add_post(f"{p}/todos", add_todo)
     r.add_patch(f"{p}/todos/{{id:{_ID}}}", update_todo)

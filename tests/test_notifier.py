@@ -28,21 +28,21 @@ def outbox():
         "SELECT recipient_role, content, dedupe_key FROM dm_outbox ORDER BY id")]
 
 
-def tape_with_version(name="Jett dash", versions=1):
+def edit_with_version(name="Jett dash", versions=1):
     p = es.create_project("Ace", "2026-10-20", "", "v.mp4", 5, now=1.0)
-    t = es.create_tape(p["id"], name, now=1.0)
+    t = es.create_edit(p["id"], name, now=1.0)
     its = [es.create_iteration(t["id"], "a.mp4", 1, "u", now=1.0) for _ in range(versions)]
     return p, t, its[-1]
 
 
-def ev(actor, kind, it, at, tape=None):
-    tape = tape or es.get_tape(it["tape_id"])
-    return es.record_event(actor, kind, "s", project_id=tape["project_id"], tape_id=tape["id"],
+def ev(actor, kind, it, at, edit=None):
+    edit = edit or es.get_edit(it["edit_id"])
+    return es.record_event(actor, kind, "s", project_id=edit["project_id"], edit_id=edit["id"],
                            iteration_id=it["id"], now=at)
 
 
-def ready(name, clip=False, at=T):
-    p = es.create_project(name, "2026-10-20", "", "v.mp4", 5, now=1.0, duration_s=30 if clip else None)
+def ready(name, tape=False, at=T):
+    p = es.create_project(name, "2026-10-20", "", "v.mp4", 5, now=1.0, duration_s=30 if tape else None)
     es.record_event("agent", "vod_ready", "s", project_id=p["id"], now=at)
     return p
 
@@ -61,32 +61,32 @@ async def test_single_vod_ready_dms_editor_after_quiet():
 
 
 @pytest.mark.asyncio
-async def test_clips_sent_together_are_one_grouped_dm():
+async def test_tapes_sent_together_are_one_grouped_dm():
     for i in range(8):
-        ready(f"Clip {i}", clip=True, at=T + i * 120)  # finishing one after another
+        ready(f"Tape {i}", tape=True, at=T + i * 120)  # finishing one after another
     await notifier.run(T + 7 * 120 + 599)
     assert outbox() == []
     await notifier.run(T + 7 * 120 + 600)
     assert [r["content"] for r in outbox()] == [
-        "8 new clips are ready: Clip 0, Clip 1, Clip 2, Clip 3, Clip 4 and 3 more."
+        "8 new tapes are ready: Tape 0, Tape 1, Tape 2, Tape 3, Tape 4 and 3 more."
         " Open the editor page to download them."]
 
 
 @pytest.mark.asyncio
-async def test_mixed_batch_counts_vods_and_clips_once_each():
+async def test_mixed_batch_counts_vods_and_tapes_once_each():
     v1, v2 = ready("Stream A"), ready("Stream B")
-    c = ready("Clip X", clip=True)
-    es.record_event("system", "vod_ready", "s", project_id=c["id"], now=T)  # a repeat is not a second clip
+    c = ready("Tape X", tape=True)
+    es.record_event("system", "vod_ready", "s", project_id=c["id"], now=T)  # a repeat is not a second tape
     await notifier.run(T + 600)
     assert [r["content"] for r in outbox()] == [
-        "2 new VODs and 1 new clip are ready: Stream A, Stream B, Clip X. Open the editor page to download them."]
+        "2 new VODs and 1 new tape are ready: Stream A, Stream B, Tape X. Open the editor page to download them."]
 
 
 @pytest.mark.asyncio
 async def test_ready_dm_skips_deleted_projects_and_never_mixes_with_comment_digest():
     ready("Stream A")
     es.record_event("agent", "vod_ready", "s", project_id=999, now=T)
-    _, _, it = tape_with_version()
+    _, _, it = edit_with_version()
     ev("Aryan", "comment_added", it, T)
     await notifier.run(T + 600)
     assert sorted(r["content"] for r in outbox()) == [
@@ -119,7 +119,7 @@ async def test_ready_batch_of_only_deleted_projects_sends_nothing():
 
 @pytest.mark.asyncio
 async def test_iteration_ready_dms_streamer():
-    _, t, it = tape_with_version(versions=2)
+    _, t, it = edit_with_version(versions=2)
     ev("ed", "iteration_ready", it, T)
     ev("Aryan", "iteration_ready", es.create_iteration(t["id"], "b.mp4", 1, "u", now=1.0), T)  # never to yourself
     await notifier.run(T)
@@ -129,7 +129,7 @@ async def test_iteration_ready_dms_streamer():
 
 @pytest.mark.asyncio
 async def test_own_events_never_notify_yourself():
-    _, _, it = tape_with_version()
+    _, _, it = edit_with_version()
     ev("aryan", "comment_added", it, T)
     await notifier.run(T + 700)
     assert [r["recipient_role"] for r in outbox()] == ["editor"]
@@ -138,7 +138,7 @@ async def test_own_events_never_notify_yourself():
 
 @pytest.mark.asyncio
 async def test_burst_of_comments_gives_one_digest_after_quiet():
-    _, _, it = tape_with_version()
+    _, _, it = edit_with_version()
     for i in range(20):
         ev("ed", "comment_added", it, T + i * 10)
     await notifier.run(T + 700)
@@ -154,7 +154,7 @@ async def test_burst_of_comments_gives_one_digest_after_quiet():
 @pytest.mark.asyncio
 async def test_cursor_survives_restart_no_double_processing(tmp_path):
     p = es.create_project("Ace", "2026-10-20", "", "v.mp4", 5, now=1.0)
-    _, _, it = tape_with_version()
+    _, _, it = edit_with_version()
     es.record_event("system", "vod_ready", "s", project_id=p["id"], now=T)
     ev("ed", "comment_added", it, T)
     await notifier.run(T + 10)
@@ -166,11 +166,11 @@ async def test_cursor_survives_restart_no_double_processing(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_digest_groups_by_tape_and_version():
-    _, t, it1 = tape_with_version()
+async def test_digest_groups_by_edit_and_version():
+    _, t, it1 = edit_with_version()
     it2 = es.create_iteration(t["id"], "b.mp4", 1, "u", now=1.0)
-    clip = es.create_project("Clip 0412", "2026-10-20", "", "c.mp4", 5, now=1.0, duration_s=30)
-    reel = es.reel_for_clip(clip["id"])
+    tape = es.create_project("Tape 0412", "2026-10-20", "", "c.mp4", 5, now=1.0, duration_s=30)
+    reel = es.reel_for_tape(tape["id"])
     rit = es.create_iteration(reel["id"], "r.mp4", 1, "u", now=1.0)
     for k in ["comment_added"] * 6 + ["reply_added"] * 2 + ["comment_resolved", "start_over"]:
         ev("Aryan", k, it2, T)
@@ -181,7 +181,7 @@ async def test_digest_groups_by_tape_and_version():
     assert outbox()[0] == {
         "recipient_role": "editor",
         "content": "Aryan: 6 comments, 2 replies, 1 resolved, started over on Jett dash v2;"
-                   " 1 reply on Jett dash v1; 1 comment on Clip 0412 v1.",
+                   " 1 reply on Jett dash v1; 1 comment on Tape 0412 v1.",
         "dedupe_key": "digest:editor:" + str(db.get().execute(
             "SELECT MAX(id) FROM events WHERE actor='Aryan'").fetchone()[0])}
     assert outbox()[1]["content"] == "ed: 1 comment on Jett dash v2."
@@ -189,10 +189,10 @@ async def test_digest_groups_by_tape_and_version():
 
 @pytest.mark.asyncio
 async def test_system_actor_digests_nothing():
-    _, _, it = tape_with_version()
+    _, _, it = edit_with_version()
     for actor in ("system", "agent", "stranger"):
         ev(actor, "comment_added", it, T)
-    ev("ed", "tape_created", it, T)
+    ev("ed", "edit_created", it, T)
     await notifier.run(T + 10_000)
     assert outbox() == []
     assert db.meta_get("notify_cursor") == str(db.get().execute("SELECT MAX(id) FROM events").fetchone()[0])

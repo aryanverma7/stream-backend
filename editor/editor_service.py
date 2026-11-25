@@ -59,99 +59,99 @@ async def ensure_project_folder(project_id) -> str:
         return await _project_folder(project_id)
 
 
-async def ensure_tape_folder(tape_id) -> str:
+async def ensure_edit_folder(edit_id) -> str:
     async with _folder_lock:  # re-read inside the lock so a racing caller sees the saved id
-        t = es.get_tape(tape_id)
+        t = es.get_edit(edit_id)
         if t is None:
-            raise ValueError("No such tape")
+            raise ValueError("No such video, clip or reel")
         if t["drive_folder_id"]:
             return t["drive_folder_id"]
         fid = await gdrive.create_folder(t["name"], await _project_folder(t["project_id"]))
-        es.set_tape_folder(tape_id, fid)
+        es.set_edit_folder(edit_id, fid)
         return fid
 
 
-def create_tape(project_id, name, actor) -> dict:
+def create_edit(project_id, name, actor) -> dict:
     deletions.ensure_project_not_deleting(project_id)
     with db.transaction():
-        t = es.create_tape(project_id, name)
-        es.record_event(actor, "tape_created", f"{actor} added tape {name}", project_id=project_id, tape_id=t["id"])
+        t = es.create_edit(project_id, name)
+        es.record_event(actor, "edit_created", f"{actor} added {name}", project_id=project_id, edit_id=t["id"])
     return t
 
 
-def _has_versions(tape_id) -> bool:
-    return db.get().execute("SELECT 1 FROM iterations WHERE tape_id=? LIMIT 1", (tape_id,)).fetchone() is not None
+def _has_versions(edit_id) -> bool:
+    return db.get().execute("SELECT 1 FROM iterations WHERE edit_id=? LIMIT 1", (edit_id,)).fetchone() is not None
 
 
-def combine_clips(project_ids, name, actor, now=None) -> dict:
+def combine_tapes(project_ids, name, actor, now=None) -> dict:
     """
-    Merges 2+ clips into the first clip's reel, renamed to `name`; the other reels (empty) are deleted.
-    Every clip already on an involved reel must be listed, so no clip ends up in two reels and no
+    Merges 2+ tapes into the first tape's reel, renamed to `name`; the other reels (empty) are deleted.
+    Every tape already on an involved reel must be listed, so no tape ends up in two reels and no
     reel is left half-emptied. Refused once any involved reel has a version (even an unfinished upload).
     """
     now = time.time() if now is None else now
     ids = list(dict.fromkeys(project_ids))
     if len(ids) < 2:
-        raise ValueError("Pick at least two clips to combine")
+        raise ValueError("Pick at least two tapes to combine")
     deletions._c()  # tables before the transaction: ensure() COMMITs
     with db.transaction() as conn:
         reels = []
         for pid in ids:
             p = es.get_project(pid)
-            if p is None or p["deleted_at"] is not None or p["kind"] != "clip":
-                raise ValueError("Only clips can be combined")
+            if p is None or p["deleted_at"] is not None or p["kind"] != "tape":
+                raise ValueError("Only tapes can be combined")
             deletions.ensure_project_not_deleting(pid)
             if deletions.has_live_request("vod", pid):  # its file is going: nothing left to cut a reel from
                 raise ValueError(f"{p['name']} is being deleted - it cannot be combined")
-            reel = es.reel_for_clip(pid)
+            reel = es.reel_for_tape(pid)
             if reel["id"] not in [r["id"] for r in reels]:
                 reels.append(reel)
         for r in reels:
             if _has_versions(r["id"]):
-                raise ValueError(f"{r['name']} already has a version - clips can only be combined before that")
+                raise ValueError(f"{r['name']} already has a version - tapes can only be combined before that")
             if not set(r["source_project_ids"]) <= set(ids):
-                raise ValueError(f"{r['name']} holds other clips too - include them all, or uncombine it first")
+                raise ValueError(f"{r['name']} holds other tapes too - include them all, or uncombine it first")
         keep = reels[0]["id"]
-        conn.execute("UPDATE reel_sources SET tape_id=? WHERE tape_id IN (%s)" % ",".join("?" * len(reels)),
+        conn.execute("UPDATE reel_sources SET edit_id=? WHERE edit_id IN (%s)" % ",".join("?" * len(reels)),
                      (keep, *(r["id"] for r in reels)))
         for r in reels[1:]:
-            conn.execute("DELETE FROM tapes WHERE id=?", (r["id"],))
-        conn.execute("UPDATE tapes SET name=?, updated_at=? WHERE id=?", (name, now, keep))
-        es.record_event(actor, "reels_combined", f"{actor} combined {len(ids)} clips into {name}",
-                        project_id=reels[0]["project_id"], tape_id=keep, now=now)
-    return es.get_tape(keep)
+            conn.execute("DELETE FROM edits WHERE id=?", (r["id"],))
+        conn.execute("UPDATE edits SET name=?, updated_at=? WHERE id=?", (name, now, keep))
+        es.record_event(actor, "reels_combined", f"{actor} combined {len(ids)} tapes into {name}",
+                        project_id=reels[0]["project_id"], edit_id=keep, now=now)
+    return es.get_edit(keep)
 
 
-def uncombine(tape_id, actor, now=None) -> list[dict]:
-    """Gives every clip on a combined reel its own reel back; the hosting clip keeps this one."""
+def uncombine(edit_id, actor, now=None) -> list[dict]:
+    """Gives every tape on a combined reel its own reel back; the hosting tape keeps this one."""
     now = time.time() if now is None else now
     deletions._c()  # tables before the transaction: ensure() COMMITs
     with db.transaction() as conn:
-        t = es.get_tape(tape_id)
+        t = es.get_edit(edit_id)
         if t is None or t["kind"] != "reel" or len(t["source_project_ids"]) < 2:
             raise ValueError("That is not a combined reel")
-        if _has_versions(tape_id):
+        if _has_versions(edit_id):
             raise ValueError(f"{t['name']} already has a version - it can only be uncombined before that")
         host = es.get_project(t["project_id"])
-        conn.execute("UPDATE tapes SET name=?, updated_at=? WHERE id=?", (host["name"], now, tape_id))
-        out = [tape_id]
+        conn.execute("UPDATE edits SET name=?, updated_at=? WHERE id=?", (host["name"], now, edit_id))
+        out = [edit_id]
         for pid in t["source_project_ids"]:
             if pid == host["id"]:
                 continue
             p = es.get_project(pid)
             conn.execute("DELETE FROM reel_sources WHERE project_id=?", (pid,))
-            if p["deleted_at"] is None:  # a deleted clip just leaves the reel
+            if p["deleted_at"] is None:  # a deleted tape just leaves the reel
                 deletions.ensure_project_not_deleting(pid)
                 out.append(es.insert_reel(conn, pid, p["name"], now))
         es.record_event(actor, "reels_uncombined", f"{actor} uncombined {t['name']}",
-                        project_id=host["id"], tape_id=tape_id, now=now)
-    return [es.get_tape(i) for i in out]
+                        project_id=host["id"], edit_id=edit_id, now=now)
+    return [es.get_edit(i) for i in out]
 
 
-def _project_of(tape_id) -> int:
-    t = es.get_tape(tape_id)
+def _project_of(edit_id) -> int:
+    t = es.get_edit(edit_id)
     if t is None:
-        raise ValueError("No such tape")
+        raise ValueError("No such video, clip or reel")
     return t["project_id"]
 
 
@@ -161,32 +161,43 @@ async def _upload_session(it, folder, mime) -> str:
         {"iteration_id": str(it["id"])}, config.get("public_base_url") or None)
 
 
-def _ensure_tape_open(tape_id) -> None:
-    """No new version on a tape whose files are being, or have been, deleted."""
-    deletions.ensure_project_not_deleting(_project_of(tape_id))
-    deletions.ensure_tape_not_deleting(tape_id)
-    if es.get_tape(tape_id)["files_deleted_at"] is not None:
-        raise ValueError("This tape's files were deleted")
+def _ensure_edit_open(edit_id) -> None:
+    """No new version on an edit whose files are being, or have been, deleted."""
+    deletions.ensure_project_not_deleting(_project_of(edit_id))
+    deletions.ensure_edit_not_deleting(edit_id)
+    if es.get_edit(edit_id)["files_deleted_at"] is not None:
+        raise ValueError("These files were deleted")
 
 
-async def start_iteration_upload(tape_id, filename, size, mime) -> dict:
-    _ensure_tape_open(tape_id)
+async def start_iteration_upload(edit_id, filename, size, mime, shape=None) -> dict:
+    """`shape` (width, height, duration_s) decides or must keep the edit's kind (es.detect_kind)."""
+    _ensure_edit_open(edit_id)
     free = (await free_space())["free"]
     if free is not None and size > free:
         raise DriveFull(size, free)
-    folder = await ensure_tape_folder(tape_id)
+    folder = await ensure_edit_folder(edit_id)
     # Again after the awaits, with none before the insert: once the row exists, a project delete refuses.
-    _ensure_tape_open(tape_id)
-    it = es.create_iteration(tape_id, filename, size, "")
+    _ensure_edit_open(edit_id)
+    es._c()
+    # The kind is checked and saved with the version row: two starts racing on a new output cannot both win.
+    with db.transaction():
+        was = es.get_edit(edit_id)["kind"]
+        kind = es.detect_kind(es.get_edit(edit_id), *shape) if shape else None
+        it = es.create_iteration(edit_id, filename, size, "")
     try:
         url = await _upload_session(it, folder, mime)
     except BaseException:
         with db.transaction() as conn:
             conn.execute("DELETE FROM iterations WHERE id=?", (it["id"],))
+            if kind is not None and kind != was:  # no version came of it: the kind it set goes too,
+                # unless another start's version of that kind is still live (NULL-kind versions never count)
+                conn.execute("UPDATE edits SET kind=? WHERE id=? AND kind=? AND NOT EXISTS"
+                             " (SELECT 1 FROM iterations WHERE edit_id=? AND status!='abandoned' AND kind=?)",
+                             (was, edit_id, kind, edit_id, kind))
         raise
     with db.transaction() as conn:
         conn.execute("UPDATE iterations SET upload_url=? WHERE id=?", (url, it["id"]))
-    return {"iteration_id": it["id"], "version": it["version"], "upload_url": url}
+    return {"iteration_id": it["id"], "version": it["version"], "upload_url": url, "kind": kind}
 
 
 async def renew_iteration_upload(iteration_id, mime) -> "str | None":
@@ -194,13 +205,15 @@ async def renew_iteration_upload(iteration_id, mime) -> "str | None":
     it = es.get_iteration(iteration_id)
     if it is None or it["status"] not in ("uploading", "abandoned"):
         return None
-    project_id = _project_of(it["tape_id"])
+    project_id = _project_of(it["edit_id"])
     deletions.ensure_project_not_deleting(project_id)
-    deletions.ensure_tape_not_deleting(it["tape_id"])
-    url = await _upload_session(it, await ensure_tape_folder(it["tape_id"]), mime)
+    deletions.ensure_edit_not_deleting(it["edit_id"])
+    es.ensure_kind_kept(it)
+    url = await _upload_session(it, await ensure_edit_folder(it["edit_id"]), mime)
     deletions.ensure_project_not_deleting(project_id)  # after the awaits, right before the write
-    deletions.ensure_tape_not_deleting(it["tape_id"])
+    deletions.ensure_edit_not_deleting(it["edit_id"])
     with db.transaction() as conn:
+        es.ensure_kind_kept(it)
         # updated_at restarts reconcile's 8-day abandon clock: a renewal is someone still uploading.
         if not conn.execute("UPDATE iterations SET upload_url=?, status='uploading', updated_at=? WHERE id=?"
                             " AND status IN ('uploading','abandoned')",
@@ -213,17 +226,17 @@ async def complete_iteration_upload(iteration_id, file_id, actor) -> dict:
     it = es.get_iteration(iteration_id)
     if it is None:
         raise ValueError("No such iteration")
-    tape = es.get_tape(it["tape_id"])
-    if tape is None:
-        raise ValueError("No such tape")
-    deletions.ensure_tape_not_deleting(it["tape_id"])
+    edit = es.get_edit(it["edit_id"])
+    if edit is None:
+        raise ValueError("No such video, clip or reel")
+    deletions.ensure_edit_not_deleting(it["edit_id"])
     f = await gdrive.get_file(file_id)
-    if (not tape["drive_folder_id"] or tape["drive_folder_id"] not in f.get("parents", [])
+    if (not edit["drive_folder_id"] or edit["drive_folder_id"] not in f.get("parents", [])
             or f.get("appProperties", {}).get("iteration_id") != str(iteration_id)
             or f.get("size") != it["size"]):
         raise ValueError("That file is not this iteration's upload")
-    deletions.ensure_project_not_deleting(tape["project_id"])  # after the await, right before the write
-    deletions.ensure_tape_not_deleting(it["tape_id"])
+    deletions.ensure_project_not_deleting(edit["project_id"])  # after the await, right before the write
+    deletions.ensure_edit_not_deleting(it["edit_id"])
     row, _ = es.complete_iteration(iteration_id, file_id, actor=actor)  # records iteration_ready atomically
     # Every time, not only on the transition: idempotent, so a retry after a crash here still carries over.
     editor_comments.carry_over(iteration_id)
@@ -239,21 +252,21 @@ async def complete_iteration_upload(iteration_id, file_id, actor) -> dict:
 
 
 async def start_attachment_upload(iteration_id, author, name, size, mime) -> dict:
-    """A resumable Drive session for one image on this iteration's tape: {id, upload_url}."""
+    """A resumable Drive session for one image on this iteration's edit: {id, upload_url}."""
     name = ea.validate(name, size, mime)
     it = es.get_iteration(iteration_id)
     if it is None:
         raise ValueError("No such iteration")
-    tape_id = it["tape_id"]
-    _ensure_tape_open(tape_id)
-    parent = await ensure_tape_folder(tape_id)
-    async with _folder_lock:  # one Attachments folder per tape, however many uploads start at once
-        folder = ea.folder_of(tape_id)
+    edit_id = it["edit_id"]
+    _ensure_edit_open(edit_id)
+    parent = await ensure_edit_folder(edit_id)
+    async with _folder_lock:  # one Attachments folder per edit, however many uploads start at once
+        folder = ea.folder_of(edit_id)
         if not folder:
             folder = await gdrive.create_folder("Attachments", parent)
-            ea.set_folder(tape_id, folder)
-    _ensure_tape_open(tape_id)  # again after the awaits, right before the insert
-    aid = ea.create(tape_id, author, name, size, mime)
+            ea.set_folder(edit_id, folder)
+    _ensure_edit_open(edit_id)  # again after the awaits, right before the insert
+    aid = ea.create(edit_id, author, name, size, mime)
     try:
         url = await gdrive.start_resumable_upload(name, folder, size, mime, {"attachment_id": str(aid)},
                                                   config.get("public_base_url") or None)
@@ -273,7 +286,7 @@ async def complete_attachment_upload(aid, author, file_id) -> dict:
     if a["status"] == "ready":
         return a
     f = await gdrive.get_file(file_id)
-    if (ea.folder_of(a["tape_id"]) not in f.get("parents", [])
+    if (ea.folder_of(a["edit_id"]) not in f.get("parents", [])
             or f.get("appProperties", {}).get("attachment_id") != str(aid)
             or f.get("size") != a["size"] or f.get("mimeType") != a["mime"]):
         # Only this upload's own file is deleted (its wrong type or size slipped past the browser); any other
@@ -282,7 +295,7 @@ async def complete_attachment_upload(aid, author, file_id) -> dict:
             await gdrive.delete_file(file_id)
         ea.set_status(aid, "deleted")
         raise ValueError("That file is not this attachment's upload")
-    deletions.ensure_tape_not_deleting(a["tape_id"])
+    deletions.ensure_edit_not_deleting(a["edit_id"])
     ea.set_status(aid, "ready", file_id)
     return ea.get(aid)
 
@@ -354,13 +367,13 @@ async def storage_view() -> dict:
     for p in es.list_projects():
         if p["vod_status"] in ("ready", "deleting"):
             files.append({"kind": "vod", "label": f"{p['name']} — VOD", "size": p["vod_size"],
-                          "project_id": p["id"], "tape_id": None, "status": p["vod_status"],
-                          "project_name": p["name"], "vod_filename": p["vod_filename"], "tape_name": None})
-        for t in es.list_tapes(p["id"]):
+                          "project_id": p["id"], "edit_id": None, "status": p["vod_status"],
+                          "project_name": p["name"], "vod_filename": p["vod_filename"], "edit_name": None})
+        for t in es.list_edits(p["id"]):
             for i in es.list_iterations(t["id"]):
                 if i["status"] in ("ready", "deleting"):
                     files.append({"kind": "iteration", "label": f"{t['name']} v{i['version']}",
-                                  "size": i["size"], "project_id": p["id"], "tape_id": t["id"],
+                                  "size": i["size"], "project_id": p["id"], "edit_id": t["id"],
                                   "status": i["status"], "project_name": p["name"],
-                                  "vod_filename": None, "tape_name": t["name"]})
+                                  "vod_filename": None, "edit_name": t["name"]})
     return {"quota": await free_space(), "files": files, "pending_deletes": deletions.pending()}

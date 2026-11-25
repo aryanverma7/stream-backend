@@ -1,7 +1,7 @@
 """Images on comments and replies: rows here, Drive flows in editor_service, bytes browser to Drive.
 
-Each tape gets one "Attachments" folder inside its own Drive folder. The tape's file delete (and the
-project delete) removes that folder with everything in it, so attachments never outlive their tape.
+Each edit gets one "Attachments" folder inside its own Drive folder. The edit's file delete (and the
+project delete) removes that folder with everything in it, so attachments never outlive their edit.
 An attachment is uploaded first and linked to a comment or reply when that is posted.
 """
 import time
@@ -13,12 +13,12 @@ from editor.editor_store import _all, _one
 MIMES = ("image/png", "image/jpeg", "image/webp", "image/gif")
 MAX_BYTES = 20 * 1024 * 1024
 MAX_PER_POST = 4
-STALE_SECONDS = 86400  # an upload not completed in a day is dropped (its file, if any, goes with the tape)
+STALE_SECONDS = 86400  # an upload not completed in a day is dropped (its file, if any, goes with the edit)
 REFUSED = "Images only (PNG, JPEG, WebP, GIF), up to 20 MB"
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS attachments(
-  id INTEGER PRIMARY KEY, tape_id INTEGER NOT NULL REFERENCES tapes(id),
+  id INTEGER PRIMARY KEY, edit_id INTEGER NOT NULL REFERENCES edits(id),
   comment_id INTEGER, reply_id INTEGER, author TEXT NOT NULL, name TEXT NOT NULL, mime TEXT NOT NULL,
   size INTEGER NOT NULL, status TEXT NOT NULL CHECK (status IN ('uploading','ready','deleted')),
   drive_file_id TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL);
@@ -33,18 +33,18 @@ def _c():
     return db.get()
 
 
-def _folder_key(tape_id) -> str:
-    return f"attachments_folder_{tape_id}"
+def _folder_key(edit_id) -> str:
+    return f"attachments_folder_{edit_id}"
 
 
-def folder_of(tape_id) -> "str | None":
-    """The tape's attachments folder; None when nothing was ever attached. Safe inside a transaction (after _c)."""
-    row = db.get().execute("SELECT value FROM meta WHERE key=?", (_folder_key(tape_id),)).fetchone()
+def folder_of(edit_id) -> "str | None":
+    """The edit's attachments folder; None when nothing was ever attached. Safe inside a transaction (after _c)."""
+    row = db.get().execute("SELECT value FROM meta WHERE key=?", (_folder_key(edit_id),)).fetchone()
     return row["value"] if row else None
 
 
-def set_folder(tape_id, folder_id) -> None:
-    db.meta_set(_folder_key(tape_id), folder_id)
+def set_folder(edit_id, folder_id) -> None:
+    db.meta_set(_folder_key(edit_id), folder_id)
 
 
 def validate(name, size, mime) -> str:
@@ -55,16 +55,16 @@ def validate(name, size, mime) -> str:
     return name.strip()
 
 
-def create(tape_id, author, name, size, mime, now=None) -> int:
+def create(edit_id, author, name, size, mime, now=None) -> int:
     now = time.time() if now is None else now
     conn = _c()
     with db.transaction():
-        # A day-old upload nobody completed is dead; its file (if Google finished it) is deleted with the tape.
+        # A day-old upload nobody completed is dead; its file (if Google finished it) is deleted with the edit.
         conn.execute("UPDATE attachments SET status='deleted', updated_at=? WHERE status='uploading' AND created_at<?",
                      (now, now - STALE_SECONDS))
         return conn.execute(
-            "INSERT INTO attachments(tape_id, author, name, mime, size, status, created_at, updated_at)"
-            " VALUES(?,?,?,?,?,'uploading',?,?)", (tape_id, author, name, mime, size, now, now)).lastrowid
+            "INSERT INTO attachments(edit_id, author, name, mime, size, status, created_at, updated_at)"
+            " VALUES(?,?,?,?,?,'uploading',?,?)", (edit_id, author, name, mime, size, now, now)).lastrowid
 
 
 def forget(aid) -> None:
@@ -85,8 +85,8 @@ def set_status(aid, status, file_id=None, now=None) -> None:
                      " WHERE id=? AND status='uploading'", (status, file_id, now, aid))
 
 
-def link(conn, ids, author, tape_id, *, comment_id=None, reply_id=None) -> None:
-    """Inside the post's transaction: every id must be the author's, ready, on this tape and still free."""
+def link(conn, ids, author, edit_id, *, comment_id=None, reply_id=None) -> None:
+    """Inside the post's transaction: every id must be the author's, ready, on this edit and still free."""
     if not ids:
         return
     if (not isinstance(ids, list) or len(ids) > MAX_PER_POST
@@ -95,8 +95,8 @@ def link(conn, ids, author, tape_id, *, comment_id=None, reply_id=None) -> None:
     ids = sorted(set(ids))
     n = conn.execute(
         f"UPDATE attachments SET comment_id=?, reply_id=? WHERE id IN ({','.join('?' * len(ids))}) AND author=?"
-        " AND tape_id=? AND status='ready' AND comment_id IS NULL AND reply_id IS NULL",
-        (comment_id, reply_id, *ids, author, tape_id)).rowcount
+        " AND edit_id=? AND status='ready' AND comment_id IS NULL AND reply_id IS NULL",
+        (comment_id, reply_id, *ids, author, edit_id)).rowcount
     if n != len(ids):
         raise ValueError("An attachment is not ready, not yours, or already used")
 
@@ -114,8 +114,8 @@ def grouped(col, ids) -> dict:
     return out
 
 
-def mark_deleted(conn, tape_ids, now) -> None:
+def mark_deleted(conn, edit_ids, now) -> None:
     """In a delete's finalize transaction (the caller ensured the schema): the folder is gone, so are its files."""
-    if tape_ids:
-        conn.execute(f"UPDATE attachments SET status='deleted', updated_at=? WHERE tape_id IN"
-                     f" ({','.join('?' * len(tape_ids))})", (now, *tape_ids))
+    if edit_ids:
+        conn.execute(f"UPDATE attachments SET status='deleted', updated_at=? WHERE edit_id IN"
+                     f" ({','.join('?' * len(edit_ids))})", (now, *edit_ids))

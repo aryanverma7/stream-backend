@@ -1,7 +1,8 @@
-"""The editor's weekly quota: Final videos (tapes) and reels per Monday-Sunday week, local time.
+"""The editor's weekly quota: Final videos, and Final reels & clips (one short-form target, key "reels"),
+per Monday-Sunday week, local time.
 
-A tape counts once it is Final and not quota_exempt, in the week its Final version was *uploaded*
-(tapes.final_upload_at, set by editor_store.update_tape), so a late approval never costs the editor;
+An edit counts once it is Final and not quota_exempt, in the week its Final version was *uploaded*
+(edits.final_upload_at, set by editor_store.update_edit), so a late approval never costs the editor;
 removing Final removes the credit. Each week stands alone (no carry-over). Targets apply from the week
 they were set (quota_targets, newest row at or before a week wins), so past weeks keep theirs. Tracking
 starts at meta quota_start_week (the first week the quota was looked at, changeable by the streamer).
@@ -121,8 +122,8 @@ def set_excused(week: str, excused: bool, note: str = "") -> None:
 
 def _credited(since: float) -> list:
     return [dict(r) for r in _c().execute(
-        "SELECT t.id, t.name, t.kind, t.project_id, p.name AS project_name, t.final_upload_at"
-        " FROM tapes t JOIN projects p ON p.id=t.project_id"
+        "SELECT t.id, t.name, COALESCE(t.kind, 'video') AS kind, t.project_id, p.name AS project_name, t.final_upload_at"
+        " FROM edits t JOIN projects p ON p.id=t.project_id"
         " WHERE t.status='final' AND t.quota_exempt=0 AND t.final_upload_at IS NOT NULL AND t.final_upload_at>=?"
         " ORDER BY t.final_upload_at", (since,)).fetchall()]
 
@@ -138,8 +139,9 @@ def summary(now: "float | None" = None) -> dict:
     weeks, w = [], start
     while w <= current:
         target = targets_for(w)
-        tapes = by_week.get(w, [])
-        done = {"videos": sum(t["kind"] == "tape" for t in tapes), "reels": sum(t["kind"] == "reel" for t in tapes)}
+        edits = by_week.get(w, [])
+        done = {"videos": sum(t["kind"] == "video" for t in edits),
+                "reels": sum(t["kind"] in ("reel", "clip") for t in edits)}
         met = all(done[k] >= target[k] for k in target)
         if met:
             status = "met"
@@ -149,7 +151,7 @@ def summary(now: "float | None" = None) -> dict:
             status = "in_progress" if w == current else "missed"
         weeks.append({"week": w, "target": target, "done": done,
                       "short": {k: max(0, target[k] - done[k]) for k in target},
-                      "status": status, "note": excused.get(w, ""), "excused": w in excused, "tapes": tapes})
+                      "status": status, "note": excused.get(w, ""), "excused": w in excused, "edits": edits})
         w = _next(w)
     return {"start_week": start, "current_week": current, "week_ends_at": week_start_ts(_next(current)),
             "targets": targets_for(current), "weeks": weeks[::-1]}
@@ -157,13 +159,16 @@ def summary(now: "float | None" = None) -> dict:
 
 # -- the DMs --
 
+_LABELS = {"videos": ("video", "videos"), "reels": ("reel or clip", "reels & clips")}
+
+
 def _counts(wk: dict) -> str:
     return (f"videos {wk['done']['videos']}/{wk['target']['videos']}, "
-            f"reels {wk['done']['reels']}/{wk['target']['reels']}")
+            f"reels & clips {wk['done']['reels']}/{wk['target']['reels']}")
 
 
 def _to_go(short: dict) -> str:
-    parts = [f"{n} {k[:-1] if n == 1 else k}" for k, n in short.items() if n]
+    parts = [f"{n} {_LABELS[k][n != 1]}" for k, n in short.items() if n]
     return " and ".join(parts)
 
 

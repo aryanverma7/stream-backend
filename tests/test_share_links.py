@@ -39,7 +39,7 @@ def drive(tmp_path, monkeypatch):
 
 def _version():
     p = es.create_project("Ace", "2026-10-20", "", "vod.mp4", 5, now=1.0)
-    t = es.create_tape(p["id"], "Clutch", now=1.0)
+    t = es.create_edit(p["id"], "Clutch", now=1.0)
     it = es.create_iteration(t["id"], "a.mp4", 10, "", now=2.0)
     es.complete_iteration(it["id"], "FILE1", now=3.0)
     es.set_iteration_media(it["id"], checks_json='{"duration_s": 90, "codec": "hvc1", "playable": true}')
@@ -235,7 +235,7 @@ async def test_only_the_streamer_makes_lists_revokes_and_approves(drive):
                                    ("POST", "/api/editor/guest-notes/reject", {"ids": [1]})]:
             assert (await a.call("editor", method, path, body))[0] == 403, path
         _, live = await a.call("admin", "GET", "/api/editor/share-links")
-        assert [x["tape"] for x in live["links"]] == ["Clutch"] and token not in str(live)
+        assert [x["edit"] for x in live["links"]] == ["Clutch"] and token not in str(live)
         assert (await a.call("admin", "POST", "/api/editor/share-links/1/revoke"))[1] == {"revoked": True}
         assert (await a.call(None, "POST", "/api/share/view", {"token": token}))[0] == 404
 
@@ -308,9 +308,9 @@ async def test_guest_notes_ring_the_streamers_bell_and_digest_only(drive):
     assert rows == [{"recipient_role": "streamer"}]
     assert notifier._count("guest_notes_added", 3) == "3 guest notes to approve"
     from editor import editor_personal as ep
-    assert ep.tape_has_new("cutguy", t["id"]) is False  # an unapproved note must not light the editor's New badge
-    assert ep.tape_has_new("aryan", t["id"]) is True
-    rows = db.get().execute("SELECT d.actor, e.kind, e.project_id, e.tape_id, e.iteration_id FROM digest_pending d"
+    assert ep.edit_has_new("cutguy", t["id"]) is False  # an unapproved note must not light the editor's New badge
+    assert ep.edit_has_new("aryan", t["id"]) is True
+    rows = db.get().execute("SELECT d.actor, e.kind, e.project_id, e.edit_id, e.iteration_id FROM digest_pending d"
                             " JOIN events e ON e.id=d.event_id").fetchall()
     assert notifier._digest(rows) == "Rahul: 1 guest note to approve on Clutch v1."
 

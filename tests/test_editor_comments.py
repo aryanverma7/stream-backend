@@ -10,23 +10,23 @@ def _db(tmp_path):
     db.use_path_for_tests(tmp_path / "x.db")
 
 
-def _tape():
+def _edit():
     p = es.create_project("P", "2026-10-20", "", "v.mp4", 1, now=1.0)
-    return es.create_tape(p["id"], "t", now=1.0)
+    return es.create_edit(p["id"], "t", now=1.0)
 
 
-def _ready(tape_id):
-    it = es.create_iteration(tape_id, "f.mp4", 1, "u", now=1.0)
+def _ready(edit_id):
+    it = es.create_iteration(edit_id, "f.mp4", 1, "u", now=1.0)
     return es.complete_iteration(it["id"], "fid", now=2.0)[0]
 
 
 def _two():
-    t = _tape()
+    t = _edit()
     return t, _ready(t["id"]), _ready(t["id"])
 
 
 def test_general_point_and_range_comments_validate():
-    it = _ready(_tape()["id"])
+    it = _ready(_edit()["id"])
     g = ec.add_comment(it["id"], "a", "fix", "general", now=1.0)
     assert g["start_s"] is None and g["end_s"] is None
     pt = ec.add_comment(it["id"], "a", "keep", "point", start_s=5, now=2.0)
@@ -42,7 +42,7 @@ def test_general_point_and_range_comments_validate():
 
 
 def test_only_author_can_edit():
-    it = _ready(_tape()["id"])
+    it = _ready(_edit()["id"])
     c = ec.add_comment(it["id"], "a", "fix", "old", now=1.0)
     with pytest.raises(PermissionError):
         ec.edit_comment(c["id"], "b", body="hacked")
@@ -51,7 +51,7 @@ def test_only_author_can_edit():
 
 
 def test_reply_thread_order():
-    it = _ready(_tape()["id"])
+    it = _ready(_edit()["id"])
     c = ec.add_comment(it["id"], "a", "fix", "q", now=1.0)
     ec.add_reply(c["id"], "b", "first", now=2.0)
     ec.add_reply(c["id"], "a", "second", now=3.0)
@@ -106,7 +106,7 @@ def test_search_finds_reply_text_and_escapes_wildcards():
     ec.add_comment(v1["id"], "a", "fix", "a_b", now=2.5)
     ec.add_reply(c["id"], "b", "music too loud", now=3.0)
     hits = ec.search("intro")
-    assert [(h["kind"], h["comment_id"], h["version"], h["tape_id"], h["start_s"]) for h in hits] == \
+    assert [(h["kind"], h["comment_id"], h["version"], h["edit_id"], h["start_s"]) for h in hits] == \
         [("comment", c["id"], 1, t["id"], 7)]
     assert "project_id" in hits[0] and "INTRO" in hits[0]["snippet"]
     r = ec.search("LOUD")
@@ -117,7 +117,7 @@ def test_search_finds_reply_text_and_escapes_wildcards():
 
 
 def test_start_over_resolves_all_open_comments_on_that_version_only():
-    t = _tape()
+    t = _edit()
     v1 = _ready(t["id"])
     a = ec.add_comment(v1["id"], "cutguy", "fix", "one", now=3.0)
     b = ec.add_comment(v1["id"], "cutguy", "fix", "two", now=3.0)
@@ -132,14 +132,14 @@ def test_start_over_resolves_all_open_comments_on_that_version_only():
     on_v1 = {r["id"]: r["resolved"] for r in ec.comments_for_iteration(v1["id"])}
     assert on_v1 == {a["id"]: False, b["id"]: True}
     [ev] = [e for e in es.events_since(0) if e["kind"] == "start_over"]
-    assert (ev["actor"], ev["iteration_id"], ev["tape_id"]) == ("aryan", v2["id"], t["id"])
+    assert (ev["actor"], ev["iteration_id"], ev["edit_id"]) == ("aryan", v2["id"], t["id"])
     assert ec.start_over(v2["id"], "aryan", now=7.0) == 0
     with pytest.raises(ValueError):
         ec.start_over(999, "aryan")
 
 
 def test_add_comment_with_same_client_id_returns_existing_and_one_event():
-    it = _ready(_tape()["id"])
+    it = _ready(_edit()["id"])
     a = ec.add_comment(it["id"], "a", "fix", "x", client_id="abcdefgh1", now=1.0)
     b = ec.add_comment(it["id"], "a", "fix", "x", client_id="abcdefgh1", now=2.0)
     assert a["id"] == b["id"]
@@ -147,7 +147,7 @@ def test_add_comment_with_same_client_id_returns_existing_and_one_event():
 
 
 def test_add_reply_same_client_id_dedupes():
-    it = _ready(_tape()["id"])
+    it = _ready(_edit()["id"])
     c = ec.add_comment(it["id"], "a", "fix", "x", now=1.0)
     a = ec.add_reply(c["id"], "b", "hi", client_id="abcdefgh1", now=1.0)
     b = ec.add_reply(c["id"], "b", "hi", client_id="abcdefgh1", now=2.0)
@@ -166,7 +166,7 @@ def test_client_id_columns_added_to_old_db():
 
 
 def test_start_over_uses_the_latest_ready_version():
-    t = _tape()
+    t = _edit()
     v1 = _ready(t["id"])
     ec.add_comment(v1["id"], "cutguy", "fix", "one", now=3.0)
     up = es.create_iteration(t["id"], "f.mp4", 1, "u", now=4.0)  # v2 still uploading
@@ -176,7 +176,7 @@ def test_start_over_uses_the_latest_ready_version():
 
 
 def test_a_client_id_is_scoped_to_its_author_and_target():
-    t = _tape()
+    t = _edit()
     v1, v2 = _ready(t["id"]), _ready(t["id"])
     c = ec.add_comment(v1["id"], "cutguy", "fix", "x", client_id="cid-00001")
     assert ec.add_comment(v1["id"], "cutguy", "fix", "x", client_id="cid-00001")["id"] == c["id"]
@@ -193,7 +193,7 @@ def test_a_client_id_is_scoped_to_its_author_and_target():
 
 
 def test_search_skips_soft_deleted_projects():
-    t = _tape()
+    t = _edit()
     it = _ready(t["id"])
     ec.add_comment(it["id"], "a", "fix", "needle here", now=3.0)
     assert len(ec.search("needle")) == 1

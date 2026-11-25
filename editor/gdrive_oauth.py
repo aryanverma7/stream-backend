@@ -39,7 +39,7 @@ def _remember_state(state: str) -> None:
     _pending_states[state] = None
 
 
-# Every Drive folder creation (layout, project, tape) runs under this one lock,
+# Every Drive folder creation (layout, project, edit) runs under this one lock,
 # so two callers racing on a missing folder cannot create it twice.
 _folder_lock = asyncio.Lock()
 

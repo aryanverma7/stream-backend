@@ -40,20 +40,20 @@ async def run_once(now: "float | None" = None) -> dict:
     now = time.time() if now is None else now
     counts = {"completed": 0, "abandoned": 0}
     try:
-        by_tape = defaultdict(list)
+        by_edit = defaultdict(list)
         for p in es.list_projects():
-            for t in es.list_tapes(p["id"]):
+            for t in es.list_edits(p["id"]):
                 for it in es.list_iterations(t["id"]):
                     if it["status"] == "uploading":
-                        by_tape[t["id"]].append(it)
-        for tape_id, its in by_tape.items():
-            folder = (es.get_tape(tape_id) or {}).get("drive_folder_id")
+                        by_edit[t["id"]].append(it)
+        for edit_id, its in by_edit.items():
+            folder = (es.get_edit(edit_id) or {}).get("drive_folder_id")
             files = None
             if folder:
                 try:
                     files = await gdrive.list_folder(folder)
                 except gdrive.DriveError as e:
-                    log.warning(f"reconcile: cannot list tape {tape_id}: {e}")
+                    log.warning(f"reconcile: cannot list edit {edit_id}: {e}")
             for it in its:
                 found = None if files is None else next(
                     (f for f in files if f.get("appProperties", {}).get("iteration_id") == str(it["id"])), None)
