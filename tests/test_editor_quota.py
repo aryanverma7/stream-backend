@@ -40,16 +40,16 @@ def project(name="Ace"):
 
 
 def deliver(p, kind, uploaded, finalised=None, name="cut"):
-    """A tape (or a clip's reel) with v1 uploaded at `uploaded`, marked Final at `finalised`."""
+    """An edit (or a tape's reel) with v1 uploaded at `uploaded`, marked Final at `finalised`."""
     if kind == "reel":
-        clip = es.create_project(name, "2026-11-16", "", "c.mp4", 1, now=uploaded, duration_s=30)
-        t = es.reel_for_clip(clip["id"])
+        tape = es.create_project(name, "2026-11-16", "", "c.mp4", 1, now=uploaded, duration_s=30)
+        t = es.reel_for_tape(tape["id"])
     else:
-        t = es.create_tape(p["id"], name, now=uploaded)
+        t = es.create_edit(p["id"], name, now=uploaded, kind=kind)
     it = es.create_iteration(t["id"], "a.mp4", 1, "", now=uploaded)
     es.complete_iteration(it["id"], f"F{it['id']}", now=uploaded)
-    es.update_tape(t["id"], status="final", now=finalised or uploaded)
-    return es.get_tape(t["id"])
+    es.update_edit(t["id"], status="final", now=finalised or uploaded)
+    return es.get_edit(t["id"])
 
 
 def test_week_is_monday_to_sunday():
@@ -65,39 +65,40 @@ def test_week_is_monday_to_sunday():
 def test_credit_goes_to_the_upload_week_not_the_approval_week():
     eq.start_week(MON)
     p = project()
-    deliver(p, "tape", uploaded=MON + 6 * D, finalised=MON + 8 * D)  # uploaded Sunday, approved Tuesday
+    deliver(p, "video", uploaded=MON + 6 * D, finalised=MON + 8 * D)  # uploaded Sunday, approved Tuesday
     s = eq.summary(MON + 8 * D)
     last, this = s["weeks"][1], s["weeks"][0]
     assert last["week"] == "2026-11-16" and last["done"]["videos"] == 1
     assert this["done"]["videos"] == 0
 
 
-def test_tapes_are_videos_reels_are_reels_and_a_week_is_met_missed_or_in_progress():
+def test_videos_count_as_videos_reels_and_clips_together_and_a_week_is_met_missed_or_in_progress():
     eq.start_week(MON)
     p = project()
     for i in range(2):
-        deliver(p, "tape", MON + D, name=f"v{i}")
-    for i in range(9):
+        deliver(p, "video", MON + D, name=f"v{i}")
+    for i in range(8):
         deliver(p, "reel", MON + D, name=f"r{i}")
+    deliver(p, "clip", MON + D, name="c0")
     s = eq.summary(MON + 3 * D)
     wk = s["weeks"][0]
     assert wk["done"] == {"videos": 2, "reels": 9} and wk["short"] == {"videos": 0, "reels": 1}
     assert wk["status"] == "in_progress"
     assert eq.summary(MON + 7 * D)["weeks"][1]["status"] == "missed"
-    deliver(p, "reel", MON + 2 * D, name="r9")
+    deliver(p, "clip", MON + 2 * D, name="c1")
     assert eq.summary(MON + 7 * D)["weeks"][1]["status"] == "met"
 
 
 def test_removing_final_or_exempting_takes_the_credit_back():
     eq.start_week(MON)
     p = project()
-    t = deliver(p, "tape", MON + D)
+    t = deliver(p, "video", MON + D)
     assert eq.summary(MON + D)["weeks"][0]["done"]["videos"] == 1
-    es.update_tape(t["id"], status="in_review", now=MON + D)
-    assert es.get_tape(t["id"])["final_upload_at"] is None
+    es.update_edit(t["id"], status="in_review", now=MON + D)
+    assert es.get_edit(t["id"])["final_upload_at"] is None
     assert eq.summary(MON + D)["weeks"][0]["done"]["videos"] == 0
-    es.update_tape(t["id"], status="final", now=MON + 2 * D)
-    es.update_tape(t["id"], quota_exempt=True)
+    es.update_edit(t["id"], status="final", now=MON + 2 * D)
+    es.update_edit(t["id"], quota_exempt=True)
     assert eq.summary(MON + 2 * D)["weeks"][0]["done"]["videos"] == 0
 
 
@@ -135,21 +136,22 @@ async def test_friday_reminder_once_and_only_while_behind():
     await eq.run(MON + 5 * D)             # Saturday: same week, no second DM
     rows = [r for r in _outbox() if r["dedupe_key"].startswith("quota_friday")]
     assert len(rows) == 1 and rows[0]["recipient_role"] == "editor"
-    assert "2 videos and 10 reels to go, 3 days left" in rows[0]["content"]
+    assert "2 videos and 10 reels & clips to go, 3 days left" in rows[0]["content"]
 
 
 @pytest.mark.asyncio
 async def test_monday_summary_to_the_streamer():
     eq.start_week(MON)
     p = project()
-    deliver(p, "tape", MON + D)
+    deliver(p, "video", MON + D)
     await eq.run(MON + 7 * D - 4 * 3600)  # Monday 08:00 next week: too early
     assert not [r for r in _outbox() if r["dedupe_key"].startswith("quota_monday")]
     await eq.run(MON + 7 * D)
     (row,) = [r for r in _outbox() if r["dedupe_key"].startswith("quota_monday")]
     assert row["recipient_role"] == "streamer"
-    assert row["content"] == ("Last week's quota (16 Nov - 22 Nov): videos 1/2, reels 0/10. "
-                              "Missed by 1 video and 10 reels.")
+    assert row["content"] == ("Last week's quota (16 Nov - 22 Nov): videos 1/2, reels & clips 0/10. "
+                              "Missed by 1 video and 10 reels & clips.")
+    assert eq._to_go({"videos": 0, "reels": 1}) == "1 reel or clip"
 
 
 @pytest.mark.asyncio
@@ -165,7 +167,7 @@ async def test_routes_admin_only_writes_both_read(monkeypatch):
     monkeypatch.setattr(eq.time, "time", lambda: MON + D)
     monkeypatch.setattr("editor.editor_api.time.time", lambda: MON + D)
     p = project()
-    t = es.create_tape(p["id"], "cut", now=MON)
+    t = es.create_edit(p["id"], "cut", now=MON)
     async with api() as a:
         status, got = await a.editor("GET", "/api/editor/quota")
         assert status == 200 and got["current_week"] == "2026-11-16"
@@ -174,8 +176,8 @@ async def test_routes_admin_only_writes_both_read(monkeypatch):
                            ("/api/editor/quota/excused", {"week": "2026-11-16", "excused": True})):
             assert (await a.editor("PUT", path, body))[0] == 403
             assert (await a.admin("PUT", path, body))[0] == 200
-        assert (await a.editor("PATCH", f"/api/editor/tapes/{t['id']}", {"quota_exempt": True}))[0] == 403
-        status, got = await a.admin("PATCH", f"/api/editor/tapes/{t['id']}", {"quota_exempt": True})
+        assert (await a.editor("PATCH", f"/api/editor/edits/{t['id']}", {"quota_exempt": True}))[0] == 403
+        status, got = await a.admin("PATCH", f"/api/editor/edits/{t['id']}", {"quota_exempt": True})
         assert status == 200 and got["quota_exempt"] == 1
         status, got = await a.admin("PUT", "/api/editor/quota/start", {"week": "2026-11-17"})
         assert status == 400 and "Monday" in got["error"]
@@ -189,7 +191,7 @@ def test_existing_finals_are_backfilled_from_their_last_upload(tmp_path):
     conn.executescript(es._DDL)
     conn.execute("INSERT INTO projects(id,name,stream_date,vod_filename,vod_status,created_at,updated_at)"
                  " VALUES(1,'a','d','v','ready',0,0)")
-    conn.execute("INSERT INTO tapes(id,project_id,name,status,created_at,updated_at) VALUES(1,1,'t','final',0,0)")
-    conn.execute("INSERT INTO iterations(tape_id,version,filename,size,status,uploaded_at,created_at,updated_at)"
+    conn.execute("INSERT INTO edits(id,project_id,name,status,created_at,updated_at) VALUES(1,1,'t','final',0,0)")
+    conn.execute("INSERT INTO iterations(edit_id,version,filename,size,status,uploaded_at,created_at,updated_at)"
                  " VALUES(1,1,'a',1,'ready',?,0,0)", (MON + D,))
-    assert es.get_tape(1)["final_upload_at"] == MON + D
+    assert es.get_edit(1)["final_upload_at"] == MON + D

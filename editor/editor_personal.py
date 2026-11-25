@@ -1,4 +1,4 @@
-"""Per-user editor data: private to-dos, what each person has seen per tape, and playback position.
+"""Per-user editor data: private to-dos, what each person has seen per edit, and playback position.
 
 Every read is keyed by the caller's username, so another user's row is simply not found (None)."""
 import time
@@ -11,8 +11,8 @@ _DDL = """
 CREATE TABLE IF NOT EXISTS todos(
   id INTEGER PRIMARY KEY, owner TEXT NOT NULL, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0,
   created_at REAL NOT NULL, updated_at REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS tape_seen(
-  username TEXT, tape_id INTEGER, seen_at REAL, PRIMARY KEY (username, tape_id));
+CREATE TABLE IF NOT EXISTS edit_seen(
+  username TEXT, edit_id INTEGER, seen_at REAL, PRIMARY KEY (username, edit_id));
 CREATE TABLE IF NOT EXISTS playback(
   username TEXT, iteration_id INTEGER, position_s REAL, updated_at REAL, PRIMARY KEY (username, iteration_id));
 CREATE TABLE IF NOT EXISTS iteration_seen(
@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS iteration_seen(
 
 
 def _c():
-    es._c()  # events table, read by tape_has_new
+    es._c()  # events table, read by edit_has_new
     db.ensure(_DDL)
     return db.get()
 
@@ -75,22 +75,22 @@ def delete_todo(owner, id) -> bool:
     return _c().execute("DELETE FROM todos WHERE id=? AND owner=?", (id, owner)).rowcount > 0
 
 
-# -- "new" per tape --
+# -- "new" per edit --
 
-def mark_tape_seen(username, tape_id, now=None):
-    _c().execute("INSERT INTO tape_seen(username, tape_id, seen_at) VALUES(?,?,?)"
-                 " ON CONFLICT(username, tape_id) DO UPDATE SET seen_at=excluded.seen_at",
-                 (username, tape_id, _now(now)))
+def mark_edit_seen(username, edit_id, now=None):
+    _c().execute("INSERT INTO edit_seen(username, edit_id, seen_at) VALUES(?,?,?)"
+                 " ON CONFLICT(username, edit_id) DO UPDATE SET seen_at=excluded.seen_at",
+                 (username, edit_id, _now(now)))
 
 
-def tape_has_new(username, tape_id) -> bool:
-    """True when someone else did something on the tape after this user last opened it."""
+def edit_has_new(username, edit_id) -> bool:
+    """True when someone else did something on the edit after this user last opened it."""
     # Guest notes are the streamer's until approved: they must not light the editor's New badge.
     guests = "" if role_for_username(username) == "admin" else " AND e.kind<>'guest_notes_added'"
     return _c().execute(
-        "SELECT 1 FROM events e WHERE e.tape_id=? AND e.actor<>?" + guests +
-        " AND e.at > COALESCE((SELECT seen_at FROM tape_seen WHERE username=? AND tape_id=?), -1e300)"
-        " LIMIT 1", (tape_id, username, username, tape_id)).fetchone() is not None
+        "SELECT 1 FROM events e WHERE e.edit_id=? AND e.actor<>?" + guests +
+        " AND e.at > COALESCE((SELECT seen_at FROM edit_seen WHERE username=? AND edit_id=?), -1e300)"
+        " LIMIT 1", (edit_id, username, username, edit_id)).fetchone() is not None
 
 
 # -- playback position --

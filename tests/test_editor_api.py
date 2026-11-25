@@ -95,11 +95,11 @@ async def api():
 
 
 def _world():
-    """A project with a ready VOD, one tape with a ready v1 carrying one open comment by the editor."""
+    """A project with a ready VOD, one edit with a ready v1 carrying one open comment by the editor."""
     p = es.create_project("Ace", "2026-10-20", "", "vod.mp4", 5, now=1.0)
     es.mark_vod_ready(p["id"], "VOD", now=1.0)
-    t = es.create_tape(p["id"], "Clutch", now=1.0)
-    es.set_tape_folder(t["id"], "TF")
+    t = es.create_edit(p["id"], "Clutch", now=1.0)
+    es.set_edit_folder(t["id"], "TF")
     it = es.create_iteration(t["id"], "a.mp4", 10, "", now=2.0)
     es.complete_iteration(it["id"], "IT1", now=3.0)
     c = ec.add_comment(it["id"], "cutguy", "fix", "too long", 1.0, 2.0, now=4.0)
@@ -113,9 +113,9 @@ async def test_editor_is_refused_admin_actions():
     async with api() as a:
         cases = [
             ("PATCH", f"/api/editor/projects/{p['id']}", {"name": "Renamed"}),
-            ("PATCH", f"/api/editor/tapes/{t['id']}", {"status": "final"}),
+            ("PATCH", f"/api/editor/edits/{t['id']}", {"status": "final"}),
             ("PUT", f"/api/editor/iterations/{it['id']}/comments/{c['id']}/resolved", {"resolved": True}),
-            ("POST", "/api/editor/deletions", {"kind": "tape_files", "target_id": t["id"], "confirm": "Clutch"}),
+            ("POST", "/api/editor/deletions", {"kind": "edit_files", "target_id": t["id"], "confirm": "Clutch"}),
             ("GET", "/api/editor/storage", None),
             ("GET", "/api/editor/drive/status", None),
             ("POST", f"/api/editor/deletions/{req['request_id']}/undo", None),
@@ -127,9 +127,9 @@ async def test_editor_is_refused_admin_actions():
             assert "Only the streamer" in got["error"], (method, path)
         assert (await a.editor("PATCH", f"/api/editor/projects/{p['id']}", {"name": "X"}))[1] == FORBIDDEN
     assert es.get_project(p["id"])["name"] == "Ace"
-    assert es.get_tape(t["id"])["status"] == "in_review"
+    assert es.get_edit(t["id"])["status"] == "in_review"
     assert ec.comments_for_iteration(it["id"])[0]["resolved"] is False
-    assert [r["kind"] for r in deletions.pending()] == ["vod"]  # undo refused, no tape_files request
+    assert [r["kind"] for r in deletions.pending()] == ["vod"]  # undo refused, no edit_files request
     assert es.get_iteration(it["id"])["status"] == "ready"
     assert db.meta_get("clock_last_seen") is None
 
@@ -139,12 +139,12 @@ async def test_admin_can_do_admin_actions(drive):
     p, t, it, c = _world()
     async with api() as a:
         assert (await a.admin("PATCH", f"/api/editor/projects/{p['id']}", {"name": "Renamed"}))[0] == 200
-        assert (await a.admin("PATCH", f"/api/editor/tapes/{t['id']}", {"status": "final"}))[0] == 200
+        assert (await a.admin("PATCH", f"/api/editor/edits/{t['id']}", {"status": "final"}))[0] == 200
         status, _ = await a.admin("PUT", f"/api/editor/iterations/{it['id']}/comments/{c['id']}/resolved",
                                   {"resolved": True})
         assert status == 200
         status, got = await a.admin("POST", "/api/editor/deletions",
-                                    {"kind": "tape_files", "target_id": t["id"], "confirm": "Clutch"})
+                                    {"kind": "edit_files", "target_id": t["id"], "confirm": "Clutch"})
         assert status == 202
         status, got = await a.admin("POST", f"/api/editor/deletions/{got['request_id']}/undo")
         assert (status, got["status"]) == (200, "cancelled")
@@ -158,7 +158,7 @@ async def test_admin_can_do_admin_actions(drive):
         status, got = await a.admin("GET", "/api/editor/drive/status")
         assert (status, got["connected"]) == (200, False)
     assert es.get_project(p["id"])["name"] == "Renamed"
-    assert es.get_tape(t["id"])["status"] == "final"
+    assert es.get_edit(t["id"])["status"] == "final"
     assert ec.comments_for_iteration(it["id"])[0]["resolved"] is True
     assert deletions.pending() == []
 
@@ -168,10 +168,36 @@ async def test_drive_full_gives_507_with_numbers(drive):
     _, t, _, _ = _world()
     drive["quota"] = {"limit": 1000, "usage": 900}
     async with api() as a:
-        status, got = await a.editor("POST", f"/api/editor/tapes/{t['id']}/iterations",
+        status, got = await a.editor("POST", f"/api/editor/edits/{t['id']}/iterations",
                                      {"filename": "b.mp4", "size": 500, "mime": "video/mp4"})
     assert status == 507
     assert got == {"error": "Drive is too full for this file", "needed": 500, "free": 100}
+
+
+@pytest.mark.asyncio
+async def test_clip_kind_is_chosen_at_creation_and_its_shape_checked_on_upload(drive):
+    p, video, _, _ = _world()
+    up = {"filename": "b.mp4", "size": 5, "mime": "video/mp4"}
+    tall_short = {"width": 1080, "height": 1920, "duration_s": 59.5}
+    async with api() as a:
+        status, got = await a.editor("POST", f"/api/editor/projects/{p['id']}/edits", {"name": "X", "kind": "reel"})
+        assert status == 400
+        status, clip = await a.editor("POST", f"/api/editor/projects/{p['id']}/edits", {"name": "Ace", "kind": "clip"})
+        assert status == 201 and clip["kind"] == "clip"
+        for bad in ({}, {"width": 1920, "height": 1080, "duration_s": 30}, {**tall_short, "duration_s": 180}):
+            status, got = await a.editor("POST", f"/api/editor/edits/{clip['id']}/iterations", {**up, **bad})
+            assert status == 400 and "must be vertical" in got["error"]
+        assert es.list_iterations(clip["id"]) == []  # refused before any row or Drive session
+        status, got = await a.editor("POST", f"/api/editor/edits/{clip['id']}/iterations", {**up, **tall_short})
+        assert status == 200 and got["warning"] is None
+        status, got = await a.editor("POST", f"/api/editor/edits/{video['id']}/iterations", {**up, **tall_short})
+        assert status == 200 and "looks like a clip" in got["warning"]
+        status, got = await a.editor("POST", f"/api/editor/edits/{video['id']}/iterations", up)
+        assert status == 200 and got["warning"] is None
+        tape = es.create_project("Short", "2026-10-20", "", "s.mp4", 5, duration_s=40)
+        status, got = await a.editor("POST", f"/api/editor/edits/{tape['reel_edit_id']}/iterations",
+                                     {**up, "width": 1920, "height": 1080, "duration_s": 40})
+        assert status == 400 and got["error"].startswith("A reel must be vertical")
 
 
 @pytest.mark.asyncio
@@ -179,7 +205,7 @@ async def test_drive_not_connected_gives_503(drive):
     _, t, _, _ = _world()
     drive["not_connected"] = True
     async with api() as a:
-        status, got = await a.editor("POST", f"/api/editor/tapes/{t['id']}/iterations",
+        status, got = await a.editor("POST", f"/api/editor/edits/{t['id']}/iterations",
                                      {"filename": "b.mp4", "size": 5, "mime": "video/mp4"})
     assert status == 503
     assert got == {"error": "Google Drive isn't connected - connect it from the dashboard."}
@@ -214,7 +240,7 @@ async def test_other_users_todo_is_404():
 async def test_iteration_payload_includes_carried_comments_and_position(drive):
     _, t, v1, c = _world()
     async with api() as a:
-        status, up = await a.editor("POST", f"/api/editor/tapes/{t['id']}/iterations",
+        status, up = await a.editor("POST", f"/api/editor/edits/{t['id']}/iterations",
                                     {"filename": "b.mp4", "size": 20, "mime": "video/mp4"})
         assert status == 200 and up["version"] == 2 and up["upload_url"] == "https://upload/s"
         status, _ = await a.editor("POST", f"/api/editor/iterations/{up['iteration_id']}/complete",
@@ -287,19 +313,19 @@ async def test_comment_times_and_kind_are_validated():
 
 
 @pytest.mark.asyncio
-async def test_tape_detail_counts_open_comments_and_marks_seen():
+async def test_edit_detail_counts_open_comments_and_marks_seen():
     p, t, it, c = _world()
     async with api() as a:
         status, got = await a.admin("GET", f"/api/editor/projects/{p['id']}")
         assert status == 200
-        (tape,) = got["tapes"]
-        assert (tape["has_new"], tape["latest_version"], tape["open_comments"]) == (True, 1, 1)
+        (edit,) = got["edits"]
+        assert (edit["has_new"], edit["latest_version"], edit["open_comments"]) == (True, 1, 1)
         assert (await a.admin("GET", "/api/editor/projects"))[1]["projects"][0]["has_new"] is True
-        status, got = await a.admin("GET", f"/api/editor/tapes/{t['id']}")
+        status, got = await a.admin("GET", f"/api/editor/edits/{t['id']}")
         assert status == 200 and [i["version"] for i in got["iterations"]] == [1]
         assert (await a.admin("GET", "/api/editor/projects"))[1]["projects"][0]["has_new"] is False
         assert (await a.admin("GET", "/api/editor/projects/999"))[0] == 404
-    assert ep.tape_has_new("aryan", t["id"]) is False
+    assert ep.edit_has_new("aryan", t["id"]) is False
 
 
 @pytest.mark.asyncio
@@ -392,18 +418,18 @@ async def test_upload_urls_only_on_the_single_iteration_get(drive):
         assert all("vod_upload_url" not in x for x in (await a.admin("GET", "/api/editor/projects"))[1]["projects"])
         assert "vod_upload_url" not in (await a.admin("GET", f"/api/editor/projects/{p['id']}"))[1]["project"]
         assert "vod_upload_url" not in (await a.admin("PATCH", f"/api/editor/projects/{p['id']}", {"name": "N"}))[1]
-        assert all("upload_url" not in i for i in (await a.admin("GET", f"/api/editor/tapes/{t['id']}"))[1]["iterations"])
+        assert all("upload_url" not in i for i in (await a.admin("GET", f"/api/editor/edits/{t['id']}"))[1]["iterations"])
         got = (await a.admin("GET", f"/api/editor/iterations/{it['id']}"))[1]["iteration"]
         assert got["upload_url"] == "https://upload/it"
 
 
 @pytest.mark.asyncio
-async def test_deleted_projects_tapes_and_iterations_are_404():
+async def test_deleted_projects_edits_and_iterations_are_404():
     p, t, it, c = _world()
     db.get().execute("UPDATE projects SET deleted_at=9 WHERE id=?", (p["id"],))
     async with api() as a:
-        for method, path in (("GET", f"/api/editor/tapes/{t['id']}"),
-                             ("POST", f"/api/editor/tapes/{t['id']}/iterations"),
+        for method, path in (("GET", f"/api/editor/edits/{t['id']}"),
+                             ("POST", f"/api/editor/edits/{t['id']}/iterations"),
                              ("GET", f"/api/editor/iterations/{it['id']}"),
                              ("GET", f"/api/editor/iterations/{it['id']}/media-link"),
                              ("PATCH", f"/api/editor/comments/{c['id']}")):
@@ -412,50 +438,50 @@ async def test_deleted_projects_tapes_and_iterations_are_404():
 
 
 @pytest.mark.asyncio
-async def test_undo_of_missing_request_is_404_and_tape_creation_is_logged():
+async def test_undo_of_missing_request_is_404_and_edit_creation_is_logged():
     p, _, _, _ = _world()
     async with api() as a:
         assert (await a.admin("POST", "/api/editor/deletions/999/undo"))[0] == 404
-        status, t = await a.editor("POST", f"/api/editor/projects/{p['id']}/tapes", {"name": "Second"})
+        status, t = await a.editor("POST", f"/api/editor/projects/{p['id']}/edits", {"name": "Second"})
         assert status == 201
-    [ev] = [e for e in es.events_since(0) if e["kind"] == "tape_created"]
-    assert (ev["actor"], ev["tape_id"], ev["project_id"]) == ("cutguy", t["id"], p["id"])
+    [ev] = [e for e in es.events_since(0) if e["kind"] == "edit_created"]
+    assert (ev["actor"], ev["edit_id"], ev["project_id"]) == ("cutguy", t["id"], p["id"])
 
 
-def _clips(*names):
+def _tapes(*names):
     return [es.create_project(n, "2026-10-20", "", f"{n}.mp4", 5, now=float(i), duration_s=30.0)
             for i, n in enumerate(names)]
 
 
 @pytest.mark.asyncio
-async def test_clip_payloads_combine_and_uncombine_over_the_api():
-    a, b = _clips("A", "B")
+async def test_tape_payloads_combine_and_uncombine_over_the_api():
+    a, b = _tapes("A", "B")
     async with api() as x:
         status, body = await x.editor("GET", f"/api/editor/projects/{a['id']}")
-        assert status == 200 and body["project"]["kind"] == "clip" and body["project"]["duration_s"] == 30.0
-        assert body["project"]["reel_tape_id"] == a["reel_tape_id"]
-        assert [(t["kind"], t["source_project_ids"]) for t in body["tapes"]] == [("reel", [a["id"]])]
+        assert status == 200 and body["project"]["kind"] == "tape" and body["project"]["duration_s"] == 30.0
+        assert body["project"]["reel_edit_id"] == a["reel_edit_id"]
+        assert [(t["kind"], t["source_project_ids"]) for t in body["edits"]] == [("reel", [a["id"]])]
         status, body = await x.editor("GET", "/api/editor/projects")
-        assert {p["kind"] for p in body["projects"]} == {"clip"}
-        status, reel = await x.editor("POST", "/api/editor/clips/combine",
+        assert {p["kind"] for p in body["projects"]} == {"tape"}
+        status, reel = await x.editor("POST", "/api/editor/tapes/combine",
                                       {"project_ids": [a["id"], b["id"]], "name": "Duo"})
         assert status == 200 and reel["source_project_ids"] == [a["id"], b["id"]] and reel["name"] == "Duo"
-        status, body = await x.admin("GET", f"/api/editor/tapes/{reel['id']}")
-        assert body["tape"]["kind"] == "reel" and body["tape"]["source_project_ids"] == [a["id"], b["id"]]
+        status, body = await x.admin("GET", f"/api/editor/edits/{reel['id']}")
+        assert body["edit"]["kind"] == "reel" and body["edit"]["source_project_ids"] == [a["id"], b["id"]]
         for bad in ({"project_ids": [a["id"]], "name": "x"}, {"project_ids": "1,2", "name": "x"},
                     {"project_ids": [a["id"], True], "name": "x"}, {"project_ids": [a["id"], b["id"]]}):
-            assert (await x.editor("POST", "/api/editor/clips/combine", bad))[0] == 400, bad
-        status, body = await x.editor("POST", f"/api/editor/tapes/{reel['id']}/uncombine")
+            assert (await x.editor("POST", "/api/editor/tapes/combine", bad))[0] == 400, bad
+        status, body = await x.editor("POST", f"/api/editor/edits/{reel['id']}/uncombine")
         assert status == 200 and [r["source_project_ids"] for r in body["reels"]] == [[a["id"]], [b["id"]]]
-        assert (await x.editor("POST", f"/api/editor/tapes/{reel['id']}/uncombine"))[0] == 400
+        assert (await x.editor("POST", f"/api/editor/edits/{reel['id']}/uncombine"))[0] == 400
 
 
 @pytest.mark.asyncio
-async def test_second_reel_on_a_clip_is_refused_over_the_api():
-    [a] = _clips("A")
+async def test_second_reel_on_a_tape_is_refused_over_the_api():
+    [a] = _tapes("A")
     async with api() as x:
-        assert await x.admin("POST", f"/api/editor/projects/{a['id']}/tapes", {"name": "Two"}) == \
-            (400, {"error": "A clip has exactly one reel"})
+        assert await x.admin("POST", f"/api/editor/projects/{a['id']}/edits", {"name": "Two"}) == \
+            (400, {"error": "A tape has exactly one reel"})
 
 
 @pytest.mark.asyncio
@@ -510,8 +536,8 @@ async def test_storage_without_drive_still_reports_scheduler_and_discord(drive, 
 
 @pytest.mark.asyncio
 async def test_notifications_route_uses_session_identity():
-    by_editor = es.record_event("cutguy", "tape_created", "cutguy added tape", now=1.0)
-    by_admin = es.record_event("aryan", "tape_created", "aryan added tape", now=2.0)
+    by_editor = es.record_event("cutguy", "edit_created", "cutguy added edit", now=1.0)
+    by_admin = es.record_event("aryan", "edit_created", "aryan added edit", now=2.0)
     db.meta_set("bell_seen_aryan", str(by_editor))
     async with api() as a:
         status, got = await a.editor("GET", "/api/editor/notifications?username=aryan")
@@ -535,7 +561,7 @@ async def test_notifications_route_uses_session_identity():
 async def test_new_session_for_an_unfinished_upload(drive):
     _, t, _, _ = _world()
     async with api() as a:
-        status, up = await a.editor("POST", f"/api/editor/tapes/{t['id']}/iterations",
+        status, up = await a.editor("POST", f"/api/editor/edits/{t['id']}/iterations",
                                     {"filename": "b.mp4", "size": 20, "mime": "video/mp4"})
         assert status == 200
         drive["next_url"] = "https://upload/fresh"
@@ -557,19 +583,19 @@ async def test_new_session_for_an_unfinished_upload(drive):
         assert drive["files"]["pending"]["name"] == "v3 - d.mp4"
         row = es.get_iteration(abandoned["id"])
         assert (row["status"], row["upload_url"]) == ("uploading", "https://upload/fresh")
-        t2 = es.create_tape(t["project_id"], "Other")
+        t2 = es.create_edit(t["project_id"], "Other")
         es.complete_iteration(es.create_iteration(t2["id"], "o.mp4", 5, "")["id"], "O1")
-        deletions.request_delete("tape_files", t2["id"], "Other", username="aryan", role="admin", now=5.0)
+        deletions.request_delete("edit_files", t2["id"], "Other", username="aryan", role="admin", now=5.0)
         up3 = es.create_iteration(t2["id"], "c.mp4", 5, "")
         status, got = await a.editor("POST", f"/api/editor/iterations/{up3['id']}/session", {})
-        assert (status, got) == (400, {"error": "This tape's files are being deleted"})
+        assert (status, got) == (400, {"error": "These files are being deleted"})
 
 
 @pytest.mark.asyncio
 async def test_abandon_an_unfinished_upload(drive):
     _, t, done, _ = _world()
     async with api() as a:
-        status, up = await a.editor("POST", f"/api/editor/tapes/{t['id']}/iterations",
+        status, up = await a.editor("POST", f"/api/editor/edits/{t['id']}/iterations",
                                     {"filename": "b.mp4", "size": 20, "mime": "video/mp4"})
         path = f"/api/editor/iterations/{up['iteration_id']}/abandon"
         status, got = await a.editor("POST", path)
@@ -590,8 +616,8 @@ async def test_home_buckets():
     es.mark_vod_ready(asked["id"], "VOD3")
     es.record_download_click(asked["id"])
     deletions.request_delete("vod", asked["id"], "d.mp4", username="cutguy", role="editor", now=5.0)
-    # A second tape with two open comments on v2, and a resolved one on the earlier v1.
-    t2 = es.create_tape(p["id"], "Ace round")
+    # A second edit with two open comments on v2, and a resolved one on the earlier v1.
+    t2 = es.create_edit(p["id"], "Ace round")
     v1 = es.create_iteration(t2["id"], "x.mp4", 1, "")
     es.complete_iteration(v1["id"], "X1")
     for body in ("one", "two"):
@@ -603,7 +629,7 @@ async def test_home_buckets():
     # A project being deleted shows nowhere.
     gone = es.create_project("Gone", "2026-10-23", "", "g.mp4", 5, now=4.0)
     es.mark_vod_ready(gone["id"], "VOD4")
-    gt = es.create_tape(gone["id"], "G")
+    gt = es.create_edit(gone["id"], "G")
     gi = es.create_iteration(gt["id"], "g.mp4", 1, "")
     es.complete_iteration(gi["id"], "G1")
     ec.add_comment(gi["id"], "aryan", "fix", "x")
@@ -615,8 +641,8 @@ async def test_home_buckets():
             assert [x["name"] for x in got["vods_ready"]] == ["Ace"]
             assert [x["name"] for x in got["deletes_to_confirm"]] == ["Clicked"]
             assert all("vod_upload_url" not in x for x in got["vods_ready"] + got["deletes_to_confirm"])
-            assert [(x["tape"]["name"], x["project_name"], x["latest_iteration_id"], x["latest_version"],
-                     x["open_comments"]) for x in got["open_tapes"]] == [
+            assert [(x["edit"]["name"], x["project_name"], x["latest_iteration_id"], x["latest_version"],
+                     x["open_comments"]) for x in got["open_edits"]] == [
                 ("Ace round", "Ace", v2["id"], 2, 2), ("Clutch", "Ace", it["id"], 1, 1)]
 
 
@@ -625,7 +651,7 @@ async def test_fix_list_is_the_latest_versions_unresolved_comments():
     p, t, it, c = _world()
     done = ec.add_comment(it["id"], "aryan", "fix", "resolved already", now=5.0)
     ec.set_resolved(done["id"], it["id"], True, "aryan")
-    t2 = es.create_tape(p["id"], "Ace round")
+    t2 = es.create_edit(p["id"], "Ace round")
     v1 = es.create_iteration(t2["id"], "x.mp4", 1, "")
     es.complete_iteration(v1["id"], "X1")
     old = ec.add_comment(v1["id"], "aryan", "fix", "carried", now=3.5)
@@ -637,7 +663,7 @@ async def test_fix_list_is_the_latest_versions_unresolved_comments():
     new = ec.add_comment(v2["id"], "cutguy", "question", "new on v2", now=7.0)
     gone = es.create_project("Gone", "2026-10-23", "", "g.mp4", 5, now=4.0)
     es.mark_vod_ready(gone["id"], "GV", now=4.0)
-    gt = es.create_tape(gone["id"], "G")
+    gt = es.create_edit(gone["id"], "G")
     gi = es.create_iteration(gt["id"], "g.mp4", 1, "")
     es.complete_iteration(gi["id"], "G1")
     ec.add_comment(gi["id"], "aryan", "fix", "in limbo", now=1.0)
@@ -646,7 +672,7 @@ async def test_fix_list_is_the_latest_versions_unresolved_comments():
         for who in ("admin", "editor"):
             status, got = await a.call(who, "GET", "/api/editor/fix-list")
             assert status == 200
-            assert [(i["comment"]["id"], i["tape_id"], i["tape_name"], i["project_id"], i["iteration_id"],
+            assert [(i["comment"]["id"], i["edit_id"], i["edit_name"], i["project_id"], i["iteration_id"],
                      i["version"]) for i in got["items"]] == [
                 (old["id"], t2["id"], "Ace round", p["id"], v2["id"], 2),
                 (c["id"], t["id"], "Clutch", p["id"], it["id"], 1),
@@ -758,12 +784,12 @@ async def test_attachment_refuses_other_types_and_big_files(drive):
 
 
 @pytest.mark.asyncio
-async def test_attachment_uploads_into_one_attachments_folder_per_tape(drive):
+async def test_attachment_uploads_into_one_attachments_folder_per_edit(drive):
     p, t, it, c = _world()
     async with api() as a:
         await _attachment(a, it, file_id="IMG1", drive=drive)
         await _attachment(a, it, file_id="IMG2", drive=drive)
-    assert drive["folders"] == 1  # the tape folder TF already existed; one Attachments folder under it
+    assert drive["folders"] == 1  # the edit folder TF already existed; one Attachments folder under it
     assert drive["files"]["IMG1"]["parents"] == [ea.folder_of(t["id"])]
     assert drive["files"]["IMG1"]["origin"] == "https://x.example"
 
@@ -842,18 +868,18 @@ async def test_attachment_link_is_no_store_and_needs_a_ready_one(drive):
 
 
 @pytest.mark.asyncio
-async def test_tape_files_delete_takes_the_attachments_folder(drive, monkeypatch):
+async def test_edit_files_delete_takes_the_attachments_folder(drive, monkeypatch):
     monkeypatch.setattr(deletions, "_grace_applied", True)  # not the first run after a boot
     p, t, it, c = _world()
     async with api() as a:
         aid = await _attachment(a, it, file_id="IMG", drive=drive)
     folder = ea.folder_of(t["id"])
-    deletions.request_delete("tape_files", t["id"], "Clutch", username="aryan", role="admin", now=5.0)
+    deletions.request_delete("edit_files", t["id"], "Clutch", username="aryan", role="admin", now=5.0)
     await deletions.run_due(5.0 + 3600)
     assert folder in drive["deleted"] and "IT1" in drive["deleted"]
     assert ea.get(aid)["status"] == "deleted"
     with pytest.raises(ValueError, match="Nothing to delete"):
-        deletions.request_delete("tape_files", t["id"], "Clutch", username="aryan", role="admin", now=9000.0)
+        deletions.request_delete("edit_files", t["id"], "Clutch", username="aryan", role="admin", now=9000.0)
 
 
 def test_a_day_old_unfinished_upload_is_dropped():

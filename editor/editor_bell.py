@@ -8,7 +8,7 @@ from core.auth import role_for_username
 from editor import editor_store as es
 from editor.notifier import label
 
-_FIELDS = "id, at, actor, kind, summary, project_id, tape_id, iteration_id"
+_FIELDS = "id, at, actor, kind, summary, project_id, edit_id, iteration_id"
 _WHERE = ("lower(actor)<>lower(?) AND (actor<>'system' OR kind='iteration_ready')")  # recovered uploads
 _LABELS = {"comment_added": "commented on", "reply_added": "replied on", "guest_notes_added": "left a guest note on"}
 _STREAMER_ONLY = " AND kind<>'guest_notes_added'"  # unapproved guest notes never reach the editor
@@ -35,7 +35,7 @@ def feed(username: str, after_id: "int | None" = None, limit: int = 50) -> dict:
     for i in items:
         if i["kind"] in _LABELS:
             who = i["actor"].removeprefix("guest:")
-            i["summary"] = f"{who} {_LABELS[i['kind']]} {label(i['tape_id'], i['iteration_id'])}"
+            i["summary"] = f"{who} {_LABELS[i['kind']]} {label(i['edit_id'], i['iteration_id'])}"
     unseen = conn.execute(f"SELECT COUNT(*) FROM events WHERE {where} AND id>?",
                           (username, _seen(username))).fetchone()[0]
     return {"items": items, "unseen": unseen}

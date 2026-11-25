@@ -122,11 +122,11 @@ async def test_create_title_falls_back_to_stem():
 
 
 @pytest.mark.asyncio
-async def test_create_short_file_is_clip_with_reel():
+async def test_create_short_file_is_tape_with_reel():
     async with api() as call:
         status, resp = await call("POST", "/api/uploader/projects", _body(duration_s=42.5))
-    assert status == 200 and resp["kind"] == "clip"
-    assert es.get_project(resp["project_id"])["reel_tape_id"] is not None
+    assert status == 200 and resp["kind"] == "tape"
+    assert es.get_project(resp["project_id"])["reel_edit_id"] is not None
 
 
 @pytest.mark.asyncio

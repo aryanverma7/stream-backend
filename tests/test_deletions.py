@@ -48,8 +48,8 @@ def _project(downloaded=True):
     return es.get_project(p["id"])
 
 
-def _tape_with_iterations(project_id, uploading=False):
-    t = es.create_tape(project_id, "Ace clip", now=T0)
+def _edit_with_iterations(project_id, uploading=False):
+    t = es.create_edit(project_id, "Ace tape", now=T0)
     i1 = es.create_iteration(t["id"], "a.mp4", 1, "u", now=T0)
     es.complete_iteration(i1["id"], "ITER1", now=T0)
     i2 = es.create_iteration(t["id"], "b.mp4", 1, "u", now=T0)
@@ -90,11 +90,11 @@ def test_editor_may_only_delete_downloaded_vod():
     assert _req(r["request_id"])["requested_by"] == "ed"
 
 
-def test_editor_cannot_delete_tape_files_or_project():
+def test_editor_cannot_delete_edit_files_or_project():
     p = _project()
-    t = _tape_with_iterations(p["id"])
+    t = _edit_with_iterations(p["id"])
     with pytest.raises(deletions.NotAllowed):
-        deletions.request_delete("tape_files", t["id"], "Ace clip", username="ed", role="editor", now=T0)
+        deletions.request_delete("edit_files", t["id"], "Ace tape", username="ed", role="editor", now=T0)
     with pytest.raises(deletions.NotAllowed):
         deletions.request_delete("project", p["id"], "Ranked grind", username="ed", role="editor", now=T0)
     with pytest.raises(deletions.NotAllowed):
@@ -119,8 +119,8 @@ async def test_nothing_deleted_before_the_hour(drive):
 @pytest.mark.asyncio
 async def test_undo_restores_statuses_and_blocks_deletion(drive):
     p = _project()
-    t = _tape_with_iterations(p["id"])
-    r = deletions.request_delete("tape_files", t["id"], "Ace clip", username="boss", role="admin", now=T0)
+    t = _edit_with_iterations(p["id"])
+    r = deletions.request_delete("edit_files", t["id"], "Ace tape", username="boss", role="admin", now=T0)
     assert [i["status"] for i in es.list_iterations(t["id"])] == ["deleting", "deleting"]
     assert [f["drive_file_id"] for f in _files(r["request_id"])] == ["ITER1", "ITER2"]
     deletions.undo(r["request_id"], username="boss", role="admin", now=T0 + 10)
@@ -132,7 +132,7 @@ async def test_undo_restores_statuses_and_blocks_deletion(drive):
     with pytest.raises(ValueError):
         deletions.undo(r["request_id"], username="boss", role="admin", now=T0 + 20)
     # a fresh request is allowed once the old one is cancelled
-    deletions.request_delete("tape_files", t["id"], "Ace clip", username="boss", role="admin", now=T0 + 30)
+    deletions.request_delete("edit_files", t["id"], "Ace tape", username="boss", role="admin", now=T0 + 30)
     assert "delete_undone" in [e["kind"] for e in es.events_since(0)]
 
 
@@ -218,26 +218,26 @@ async def test_drive_not_connected_keeps_pending_with_backoff(drive):
 
 
 @pytest.mark.asyncio
-async def test_tape_files_marks_iterations_deleted_and_keeps_tape(drive):
+async def test_edit_files_marks_iterations_deleted_and_keeps_edit(drive):
     p = _project()
-    t = _tape_with_iterations(p["id"])
-    r = deletions.request_delete("tape_files", t["id"], "Ace clip", username="boss", role="admin", now=T0)
+    t = _edit_with_iterations(p["id"])
+    r = deletions.request_delete("edit_files", t["id"], "Ace tape", username="boss", role="admin", now=T0)
     await deletions.run_due(T0 + 3600)
     assert sorted(drive.calls) == ["ITER1", "ITER2"]
     assert [i["status"] for i in es.list_iterations(t["id"])] == ["deleted", "deleted"]
-    tape = es.get_tape(t["id"])
-    assert tape is not None and tape["files_deleted_at"] == T0 + 3600
+    edit = es.get_edit(t["id"])
+    assert edit is not None and edit["files_deleted_at"] == T0 + 3600
     assert _req(r["request_id"])["status"] == "done"
     assert es.get_project(p["id"])["vod_status"] == "ready"
     # nothing left: a second request is refused rather than "completing" an empty delete
     with pytest.raises(ValueError, match="Nothing to delete"):
-        deletions.request_delete("tape_files", t["id"], "Ace clip", username="boss", role="admin", now=T0 + 4000)
+        deletions.request_delete("edit_files", t["id"], "Ace tape", username="boss", role="admin", now=T0 + 4000)
 
 
 @pytest.mark.asyncio
 async def test_project_deletes_folder_and_marks_project_deleted(drive):
     p = _project()
-    t = _tape_with_iterations(p["id"])
+    t = _edit_with_iterations(p["id"])
     deletions.request_delete("project", p["id"], "Ranked grind", username="boss", role="admin", now=T0)
     await deletions.run_due(T0 + 3600)
     assert drive.calls == ["PFOLDER", "VODFILE", "ITER1", "ITER2"]
@@ -281,11 +281,11 @@ def test_empty_label_cannot_be_confirmed():
         deletions.request_delete("project", p["id"], "", username="boss", role="admin", now=T0)
 
 
-def test_tape_files_refused_while_an_upload_is_running():
+def test_edit_files_refused_while_an_upload_is_running():
     p = _project()
-    t = _tape_with_iterations(p["id"], uploading=True)
+    t = _edit_with_iterations(p["id"], uploading=True)
     with pytest.raises(ValueError, match="Wait for the upload to finish first"):
-        deletions.request_delete("tape_files", t["id"], "Ace clip", username="boss", role="admin", now=T0)
+        deletions.request_delete("edit_files", t["id"], "Ace tape", username="boss", role="admin", now=T0)
     assert [i["status"] for i in es.list_iterations(t["id"])] == ["ready", "ready", "uploading"]
 
 
@@ -329,10 +329,10 @@ async def test_forward_clock_jump_gives_a_fresh_hour(drive):
 
 def test_clamp_after_clock_reset_pulls_future_deletes_back():
     p = _project()
-    t = _tape_with_iterations(p["id"])
+    t = _edit_with_iterations(p["id"])
     future = T0 + 10 * 86400  # requested while the clock ran ten days fast
     far = deletions.request_delete("vod", p["id"], "vod-1020.mp4", username="boss", role="admin", now=future)
-    near = deletions.request_delete("tape_files", t["id"], "Ace clip", username="boss", role="admin", now=T0 - 600)
+    near = deletions.request_delete("edit_files", t["id"], "Ace tape", username="boss", role="admin", now=T0 - 600)
     assert deletions.clamp_after_clock_reset(T0) == 1
     assert _req(far["request_id"])["delete_at"] == T0 + 3600
     assert _req(near["request_id"])["delete_at"] == T0 + 3000
@@ -341,7 +341,7 @@ def test_clamp_after_clock_reset_pulls_future_deletes_back():
 
 def test_project_delete_refused_while_an_upload_is_running():
     p = _project()
-    _tape_with_iterations(p["id"], uploading=True)
+    _edit_with_iterations(p["id"], uploading=True)
     with pytest.raises(ValueError, match="Wait for the upload to finish first"):
         deletions.request_delete("project", p["id"], "Ranked grind", username="boss", role="admin", now=T0)
     assert deletions.pending(now=T0) == []
@@ -363,8 +363,8 @@ def test_project_delete_allowed_once_its_vod_upload_has_been_silent_for_8_days()
 
 def test_overlapping_project_and_child_deletes_are_refused():
     p = _project()
-    t = _tape_with_iterations(p["id"])
-    r = deletions.request_delete("tape_files", t["id"], "Ace clip", username="boss", role="admin", now=T0)
+    t = _edit_with_iterations(p["id"])
+    r = deletions.request_delete("edit_files", t["id"], "Ace tape", username="boss", role="admin", now=T0)
     with pytest.raises(ValueError, match="Another delete for this is already scheduled"):
         deletions.request_delete("project", p["id"], "Ranked grind", username="boss", role="admin", now=T0)
     deletions.undo(r["request_id"], username="boss", role="admin", now=T0)
@@ -373,7 +373,7 @@ def test_overlapping_project_and_child_deletes_are_refused():
         deletions.request_delete("project", p["id"], "Ranked grind", username="boss", role="admin", now=T0)
     deletions.undo(r["request_id"], username="boss", role="admin", now=T0)
     deletions.request_delete("project", p["id"], "Ranked grind", username="boss", role="admin", now=T0)
-    for kind, tid, label in (("vod", p["id"], "vod-1020.mp4"), ("tape_files", t["id"], "Ace clip")):
+    for kind, tid, label in (("vod", p["id"], "vod-1020.mp4"), ("edit_files", t["id"], "Ace tape")):
         with pytest.raises(ValueError, match="Another delete for this is already scheduled"):
             deletions.request_delete(kind, tid, label, username="boss", role="admin", now=T0)
 
@@ -388,35 +388,35 @@ def test_project_being_deleted_check():
     deletions.ensure_project_not_deleting(p["id"])
 
 
-def test_project_delete_refused_for_clip_holding_combined_reel(drive):
+def test_project_delete_refused_for_tape_holding_combined_reel(drive):
     from editor import editor_service as svc
-    a = es.create_project("Clip A", "2026-10-20", "", "a.mp4", 1, now=T0, duration_s=20.0)
-    b = es.create_project("Clip B", "2026-10-20", "", "b.mp4", 1, now=T0, duration_s=20.0)
+    a = es.create_project("Tape A", "2026-10-20", "", "a.mp4", 1, now=T0, duration_s=20.0)
+    b = es.create_project("Tape B", "2026-10-20", "", "b.mp4", 1, now=T0, duration_s=20.0)
     es.mark_vod_ready(a["id"], "VA", now=T0)
     es.mark_vod_ready(b["id"], "VB", now=T0)
-    reel = svc.combine_clips([a["id"], b["id"]], "Duo", "aryan")
+    reel = svc.combine_tapes([a["id"], b["id"]], "Duo", "aryan")
     it = es.create_iteration(reel["id"], "duo.mp4", 1, "u", now=T0)
     es.complete_iteration(it["id"], "DUO1", now=T0)
-    with pytest.raises(ValueError, match="This clip holds a combined reel - delete the reel's files first"):
-        deletions.request_delete("project", a["id"], "Clip A", username="aryan", role="admin", now=T0)
+    with pytest.raises(ValueError, match="This tape holds a combined reel - delete the reel's files first"):
+        deletions.request_delete("project", a["id"], "Tape A", username="aryan", role="admin", now=T0)
     # The other source holds no reel of its own and is deleted normally.
-    deletions.request_delete("project", b["id"], "Clip B", username="aryan", role="admin", now=T0)
-    deletions.request_delete("tape_files", reel["id"], "Duo", username="aryan", role="admin", now=T0)
+    deletions.request_delete("project", b["id"], "Tape B", username="aryan", role="admin", now=T0)
+    deletions.request_delete("edit_files", reel["id"], "Duo", username="aryan", role="admin", now=T0)
     import asyncio
     asyncio.run(deletions.run_due(T0 + deletions.DELETE_GRACE_SECONDS + 1))
-    assert es.get_tape(reel["id"])["files_deleted_at"] is not None
-    assert deletions.request_delete("project", a["id"], "Clip A", username="aryan", role="admin",
-                                    now=T0 + 7200)["label"] == "Clip A"
+    assert es.get_edit(reel["id"])["files_deleted_at"] is not None
+    assert deletions.request_delete("project", a["id"], "Tape A", username="aryan", role="admin",
+                                    now=T0 + 7200)["label"] == "Tape A"
 
 
-def test_empty_tape_files_delete_is_refused(drive):
-    # An empty "files delete" would set files_deleted_at and unlock the host clip's project delete
-    # while the combined reel is still the only reel of its other clips.
+def test_empty_edit_files_delete_is_refused(drive):
+    # An empty "files delete" would set files_deleted_at and unlock the host tape's project delete
+    # while the combined reel is still the only reel of its other tapes.
     p = _project()
-    t = es.create_tape(p["id"], "Empty", now=T0)
+    t = es.create_edit(p["id"], "Empty", now=T0)
     with pytest.raises(ValueError, match="Nothing to delete"):
-        deletions.request_delete("tape_files", t["id"], "Empty", username="boss", role="admin", now=T0)
-    assert deletions.pending(now=T0) == [] and es.get_tape(t["id"])["files_deleted_at"] is None
+        deletions.request_delete("edit_files", t["id"], "Empty", username="boss", role="admin", now=T0)
+    assert deletions.pending(now=T0) == [] and es.get_edit(t["id"])["files_deleted_at"] is None
 
 
 @pytest.mark.asyncio

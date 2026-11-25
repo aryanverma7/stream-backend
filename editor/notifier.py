@@ -1,8 +1,8 @@
 """
 Turns the editor app's events log into Discord DMs via the outbox. A new version is DMed at once;
-finished VOD/clip uploads, and comments, replies, resolves and start-overs, collect in digest_pending
+finished VOD/tape uploads, and comments, replies, resolves and start-overs, collect in digest_pending
 and go out as one DM once DIGEST_QUIET_SECONDS pass with nothing new (several files sent at once are
-one "8 new clips are ready" message).
+one "8 new tapes are ready" message).
 """
 from core import db
 from editor import deletions
@@ -45,11 +45,11 @@ def _handle(ev: dict, now: float) -> None:
     elif kind == "iteration_ready":
         if actor == "system" or role_for_username(actor) == "editor":
             it = es.get_iteration(ev["iteration_id"])
-            tape = it and es.get_tape(it["tape_id"])
-            if tape is None:
+            edit = it and es.get_edit(it["edit_id"])
+            if edit is None:
                 log.warning("Event %s: row gone, skipped", ev["id"])
                 return
-            notify_outbox.enqueue("streamer", f"{tape['name']} v{it['version']} is ready to review.",
+            notify_outbox.enqueue("streamer", f"{edit['name']} v{it['version']} is ready to review.",
                                   f"iteration_ready:{it['id']}", now)
     elif kind == "guest_notes_added":
         db.get().execute("INSERT OR IGNORE INTO digest_pending(recipient_role, event_id, actor, at)"
@@ -73,18 +73,18 @@ def _count(kind: str, n: int) -> str:
     return "started over" if n == 1 else f"started over {n} times"
 
 
-def label(tape_id, iteration_id) -> str:
-    tape = es.get_tape(tape_id) if tape_id is not None else None
+def label(edit_id, iteration_id) -> str:
+    edit = es.get_edit(edit_id) if edit_id is not None else None
     it = es.get_iteration(iteration_id) if iteration_id is not None else None
-    name = tape["name"] if tape else "a deleted tape"
+    name = edit["name"] if edit else "something deleted"
     return f"{name} v{it['version']}" if it else name
 
 
 def _digest(rows) -> str:
-    """rows in event order: actor -> (tape, iteration) -> kind -> count, each in first-seen order."""
+    """rows in event order: actor -> (edit, iteration) -> kind -> count, each in first-seen order."""
     by_actor: dict[str, dict[tuple, dict[str, int]]] = {}
     for r in rows:
-        group = by_actor.setdefault(r["actor"], {}).setdefault((r["tape_id"], r["iteration_id"]), {})
+        group = by_actor.setdefault(r["actor"], {}).setdefault((r["edit_id"], r["iteration_id"]), {})
         group[r["kind"]] = group.get(r["kind"], 0) + 1
     lines = []
     for actor, groups in by_actor.items():
@@ -103,10 +103,10 @@ def _ready(project_ids) -> "str | None":
     if not ps:
         return None
     if len(ps) == 1:
-        what = "clip" if ps[0]["kind"] == "clip" else "VOD"
+        what = "tape" if ps[0]["kind"] == "tape" else "VOD"
         return f"New {what} ready: {ps[0]['name']}. Open the editor page to download it."
-    clips = sum(p["kind"] == "clip" for p in ps)
-    counts = [f"{n} new {w}{'' if n == 1 else 's'}" for n, w in ((len(ps) - clips, "VOD"), (clips, "clip")) if n]
+    tapes = sum(p["kind"] == "tape" for p in ps)
+    counts = [f"{n} new {w}{'' if n == 1 else 's'}" for n, w in ((len(ps) - tapes, "VOD"), (tapes, "tape")) if n]
     names = ", ".join(p["name"] for p in ps[:_READY_NAMES])
     if len(ps) > _READY_NAMES:
         names += f" and {len(ps) - _READY_NAMES} more"
@@ -121,7 +121,7 @@ def _flush(now: float) -> None:
         try:
             with db.transaction():
                 rows = conn.execute(
-                    "SELECT d.actor, e.kind, e.project_id, e.tape_id, e.iteration_id FROM digest_pending d"
+                    "SELECT d.actor, e.kind, e.project_id, e.edit_id, e.iteration_id FROM digest_pending d"
                     " JOIN events e ON e.id=d.event_id WHERE d.recipient_role=? AND d.event_id<=?"
                     " ORDER BY d.event_id", (recipient, max_id)).fetchall()
                 conn.execute("DELETE FROM digest_pending WHERE recipient_role=? AND event_id<=?",

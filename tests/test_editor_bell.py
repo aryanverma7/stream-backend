@@ -17,7 +17,7 @@ def setup(tmp_path):
 
 def _world():
     p = es.create_project("Ace", "2026-10-20", "", "v.mp4", 5, now=1.0)
-    t = es.create_tape(p["id"], "Jett dash", now=1.0)
+    t = es.create_edit(p["id"], "Jett dash", now=1.0)
     it = es.create_iteration(t["id"], "a.mp4", 1, "u", now=1.0)
     return p, t, it
 
@@ -25,17 +25,17 @@ def _world():
 def test_bell_lists_only_other_persons_events():
     p, t, it = _world()
     ids = dict(p=p["id"], t=t["id"], i=it["id"])
-    mine = es.record_event("Aryan", "tape_created", "Aryan added tape", project_id=ids["p"], now=2.0)
+    mine = es.record_event("Aryan", "edit_created", "Aryan added edit", project_id=ids["p"], now=2.0)
     sys_ev = es.record_event("system", "delete_done", "Deleted x", now=3.0)
     c = es.record_event("ed", "comment_added", "ed commented: secret snippet", project_id=ids["p"],
-                        tape_id=ids["t"], iteration_id=ids["i"], now=4.0)
-    r = es.record_event("ed", "tape_created", "ed added tape Jett dash", project_id=ids["p"],
-                        tape_id=ids["t"], now=5.0)
+                        edit_id=ids["t"], iteration_id=ids["i"], now=4.0)
+    r = es.record_event("ed", "edit_created", "ed added edit Jett dash", project_id=ids["p"],
+                        edit_id=ids["t"], now=5.0)
     feed = editor_bell.feed("aryan")  # case-insensitive self match
     assert [i["id"] for i in feed["items"]] == [r, c]
-    assert feed["items"][0] == {"id": r, "at": 5.0, "actor": "ed", "kind": "tape_created",
-                                "summary": "ed added tape Jett dash", "project_id": ids["p"],
-                                "tape_id": ids["t"], "iteration_id": None}
+    assert feed["items"][0] == {"id": r, "at": 5.0, "actor": "ed", "kind": "edit_created",
+                                "summary": "ed added edit Jett dash", "project_id": ids["p"],
+                                "edit_id": ids["t"], "iteration_id": None}
     assert "secret" not in feed["items"][1]["summary"]
     assert feed["items"][1]["summary"] == "ed commented on Jett dash v1"
     assert [i["id"] for i in editor_bell.feed("ed")["items"]] == [mine]
@@ -45,8 +45,8 @@ def test_bell_lists_only_other_persons_events():
 
 
 def test_bell_unseen_and_mark_seen():
-    a = es.record_event("ed", "tape_created", "x", now=1.0)
-    b = es.record_event("ed", "tape_created", "y", now=2.0)
+    a = es.record_event("ed", "edit_created", "x", now=1.0)
+    b = es.record_event("ed", "edit_created", "y", now=2.0)
     assert editor_bell.feed("Aryan")["unseen"] == 2
     editor_bell.mark_seen("Aryan", a)
     assert editor_bell.feed("aryan")["unseen"] == 1
@@ -58,16 +58,16 @@ def test_bell_unseen_and_mark_seen():
 
 
 def test_mark_seen_clamps_to_newest_event():
-    a = es.record_event("ed", "tape_created", "x", now=1.0)
+    a = es.record_event("ed", "edit_created", "x", now=1.0)
     editor_bell.mark_seen("aryan", a + 1000)
     assert db.meta_get("bell_seen_aryan") == str(a)
-    b = es.record_event("ed", "tape_created", "y", now=2.0)
+    b = es.record_event("ed", "edit_created", "y", now=2.0)
     assert editor_bell.feed("aryan")["unseen"] == 1 and b > a
 
 
 def test_bell_shows_system_iteration_ready_only():
     p, t, it = _world()
-    a = es.record_event("system", "iteration_ready", "recovered", project_id=p["id"], tape_id=t["id"],
+    a = es.record_event("system", "iteration_ready", "recovered", project_id=p["id"], edit_id=t["id"],
                         iteration_id=it["id"], now=2.0)
     es.record_event("system", "delete_done", "Deleted x", now=3.0)
     for who in ("aryan", "ed"):

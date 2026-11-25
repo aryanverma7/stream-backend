@@ -97,14 +97,14 @@ async def test_stops_once_delete_requested():
 
 
 @pytest.mark.asyncio
-async def test_clip_wording_and_no_click_no_reminder():
+async def test_tape_wording_and_no_click_no_reminder():
     p = es.create_project("C", "2026-01-01", "t", "c.mp4", 1, now=0, duration_s=10)
     es.mark_vod_ready(p["id"], "f", now=0)
     await reminders.run(at(15))
     assert count() == 0  # no download click (admin clicks never set it: see test_editor_api)
     es.record_download_click(p["id"], now=at(9))
     await reminders.run(at(15))
-    assert "clip" in db.get().execute("SELECT content FROM dm_outbox").fetchone()[0]
+    assert "tape" in db.get().execute("SELECT content FROM dm_outbox").fetchone()[0]
 
 
 @pytest.mark.asyncio
