@@ -391,10 +391,11 @@ async def start_iteration(request, me):
     size = _int(body, "size")
     if size <= 0:
         raise _Fail(400, "size must be positive")
-    # The browser probes the file; its shape decides (or must keep) the kind, before Drive is asked.
-    kind = es.detect_kind(t, body.get("width"), body.get("height"), body.get("duration_s"))
-    started = await svc.start_iteration_upload(t["id"], _text(body, "filename"), size, _text(body, "mime"))
-    return _ok({**started, "kind": kind})
+    # The browser probes the file; its shape decides (or must keep) the kind. Checked here before Drive is asked,
+    # and again with the version row after the awaits, which is where it is saved.
+    shape = (body.get("width"), body.get("height"), body.get("duration_s"))
+    es.detect_kind(t, *shape, save=False)
+    return _ok(await svc.start_iteration_upload(t["id"], _text(body, "filename"), size, _text(body, "mime"), shape))
 
 
 # -- iterations --

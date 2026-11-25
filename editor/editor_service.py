@@ -169,7 +169,8 @@ def _ensure_edit_open(edit_id) -> None:
         raise ValueError("These files were deleted")
 
 
-async def start_iteration_upload(edit_id, filename, size, mime) -> dict:
+async def start_iteration_upload(edit_id, filename, size, mime, shape=None) -> dict:
+    """`shape` (width, height, duration_s) decides or must keep the edit's kind (es.detect_kind)."""
     _ensure_edit_open(edit_id)
     free = (await free_space())["free"]
     if free is not None and size > free:
@@ -177,7 +178,11 @@ async def start_iteration_upload(edit_id, filename, size, mime) -> dict:
     folder = await ensure_edit_folder(edit_id)
     # Again after the awaits, with none before the insert: once the row exists, a project delete refuses.
     _ensure_edit_open(edit_id)
-    it = es.create_iteration(edit_id, filename, size, "")
+    es._c()
+    # The kind is checked and saved with the version row: two starts racing on a new output cannot both win.
+    with db.transaction():
+        kind = es.detect_kind(es.get_edit(edit_id), *shape) if shape else None
+        it = es.create_iteration(edit_id, filename, size, "")
     try:
         url = await _upload_session(it, folder, mime)
     except BaseException:
@@ -186,7 +191,7 @@ async def start_iteration_upload(edit_id, filename, size, mime) -> dict:
         raise
     with db.transaction() as conn:
         conn.execute("UPDATE iterations SET upload_url=? WHERE id=?", (url, it["id"]))
-    return {"iteration_id": it["id"], "version": it["version"], "upload_url": url}
+    return {"iteration_id": it["id"], "version": it["version"], "upload_url": url, "kind": kind}
 
 
 async def renew_iteration_upload(iteration_id, mime) -> "str | None":

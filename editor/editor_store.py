@@ -214,7 +214,7 @@ _SHAPE = {"clip": f"vertical (taller than wide) and under {SHORT_MAX_SECONDS // 
           "video": f"horizontal (wider than tall) and {SHORT_MAX_SECONDS // 60} minutes or longer"}
 
 
-def detect_kind(edit, width, height, duration_s, now=None) -> str:
+def detect_kind(edit, width, height, duration_s, now=None, save=True) -> str:
     """The kind a new version of `edit` makes, from the browser's probe of the file; ValueError if it does not fit.
 
     A reel must be vertical and under SHORT_MAX_SECONDS. A VOD's output takes its kind from its first version
@@ -236,7 +236,7 @@ def detect_kind(edit, width, height, duration_s, now=None) -> str:
         raise ValueError(f"This file is neither a clip ({_SHAPE['clip']}) nor a video ({_SHAPE['video']})")
     if kept is not None and shaped != kept:
         raise ValueError(f"This is a {kept}: every version must be {_SHAPE[kept]} - this file is not")
-    if edit["kind"] != shaped:
+    if save and edit["kind"] != shaped:
         _set("edits", edit["id"], now, kind=shaped)
     return shaped
 

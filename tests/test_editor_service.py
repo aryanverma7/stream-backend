@@ -66,6 +66,26 @@ async def test_start_upload_names_file_and_sets_app_properties(_env):
     assert es.get_iteration(r["iteration_id"])["upload_url"] == "https://upload/s"
 
 
+@pytest.mark.asyncio
+async def test_two_starts_racing_on_a_new_output_cannot_both_set_the_kind(_env, monkeypatch):
+    import asyncio
+    _, t = _edit()
+    await svc.ensure_edit_folder(t["id"])  # no contention on gdrive_oauth's module-level folder lock
+
+    async def about():  # yields, so both starts are past their first checks before either inserts
+        await asyncio.sleep(0)
+        return _env["quota"]
+    monkeypatch.setattr(gdrive, "about", about)
+    clip, video = (1080, 1920, 60), (1920, 1080, 600)
+    # both pass the route's early check: the output has no version yet
+    assert [es.detect_kind(t, *s, save=False) for s in (clip, video)] == ["clip", "video"]
+    first, second = await asyncio.gather(svc.start_iteration_upload(t["id"], "a.mp4", 10, "video/mp4", clip),
+                                         svc.start_iteration_upload(t["id"], "b.mp4", 10, "video/mp4", video),
+                                         return_exceptions=True)
+    assert first["kind"] == "clip" and isinstance(second, ValueError) and "This is a clip" in str(second)
+    assert es.get_edit(t["id"])["kind"] == "clip" and [i["version"] for i in es.list_iterations(t["id"])] == [1]
+
+
 async def _started(_env):
     _, t = _edit()
     r = await svc.start_iteration_upload(t["id"], "a.mp4", 10, "video/mp4")
