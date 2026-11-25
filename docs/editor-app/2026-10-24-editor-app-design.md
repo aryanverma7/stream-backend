@@ -86,9 +86,11 @@ and with it the editor pages — see "Power cuts".)
 - **Project** = one VOD. Survives the VOD's deletion. Identified by stream date, stream title (from
   the backend's existing Twitch/Streamer.bot knowledge where available, else the filename) and
   original filename; renamable.
-- **Tape** = one video cut from a project. Has a status label (see Statuses) and "tape notes" (free
-  text: title ideas, thumbnail ideas).
-- **Iteration** = one uploaded version of a tape (v1, v2, …). Holds the Drive file id, size, check
+- **Video / Clip / Reel** (internally an *edit*: `edits` table, `edit_id`, `/api/editor/edits/...`;
+  the UI never shows the word "edit") = one output cut from a project. Has a status label (see
+  Statuses) and notes (free text: title ideas, thumbnail ideas). Until 2026-11-25 this was a "tape";
+  see "New words and notice board" below.
+- **Iteration** = one uploaded version of a video, clip or reel (v1, v2, …). Holds the Drive file id, size, check
   results, a thumbnail frame, upload time.
 - **Comment** = belongs to an iteration. Either timestamped (a point or a range `start–end`) or
   general (no timestamp). Has a type: **Fix / Keep / Question**. Has a thread of replies from either
@@ -137,8 +139,8 @@ sort by status, date and name instead of fixed columns.
 - Prevent Windows sleep while uploading.
 - When the upload completes: the file is shared with the editor's Google account, and the editor
   gets **one** Discord DM plus a popup next time he opens the site. Uploads that finish close together
-  (several files sent at once) are **one grouped DM**, e.g. "8 new clips are ready" or "2 new VODs and 3 new
-  clips are ready" with their names, sent once no further upload has finished for 10 minutes
+  (several files sent at once) are **one grouped DM**, e.g. "8 new tapes are ready" or "2 new VODs and 3 new
+  tapes are ready" with their names, sent once no further upload has finished for 10 minutes
   (streamer's rule, 2026-10-28).
 
 ### 2. VOD download and delete
@@ -342,10 +344,11 @@ Agreed with the streamer to ship alongside the editor app (wireframe board "Sett
    power cuts depends on it.
 9. Add an ESLint flat config so `npm run lint` works.
 
-## Clips and reels (added 2026-10-27)
+## Tapes and reels (added 2026-10-27; called "clips" until 2026-11-25)
 
-- An upload **shorter than 5 minutes** (Medal clips) is a **Clip**; anything longer is a VOD. The
-  uploader reports the duration; the backend classifies (`duration < 300 s` → clip).
+- An upload **shorter than 5 minutes** (Medal clips) is a **Tape**; anything longer is a VOD. The
+  uploader reports the duration; the backend classifies (`duration < TAPE_MAX_SECONDS` (300) → tape).
+  Below, "clip" in this section means such a tape (the old word).
 - The streamer often sends several clips at once; **each clip is its own item**, never grouped
   automatically. The editor works through them about one a day (UI lists clips oldest first).
 - Each Clip automatically gets **exactly one Reel** (a tape of kind "reel") with unlimited versions,
@@ -360,7 +363,8 @@ Agreed with the streamer to ship alongside the editor app (wireframe board "Sett
   deleted.
 - **Start over** (streamer only): on a tape or reel, resolves every open comment on the latest
   version in one action, so the next version starts clean apart from new notes.
-- Reel-specific technical checks (vertical 9:16, length): **on hold** by the streamer's choice.
+- Reel-specific technical checks: since 2026-11-25 a reel version must be vertical and under 3 minutes
+  (see below); the other checks stay on hold.
 - **Page hardening (Plan 5):** a Content-Security-Policy header allowing scripts only from the site
   and the CDN hosts the hero uses, `frame-ancestors 'none'`, and `nosniff`. Recommend both users open
   the dashboard in a browser profile with no extensions. As built: the CSP is on every page except the
@@ -421,6 +425,37 @@ backend (stored in `app.db`) and deletes its temporary files. The player shows t
 the comments (click a line to seek), and search covers it.
 
 **Roadmap clean-up.** Tick what is built; the rest becomes tasks in the plan above.
+
+## New words and notice board (decided with the streamer 2026-11-25)
+
+| Old | New | Meaning |
+|---|---|---|
+| project kind `clip` (upload < 300 s) | project kind `tape` | a short upload |
+| project kind `vod` | `vod` (unchanged) | a stream VOD |
+| `tapes` row of kind `tape` | `edits` row of kind `video` | long-form, made from a VOD |
+| (new) | `edits` row of kind `clip` | vertical and under 3 min, made from a VOD |
+| `tapes` row of kind `reel` | `edits` row of kind `reel` | vertical and under 3 min, made from a tape |
+
+- **Kind is detected, never chosen.** An output made from a VOD has no kind until its first version.
+  The browser probes the file and sends `width`, `height`, `duration_s` with the upload start
+  (`POST /api/editor/edits/{id}/iterations`, all three required); under `SHORT_MAX_SECONDS` (180) and
+  vertical is a clip, 180 s or more and horizontal is a video, anything else is refused with a plain
+  message. Later versions must keep the kind; only abandoned uploads so far means it is detected
+  afresh. A tape's one reel takes only vertical files under 180 s. The answer carries `kind`.
+- **Quota:** a Final clip counts toward the short-form target together with reels ("Reels & clips");
+  the API keys stay `videos` and `reels`.
+- **Migration:** `editor_store._migrate()` runs inside the lazy schema setup, once, in one transaction:
+  `tapes` -> `edits` (kind `tape` -> `video`, or no kind if it has no version), project kind `clip` ->
+  `tape`, every `tape_id` column -> `edit_id`, `tape_seen` -> `edit_seen`, delete kind `tape_files` ->
+  `edit_files`, event kind `tape_created` -> `edit_created`. Drive folder names stay as they are.
+- **Notice board** (`editor/notices.py`): the streamer posts short plain-text notices (at most 2000
+  characters) for the editor, shown newest first at the top of the editor's Home (`notices` in
+  `GET /api/editor/home`, also `GET /api/editor/notices`). Streamer: `POST /api/editor/notices {text}`,
+  `PATCH /api/editor/notices/{id} {text}`, `DELETE /api/editor/notices/{id}`. Editor: `POST
+  /api/editor/notices/{id}/seen` ("Got it", records `seen_at` once; the streamer sees "Seen <time>").
+  A new notice is a `notice_posted` event (the editor's bell) and a DM to the editor with its text
+  (dedupe `notice:<id>`); edits do not re-notify. The site renders text with textContent only.
+- Both repos deploy together: the API paths changed.
 
 ## Left to the builder
 

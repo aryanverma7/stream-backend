@@ -92,8 +92,8 @@ trust, it revokes every live link at once, and you make a new one.
 
 ## What lives where
 
-- **Projects**: one folder per stream VOD, named like `2026-10-24 Stream title`, with a subfolder for
-  each tape. Edited videos are named `v1 - filename`, `v2 - filename`, and so on.
+- **Projects**: one folder per stream VOD or tape, named like `2026-10-24 Stream title`, with a subfolder
+  for each video, clip or reel. Edited files are named `v1 - filename`, `v2 - filename`, and so on.
 - **Backups**: a copy of the app's database every night around 4 AM. The newest 7 are kept.
 - **Brand kit**: yours to fill with logos and overlays. The editor can read it.
 
