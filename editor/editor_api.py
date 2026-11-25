@@ -25,6 +25,7 @@ from editor import editor_service as svc
 from editor import editor_store as es
 from editor import gdrive
 from editor import gdrive_oauth
+from editor import notices
 from editor import notify_outbox
 from editor import share_links as sl
 from core import scheduler
@@ -237,7 +238,8 @@ async def home(request, me):
     return _ok({"vods_ready": [_project_view(p) for p in ready if p["download_clicked_at"] is None],
                 "deletes_to_confirm": [_project_view(p) for p in ready if p["download_clicked_at"] is not None
                                        and not deletions.has_live_request("vod", p["id"])],
-                "open_edits": sorted(open_edits, key=lambda x: -x["open_comments"])})
+                "open_edits": sorted(open_edits, key=lambda x: -x["open_comments"]),
+                "notices": notices.list_all()})
 
 
 @_route
@@ -663,6 +665,40 @@ async def delete_todo(request, me):
     return _ok({"deleted": True})
 
 
+# -- notice board (the streamer writes, the editor reads and says "Got it") --
+
+@_route
+async def list_notices(request, me):
+    return _ok({"notices": notices.list_all()})
+
+
+@_route
+async def add_notice(request, me):
+    _admin(me)
+    return _ok(notices.create((await _body(request)).get("text"), me["username"]), 201)
+
+
+@_route
+async def update_notice(request, me):
+    _admin(me)
+    return _ok(_found(notices.update(_id(request), (await _body(request)).get("text"))))
+
+
+@_route
+async def delete_notice(request, me):
+    _admin(me)
+    if not notices.delete(_id(request)):
+        raise _Fail(404, "Not found")
+    return _ok({"deleted": True})
+
+
+@_route
+async def notice_seen(request, me):
+    if me["role"] != "editor":
+        raise _Fail(403, "Only the editor can mark a notice seen.")
+    return _ok(_found(notices.mark_seen(_id(request))))
+
+
 # -- deletions (deletions.py enforces who may delete and undo what) --
 
 @_route
@@ -773,6 +809,11 @@ def register_routes(app: web.Application) -> None:
     r.add_get(f"{p}/search", search)
     r.add_get(f"{p}/notifications", notifications)
     r.add_post(f"{p}/notifications/seen", notifications_seen)
+    r.add_get(f"{p}/notices", list_notices)
+    r.add_post(f"{p}/notices", add_notice)
+    r.add_patch(f"{p}/notices/{{id:{_ID}}}", update_notice)
+    r.add_delete(f"{p}/notices/{{id:{_ID}}}", delete_notice)
+    r.add_post(f"{p}/notices/{{id:{_ID}}}/seen", notice_seen)
     r.add_get(f"{p}/todos", list_todos)
     r.add_post(f"{p}/todos", add_todo)
     r.add_patch(f"{p}/todos/{{id:{_ID}}}", update_todo)
