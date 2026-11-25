@@ -45,7 +45,8 @@ def deliver(p, kind, uploaded, finalised=None, name="cut"):
         tape = es.create_project(name, "2026-11-16", "", "c.mp4", 1, now=uploaded, duration_s=30)
         t = es.reel_for_tape(tape["id"])
     else:
-        t = es.create_edit(p["id"], name, now=uploaded, kind=kind)
+        t = es.create_edit(p["id"], name, now=uploaded)
+        es.detect_kind(t, *((1080, 1920, 60) if kind == "clip" else (1920, 1080, 600)))
     it = es.create_iteration(t["id"], "a.mp4", 1, "", now=uploaded)
     es.complete_iteration(it["id"], f"F{it['id']}", now=uploaded)
     es.update_edit(t["id"], status="final", now=finalised or uploaded)

@@ -17,6 +17,7 @@ from core import scheduler
 from core.config import config
 
 FORBIDDEN = {"error": "Only the streamer can do this."}
+WIDE = {"width": 1920, "height": 1080, "duration_s": 600}  # a video file, as the browser probes it
 
 
 @pytest.fixture(autouse=True)
@@ -169,35 +170,44 @@ async def test_drive_full_gives_507_with_numbers(drive):
     drive["quota"] = {"limit": 1000, "usage": 900}
     async with api() as a:
         status, got = await a.editor("POST", f"/api/editor/edits/{t['id']}/iterations",
-                                     {"filename": "b.mp4", "size": 500, "mime": "video/mp4"})
+                                     {"filename": "b.mp4", "size": 500, "mime": "video/mp4", **WIDE})
     assert status == 507
     assert got == {"error": "Drive is too full for this file", "needed": 500, "free": 100}
 
 
 @pytest.mark.asyncio
-async def test_clip_kind_is_chosen_at_creation_and_its_shape_checked_on_upload(drive):
-    p, video, _, _ = _world()
+async def test_kind_is_detected_from_the_first_version_and_kept(drive):
+    p, _, _, _ = _world()
     up = {"filename": "b.mp4", "size": 5, "mime": "video/mp4"}
     tall_short = {"width": 1080, "height": 1920, "duration_s": 59.5}
     async with api() as a:
-        status, got = await a.editor("POST", f"/api/editor/projects/{p['id']}/edits", {"name": "X", "kind": "reel"})
-        assert status == 400
-        status, clip = await a.editor("POST", f"/api/editor/projects/{p['id']}/edits", {"name": "Ace", "kind": "clip"})
-        assert status == 201 and clip["kind"] == "clip"
-        for bad in ({}, {"width": 1920, "height": 1080, "duration_s": 30}, {**tall_short, "duration_s": 180}):
-            status, got = await a.editor("POST", f"/api/editor/edits/{clip['id']}/iterations", {**up, **bad})
-            assert status == 400 and "must be vertical" in got["error"]
+        status, clip = await a.editor("POST", f"/api/editor/projects/{p['id']}/edits", {"name": "Ace"})
+        assert status == 201 and clip["kind"] is None
+        path = f"/api/editor/edits/{clip['id']}/iterations"
+        status, got = await a.editor("POST", path, up)
+        assert status == 400 and "width, height and duration_s" in got["error"]
+        for odd in ({"width": 1920, "height": 1080, "duration_s": 30}, {**tall_short, "duration_s": 180}):
+            status, got = await a.editor("POST", path, {**up, **odd})
+            assert status == 400 and "neither a clip" in got["error"]
         assert es.list_iterations(clip["id"]) == []  # refused before any row or Drive session
-        status, got = await a.editor("POST", f"/api/editor/edits/{clip['id']}/iterations", {**up, **tall_short})
-        assert status == 200 and got["warning"] is None
-        status, got = await a.editor("POST", f"/api/editor/edits/{video['id']}/iterations", {**up, **tall_short})
-        assert status == 200 and "looks like a clip" in got["warning"]
-        status, got = await a.editor("POST", f"/api/editor/edits/{video['id']}/iterations", up)
-        assert status == 200 and got["warning"] is None
+        status, got = await a.editor("POST", path, {**up, **tall_short})
+        assert status == 200 and got["kind"] == "clip" and es.get_edit(clip["id"])["kind"] == "clip"
+        status, got = await a.editor("POST", path, {**up, **WIDE})
+        assert status == 400 and got["error"].startswith("This is a clip: every version must be vertical")
+        status, video = await a.editor("POST", f"/api/editor/projects/{p['id']}/edits", {"name": "Long"})
+        path = f"/api/editor/edits/{video['id']}/iterations"
+        status, got = await a.editor("POST", path, {**up, **WIDE})
+        assert status == 200 and got["kind"] == "video"
+        status, got = await a.editor("POST", f"/api/editor/iterations/{got['iteration_id']}/abandon")
+        status, got = await a.editor("POST", path, {**up, **tall_short})  # only an abandoned upload: detected afresh
+        assert status == 200 and got["kind"] == "clip"
+        status, got = await a.editor("POST", path, {**up, **WIDE})
+        assert status == 400 and "This is a clip" in got["error"]
         tape = es.create_project("Short", "2026-10-20", "", "s.mp4", 5, duration_s=40)
-        status, got = await a.editor("POST", f"/api/editor/edits/{tape['reel_edit_id']}/iterations",
-                                     {**up, "width": 1920, "height": 1080, "duration_s": 40})
+        status, got = await a.editor("POST", f"/api/editor/edits/{tape['reel_edit_id']}/iterations", {**up, **WIDE})
         assert status == 400 and got["error"].startswith("A reel must be vertical")
+        status, got = await a.editor("POST", f"/api/editor/edits/{tape['reel_edit_id']}/iterations", {**up, **tall_short})
+        assert status == 200 and got["kind"] == "reel"
 
 
 @pytest.mark.asyncio
@@ -206,7 +216,7 @@ async def test_drive_not_connected_gives_503(drive):
     drive["not_connected"] = True
     async with api() as a:
         status, got = await a.editor("POST", f"/api/editor/edits/{t['id']}/iterations",
-                                     {"filename": "b.mp4", "size": 5, "mime": "video/mp4"})
+                                     {"filename": "b.mp4", "size": 5, "mime": "video/mp4", **WIDE})
     assert status == 503
     assert got == {"error": "Google Drive isn't connected - connect it from the dashboard."}
 
@@ -241,7 +251,7 @@ async def test_iteration_payload_includes_carried_comments_and_position(drive):
     _, t, v1, c = _world()
     async with api() as a:
         status, up = await a.editor("POST", f"/api/editor/edits/{t['id']}/iterations",
-                                    {"filename": "b.mp4", "size": 20, "mime": "video/mp4"})
+                                    {"filename": "b.mp4", "size": 20, "mime": "video/mp4", **WIDE})
         assert status == 200 and up["version"] == 2 and up["upload_url"] == "https://upload/s"
         status, _ = await a.editor("POST", f"/api/editor/iterations/{up['iteration_id']}/complete",
                                    {"file_id": "IT2"})
@@ -562,7 +572,7 @@ async def test_new_session_for_an_unfinished_upload(drive):
     _, t, _, _ = _world()
     async with api() as a:
         status, up = await a.editor("POST", f"/api/editor/edits/{t['id']}/iterations",
-                                    {"filename": "b.mp4", "size": 20, "mime": "video/mp4"})
+                                    {"filename": "b.mp4", "size": 20, "mime": "video/mp4", **WIDE})
         assert status == 200
         drive["next_url"] = "https://upload/fresh"
         path = f"/api/editor/iterations/{up['iteration_id']}/session"
@@ -596,7 +606,7 @@ async def test_abandon_an_unfinished_upload(drive):
     _, t, done, _ = _world()
     async with api() as a:
         status, up = await a.editor("POST", f"/api/editor/edits/{t['id']}/iterations",
-                                    {"filename": "b.mp4", "size": 20, "mime": "video/mp4"})
+                                    {"filename": "b.mp4", "size": 20, "mime": "video/mp4", **WIDE})
         path = f"/api/editor/iterations/{up['iteration_id']}/abandon"
         status, got = await a.editor("POST", path)
         assert status == 200 and got["status"] == "abandoned"

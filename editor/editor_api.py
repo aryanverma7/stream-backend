@@ -292,10 +292,7 @@ async def download_project(request, me):
 async def create_edit(request, me):
     p = _project(_id(request))
     body = await _body(request)
-    kind = body.get("kind", "video")
-    if kind not in ("video", "clip"):
-        raise _Fail(400, "kind must be video or clip")
-    return _ok(svc.create_edit(p["id"], _text(body, "name"), me["username"], kind), 201)
+    return _ok(svc.create_edit(p["id"], _text(body, "name"), me["username"]), 201)
 
 
 # -- tapes and reels --
@@ -392,10 +389,10 @@ async def start_iteration(request, me):
     size = _int(body, "size")
     if size <= 0:
         raise _Fail(400, "size must be positive")
-    # The browser probes the file; a clip or reel that is not vertical and short is refused before Drive is asked.
-    warning = es.check_shape(t["kind"], body.get("width"), body.get("height"), body.get("duration_s"))
+    # The browser probes the file; its shape decides (or must keep) the kind, before Drive is asked.
+    kind = es.detect_kind(t, body.get("width"), body.get("height"), body.get("duration_s"))
     started = await svc.start_iteration_upload(t["id"], _text(body, "filename"), size, _text(body, "mime"))
-    return _ok({**started, "warning": warning})
+    return _ok({**started, "kind": kind})
 
 
 # -- iterations --

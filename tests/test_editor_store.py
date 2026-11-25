@@ -167,7 +167,7 @@ def test_second_reel_on_a_tape_is_refused():
         es.create_edit(c["id"], "another")
     assert len(es.list_edits(c["id"])) == 1
     t = es.create_edit(_proj()["id"], "ordinary")
-    assert t["kind"] == "video" and t["source_project_ids"] == []
+    assert t["kind"] is None and t["source_project_ids"] == []  # its first version decides
 
 
 def test_a_tape_cannot_be_in_two_reels():
@@ -232,6 +232,7 @@ INSERT INTO projects VALUES(1,'Ranked','2026-10-20','','vod.mp4',5,NULL,'ready',
 INSERT INTO projects VALUES(2,'Ace','2026-10-21','','ace.mp4',5,NULL,'ready',NULL,NULL,NULL,NULL,'clip',42,1,1);
 INSERT INTO tapes VALUES(10,1,'Highlights','tape','final','',NULL,NULL,1,1);
 INSERT INTO tapes VALUES(11,2,'Ace','reel','cutting','',NULL,NULL,1,1);
+INSERT INTO tapes VALUES(12,1,'Not started','tape','cutting','',NULL,NULL,1,1);
 INSERT INTO reel_sources VALUES(11,2);
 INSERT INTO iterations VALUES(20,10,1,'a.mp4',9,'ready','f1',NULL,NULL,NULL,50,1,1);
 INSERT INTO events VALUES(1,1,'aryan','tape_created',1,10,NULL,NULL,'aryan added tape Highlights');
@@ -268,7 +269,9 @@ def test_old_schema_is_migrated_in_place_and_keeps_its_data(tmp_path):
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
     assert not names & {"tapes", "tape_seen", "edits_new", "projects_new"}
     assert "edits" in conn.execute("SELECT sql FROM sqlite_master WHERE name='iterations'").fetchone()[0]
-    assert es.create_edit(1, "Short", kind="clip")["kind"] == "clip"  # the new CHECK takes the new kind
+    short = es.create_edit(1, "Short")
+    assert short["kind"] is None and es.get_edit(12)["kind"] is None  # no version yet: no kind
+    assert es.detect_kind(short, 1080, 1920, 30) == "clip" and es.get_edit(short["id"])["kind"] == "clip"
     with pytest.raises(sqlite3.IntegrityError):  # foreign keys still enforced against edits
         conn.execute("INSERT INTO iterations(edit_id, version, filename, size, status, created_at, updated_at)"
                      " VALUES(999,1,'x',1,'uploading',1,1)")

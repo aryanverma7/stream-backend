@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS projects(
   created_at REAL NOT NULL, updated_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS edits(
   id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id),
-  name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'video' CHECK (kind IN ('video','clip','reel')),
+  name TEXT NOT NULL, kind TEXT CHECK (kind IN ('video','clip','reel')),
   status TEXT NOT NULL DEFAULT 'cutting' CHECK (status IN ('cutting','in_review','changes_asked','final')),
   notes TEXT NOT NULL DEFAULT '', drive_folder_id TEXT, files_deleted_at REAL,
   created_at REAL NOT NULL, updated_at REAL NOT NULL);
@@ -75,7 +75,11 @@ def _migrate():
     try:
         with db.transaction():
             conn.execute("ALTER TABLE tapes RENAME TO edits")  # also repoints every REFERENCES tapes(id)
-            _rebuild(conn, "edits", {"tape": "video"}, ((" IN ('video','reel')", " IN ('video','clip','reel')"),))
+            _rebuild(conn, "edits", {"tape": "video"}, (("kind TEXT NOT NULL DEFAULT 'video' CHECK (kind IN ('video','reel'))",
+                                                          "kind TEXT CHECK (kind IN ('video','clip','reel'))"),))
+            # no version yet: no kind, the first upload decides it
+            conn.execute("UPDATE edits SET kind=NULL WHERE kind='video'"
+                         " AND NOT EXISTS (SELECT 1 FROM iterations i WHERE i.tape_id=edits.id)")
             _rebuild(conn, "projects", {"clip": "tape"})
             if "delete_requests" in tables:
                 _rebuild(conn, "delete_requests", {"tape_files": "edit_files"})
@@ -194,31 +198,47 @@ def record_download_click(id, now=None):
 
 # -- edits --
 
-def create_edit(project_id, name, now=None, kind="video"):
-    """A video or a clip, made from a VOD; the kind is chosen here and checked on every upload."""
-    if kind not in ("video", "clip"):
-        raise ValueError("kind must be video or clip")
+def create_edit(project_id, name, now=None):
+    """An output made from a VOD. It has no kind until its first version: detect_kind decides video or clip."""
     now = time.time() if now is None else now
     p = get_project(project_id)
     if p is not None and p["kind"] == "tape":
         raise ValueError("A tape has exactly one reel")
-    cur = _c().execute("INSERT INTO edits(project_id, name, kind, created_at, updated_at) VALUES(?,?,?,?,?)",
-                       (project_id, name, kind, now, now))
+    cur = _c().execute("INSERT INTO edits(project_id, name, created_at, updated_at) VALUES(?,?,?,?)",
+                       (project_id, name, now, now))
     return get_edit(cur.lastrowid)
 
 
-def check_shape(kind, width, height, duration_s) -> "str | None":
-    """A clip or reel version must be vertical and under SHORT_MAX_SECONDS (ValueError otherwise); a video
-    version that is both gets a warning back. width, height, duration_s come from the browser's probe."""
-    short = None
-    if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (width, height, duration_s)):
-        short = height > width and duration_s < SHORT_MAX_SECONDS
-    if kind in ("clip", "reel"):
-        if not short:
-            raise ValueError(f"A {kind} must be vertical (taller than wide) and under "
-                             f"{SHORT_MAX_SECONDS // 60} minutes - this file is not")
-        return None
-    return "This looks like a clip (vertical and under 3 minutes) - check it is meant to be a video" if short else None
+_SHAPE = {"clip": f"vertical (taller than wide) and under {SHORT_MAX_SECONDS // 60} minutes",
+          "reel": f"vertical (taller than wide) and under {SHORT_MAX_SECONDS // 60} minutes",
+          "video": f"horizontal (wider than tall) and {SHORT_MAX_SECONDS // 60} minutes or longer"}
+
+
+def detect_kind(edit, width, height, duration_s, now=None) -> str:
+    """The kind a new version of `edit` makes, from the browser's probe of the file; ValueError if it does not fit.
+
+    A reel must be vertical and under SHORT_MAX_SECONDS. A VOD's output takes its kind from its first version
+    (under SHORT_MAX_SECONDS a clip, which must be vertical; otherwise a video, which must be horizontal) and
+    every later version must keep it. Only abandoned uploads so far: the kind is detected afresh."""
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in (width, height, duration_s)):
+        raise ValueError("width, height and duration_s of the file are needed")
+    shaped = "clip" if duration_s < SHORT_MAX_SECONDS and height > width else \
+        "video" if duration_s >= SHORT_MAX_SECONDS and width > height else None
+    kept = edit["kind"]
+    if kept != "reel" and not _c().execute(
+            "SELECT 1 FROM iterations WHERE edit_id=? AND status!='abandoned' LIMIT 1", (edit["id"],)).fetchone():
+        kept = None
+    if kept == "reel":
+        if shaped != "clip":
+            raise ValueError(f"A reel must be {_SHAPE['reel']} - this file is not")
+        return "reel"
+    if shaped is None:
+        raise ValueError(f"This file is neither a clip ({_SHAPE['clip']}) nor a video ({_SHAPE['video']})")
+    if kept is not None and shaped != kept:
+        raise ValueError(f"This is a {kept}: every version must be {_SHAPE[kept]} - this file is not")
+    if edit["kind"] != shaped:
+        _set("edits", edit["id"], now, kind=shaped)
+    return shaped
 
 
 def _with_sources(edit):

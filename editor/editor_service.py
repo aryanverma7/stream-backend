@@ -71,11 +71,11 @@ async def ensure_edit_folder(edit_id) -> str:
         return fid
 
 
-def create_edit(project_id, name, actor, kind="video") -> dict:
+def create_edit(project_id, name, actor) -> dict:
     deletions.ensure_project_not_deleting(project_id)
     with db.transaction():
-        t = es.create_edit(project_id, name, kind=kind)
-        es.record_event(actor, "edit_created", f"{actor} added {kind} {name}", project_id=project_id, edit_id=t["id"])
+        t = es.create_edit(project_id, name)
+        es.record_event(actor, "edit_created", f"{actor} added {name}", project_id=project_id, edit_id=t["id"])
     return t
 
 
