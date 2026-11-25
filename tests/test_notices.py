@@ -33,7 +33,7 @@ async def test_streamer_posts_edits_deletes_and_editor_says_got_it():
         status, got = await a.admin("PATCH", f"/api/editor/notices/{n['id']}", {"text": "GTA 6: clips only"})
         assert status == 200 and got["text"] == "GTA 6: clips only"
         assert _outbox() == [
-            {"recipient_role": "editor", "content": "New notice from aryan: GTA 6 is out: clips this month",
+            {"recipient_role": "editor", "content": "New notice from aryan: GTA 6: clips only",
              "dedupe_key": f"notice:{n['id']}"},
             {"recipient_role": "editor", "content": "New notice from aryan: <b>second</b>",
              "dedupe_key": f"notice:{n2['id']}"}]
@@ -58,6 +58,20 @@ def test_new_text_asks_for_got_it_again():
     n = notices.create("one", "aryan")
     assert notices.mark_seen(n["id"])["seen_at"] is not None
     assert notices.update(n["id"], "two")["seen_at"] is None
+
+
+def test_edit_rewrites_the_bell_and_an_unsent_dm_only():
+    config._data.update({"discord_notifications_enabled": True})
+    unsent, sent = notices.create("old one", "aryan"), notices.create("old two", "aryan")
+    db.get().execute("UPDATE dm_outbox SET status='sent' WHERE dedupe_key=?", (f"notice:{sent['id']}",))
+    notices.update(unsent["id"], "new one")
+    notices.update(sent["id"], "new two")
+    content = {r[0]: r[1] for r in db.get().execute("SELECT dedupe_key, content FROM dm_outbox")}
+    assert content == {f"notice:{unsent['id']}": "New notice from aryan: new one",
+                       f"notice:{sent['id']}": "New notice from aryan: old two"}
+    summaries = [r[0] for r in db.get().execute("SELECT summary FROM events WHERE kind='notice_posted' ORDER BY id")]
+    assert summaries == ["aryan posted a notice: new one", "aryan posted a notice: new two"]
+    assert notices.update(999, "x") is None
 
 
 def test_delete_drops_the_unsent_dm_and_blanks_the_bell():

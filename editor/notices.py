@@ -3,7 +3,7 @@
 The streamer creates, edits and deletes them; the editor's "Got it" records seen_at (the first time only).
 A new notice is a notice_posted event (the editor's bell) and a DM to the editor, queued in the same
 transaction (dedupe notice:<id>, the text included; discord_dm truncates past 2000). Edits do not re-notify,
-but clear seen_at. A delete drops its unsent DM and blanks its bell summary.
+but clear seen_at and rewrite the bell summary and a still-pending DM. A delete drops its unsent DM and blanks its bell summary.
 """
 import time
 
@@ -62,8 +62,19 @@ def create(text, actor, now=None) -> dict:
 def update(id, text, now=None) -> "dict | None":
     text = clean(text)
     now = time.time() if now is None else now
-    # changed text is a new thing to read: the editor gets "Got it" again
-    _c().execute("UPDATE notices SET text=?, updated_at=?, seen_at=NULL WHERE id=?", (text, now, id))
+    conn = _c()
+    with db.transaction():
+        row = conn.execute("SELECT created_by, event_id FROM notices WHERE id=?", (id,)).fetchone()
+        if row is None:
+            return None
+        actor = row["created_by"]
+        # changed text is a new thing to read: the editor gets "Got it" again
+        conn.execute("UPDATE notices SET text=?, updated_at=?, seen_at=NULL WHERE id=?", (text, now, id))
+        # the bell and a still-unsent DM show the new text, never the replaced one
+        conn.execute("UPDATE events SET summary=? WHERE id=?",
+                     (f"{actor} posted a notice: {text[:200]}", row["event_id"]))
+        conn.execute("UPDATE dm_outbox SET content=? WHERE dedupe_key=? AND status='pending'",
+                     (f"New notice from {actor}: {text}", f"notice:{id}"))
     return get(id)
 
 
