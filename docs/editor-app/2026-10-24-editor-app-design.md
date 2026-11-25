@@ -445,7 +445,9 @@ the comments (click a line to seek), and search covers it.
 - **Quota:** a Final clip counts toward the short-form target together with reels ("Reels & clips");
   the API keys stay `videos` and `reels`.
 - **Migration:** `editor_store._migrate()` runs inside the lazy schema setup, once, in one transaction:
-  `tapes` -> `edits` (kind `tape` -> `video`, or no kind if it has no version), project kind `clip` ->
+  `tapes` -> `edits` (every old non-reel output gets no kind (NULL), with or without versions, because
+  its shape is unknown; the quota counts a NULL kind as a video, and the next version's upload
+  decides the kind, after which a Final output is credited by that kind), project kind `clip` ->
   `tape`, every `tape_id` column -> `edit_id`, `tape_seen` -> `edit_seen`, delete kind `tape_files` ->
   `edit_files`, event kind `tape_created` -> `edit_created`. Drive folder names stay as they are.
 - **Notice board** (`editor/notices.py`): the streamer posts short plain-text notices (at most 2000
