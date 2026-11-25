@@ -271,6 +271,41 @@ async def test_failed_start_keeps_the_kind_while_another_start_of_it_is_uploadin
     es.ensure_kind_kept(other)
 
 
+def _migrated():
+    """An output from before kinds: no kind, and a ready version whose kind is NULL."""
+    _, t = _edit()
+    old = es.create_iteration(t["id"], "old.mp4", 10, "")
+    db.get().execute("UPDATE iterations SET status='ready' WHERE id=?", (old["id"],))
+    assert old["kind"] is None and es.get_edit(t["id"])["kind"] is None
+    return t
+
+
+@pytest.mark.asyncio
+async def test_migrated_output_takes_a_vertical_short_as_a_clip(_env):
+    t = _migrated()
+    r = await svc.start_iteration_upload(t["id"], "a.mp4", 10, "video/mp4", (1080, 1920, 60))
+    assert r["kind"] == "clip" and es.get_edit(t["id"])["kind"] == "clip"
+
+
+@pytest.mark.asyncio
+async def test_migrated_output_failed_start_rolls_the_kind_back(_env, monkeypatch):
+    t = _migrated()
+    async def boom(*a, **k): raise gdrive.DriveError("x", 500)
+    monkeypatch.setattr(gdrive, "start_resumable_upload", boom)
+    with pytest.raises(gdrive.DriveError):
+        await svc.start_iteration_upload(t["id"], "a.mp4", 10, "video/mp4", (1080, 1920, 60))
+    assert es.get_edit(t["id"])["kind"] is None and len(es.list_iterations(t["id"])) == 1
+
+
+@pytest.mark.asyncio
+async def test_migrated_output_abandoned_wrong_shape_start_does_not_lock_it(_env):
+    t = _migrated()
+    video = await svc.start_iteration_upload(t["id"], "v.mp4", 10, "video/mp4", (1920, 1080, 600))
+    es.abandon_iteration(video["iteration_id"])
+    clip = await svc.start_iteration_upload(t["id"], "c.mp4", 10, "video/mp4", (1080, 1920, 60))
+    assert clip["kind"] == "clip" and es.get_edit(t["id"])["kind"] == "clip"
+
+
 @pytest.mark.asyncio
 async def test_an_abandoned_clip_cannot_come_back_once_the_output_is_a_video(_env):
     _, t = _edit()

@@ -222,7 +222,8 @@ def detect_kind(edit, width, height, duration_s, now=None, save=True) -> str:
 
     A reel must be vertical and under SHORT_MAX_SECONDS. A VOD's output takes its kind from its first version
     (under SHORT_MAX_SECONDS a clip, which must be vertical; otherwise a video, which must be horizontal) and
-    every later version must keep it. Only abandoned uploads so far: the kind is detected afresh."""
+    every later version must keep it. Only live versions that have a kind pin it: with only abandoned uploads
+    or versions from before kinds existed (kind NULL), the kind is detected afresh."""
     if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in (width, height, duration_s)):
         raise ValueError("width, height and duration_s of the file are needed")
     # shape first; the site rounds to 0.1 s, so 179.96 shows as 180.0 and still counts as short when vertical
@@ -230,7 +231,8 @@ def detect_kind(edit, width, height, duration_s, now=None, save=True) -> str:
               else "video" if width > height and duration_s >= SHORT_MAX_SECONDS else None)
     kept = edit["kind"]
     if kept != "reel" and not _c().execute(
-            "SELECT 1 FROM iterations WHERE edit_id=? AND status!='abandoned' LIMIT 1", (edit["id"],)).fetchone():
+            "SELECT 1 FROM iterations WHERE edit_id=? AND status!='abandoned' AND kind IS NOT NULL LIMIT 1",
+            (edit["id"],)).fetchone():
         kept = None
     if kept == "reel":
         if shaped != "clip":

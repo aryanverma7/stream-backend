@@ -190,10 +190,10 @@ async def start_iteration_upload(edit_id, filename, size, mime, shape=None) -> d
         with db.transaction() as conn:
             conn.execute("DELETE FROM iterations WHERE id=?", (it["id"],))
             if kind is not None and kind != was:  # no version came of it: the kind it set goes too,
-                # unless another start's version of that kind is still live
+                # unless another start's version of that kind is still live (NULL-kind versions never count)
                 conn.execute("UPDATE edits SET kind=? WHERE id=? AND kind=? AND NOT EXISTS"
-                             " (SELECT 1 FROM iterations WHERE edit_id=? AND status!='abandoned')",
-                             (was, edit_id, kind, edit_id))
+                             " (SELECT 1 FROM iterations WHERE edit_id=? AND status!='abandoned' AND kind=?)",
+                             (was, edit_id, kind, edit_id, kind))
         raise
     with db.transaction() as conn:
         conn.execute("UPDATE iterations SET upload_url=? WHERE id=?", (url, it["id"]))
