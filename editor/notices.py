@@ -15,7 +15,7 @@ MAX_CHARS = 2000
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS notices(
-  id INTEGER PRIMARY KEY, text TEXT NOT NULL, created_by TEXT NOT NULL,
+  id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, created_by TEXT NOT NULL,
   created_at REAL NOT NULL, updated_at REAL NOT NULL, seen_at REAL, event_id INTEGER);
 """
 

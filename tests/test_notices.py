@@ -70,5 +70,15 @@ def test_delete_drops_the_unsent_dm_and_blanks_the_bell():
     assert summaries == ["", "aryan posted a notice: stays"]
 
 
+def test_a_new_notice_never_reuses_a_deleted_ones_id():
+    config._data.update({"discord_notifications_enabled": True})
+    first = notices.create("one", "aryan")
+    notices.delete(first["id"])
+    second = notices.create("two", "aryan")
+    assert second["id"] != first["id"]
+    status = {r[0]: r[1] for r in db.get().execute("SELECT dedupe_key, status FROM dm_outbox")}
+    assert status[f"notice:{second['id']}"] == "pending"
+
+
 def test_limit_is_2000_characters():
     assert notices.create("x" * 2000, "aryan")["text"] == "x" * 2000
