@@ -186,7 +186,7 @@ async def test_kind_is_detected_from_the_first_version_and_kept(drive):
         path = f"/api/editor/edits/{clip['id']}/iterations"
         status, got = await a.editor("POST", path, up)
         assert status == 400 and "width, height and duration_s" in got["error"]
-        for odd in ({"width": 1920, "height": 1080, "duration_s": 30}, {**tall_short, "duration_s": 180}):
+        for odd in ({"width": 1920, "height": 1080, "duration_s": 30}, {**tall_short, "duration_s": 180.05}):
             status, got = await a.editor("POST", path, {**up, **odd})
             assert status == 400 and "neither a clip" in got["error"]
         assert es.list_iterations(clip["id"]) == []  # refused before any row or Drive session

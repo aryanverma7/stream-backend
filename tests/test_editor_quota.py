@@ -53,6 +53,16 @@ def deliver(p, kind, uploaded, finalised=None, name="cut"):
     return es.get_edit(t["id"])
 
 
+def test_a_final_output_with_no_kind_counts_as_a_video():
+    eq.start_week(MON)
+    t = es.create_edit(project()["id"], "old", now=MON)  # e.g. migrated with versions that never got a kind
+    it = es.create_iteration(t["id"], "a.mp4", 1, "", now=MON)
+    es.complete_iteration(it["id"], "F", now=MON)
+    es.update_edit(t["id"], status="final", now=MON)
+    assert es.get_edit(t["id"])["kind"] is None
+    assert eq.summary(MON)["weeks"][0]["done"] == {"videos": 1, "reels": 0}
+
+
 def test_week_is_monday_to_sunday():
     assert eq.week_of(MON) == "2026-11-16"
     assert eq.week_of(ts(2026, 11, 22, 23)) == "2026-11-16"

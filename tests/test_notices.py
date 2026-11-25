@@ -54,5 +54,21 @@ async def test_streamer_posts_edits_deletes_and_editor_says_got_it():
         assert [x["id"] for x in (await a.editor("GET", "/api/editor/notices"))[1]["notices"]] == [n2["id"]]
 
 
+def test_new_text_asks_for_got_it_again():
+    n = notices.create("one", "aryan")
+    assert notices.mark_seen(n["id"])["seen_at"] is not None
+    assert notices.update(n["id"], "two")["seen_at"] is None
+
+
+def test_delete_drops_the_unsent_dm_and_blanks_the_bell():
+    config._data.update({"discord_notifications_enabled": True})
+    gone, kept = notices.create("secret plan", "aryan"), notices.create("stays", "aryan")
+    assert notices.delete(gone["id"]) and not notices.delete(gone["id"])
+    status = {r[0]: r[1] for r in db.get().execute("SELECT dedupe_key, status FROM dm_outbox")}
+    assert status == {f"notice:{gone['id']}": "dropped", f"notice:{kept['id']}": "pending"}
+    summaries = [r[0] for r in db.get().execute("SELECT summary FROM events WHERE kind='notice_posted' ORDER BY id")]
+    assert summaries == ["", "aryan posted a notice: stays"]
+
+
 def test_limit_is_2000_characters():
     assert notices.create("x" * 2000, "aryan")["text"] == "x" * 2000

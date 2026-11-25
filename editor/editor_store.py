@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS iterations(
   version INTEGER NOT NULL, filename TEXT NOT NULL, size INTEGER NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('uploading','ready','deleting','deleted','abandoned')),
   drive_file_id TEXT, upload_url TEXT, checks_json TEXT, thumbnail BLOB, uploaded_at REAL,
-  created_at REAL NOT NULL, updated_at REAL NOT NULL, UNIQUE (edit_id, version));
+  created_at REAL NOT NULL, updated_at REAL NOT NULL, kind TEXT, UNIQUE (edit_id, version));
 CREATE TABLE IF NOT EXISTS reel_sources(
   edit_id INTEGER NOT NULL REFERENCES edits(id),
   project_id INTEGER NOT NULL UNIQUE REFERENCES projects(id), PRIMARY KEY (edit_id, project_id));
@@ -54,6 +54,8 @@ def _rebuild(conn, table, kinds, extra=()):
     """Recreate `table` with its `kind` CHECK values renamed (SQLite cannot alter a CHECK), keeping every row."""
     sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()[0]
     for old, new in (*((f"'{o}'", f"'{n}'") for o, n in kinds.items()), *extra):
+        if old not in sql:  # an unexpected schema: stop rather than rebuild the table with the old CHECK
+            raise RuntimeError(f"editor schema migration: {old!r} not found in table {table}; nothing was changed")
         sql = sql.replace(old, new)
     conn.execute(f"CREATE TABLE {table}_new" + sql[sql.index("("):])
     cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})")]
@@ -109,6 +111,8 @@ def _c():
                 db.ensure("UPDATE edits SET final_upload_at=(SELECT MAX(COALESCE(i.uploaded_at, i.created_at))"
                           " FROM iterations i WHERE i.edit_id=edits.id AND i.status IN ('ready','deleted'))"
                           " WHERE status='final';")
+    if "kind" not in {r["name"] for r in conn.execute("PRAGMA table_info(iterations)")}:
+        db.ensure("ALTER TABLE iterations ADD COLUMN kind TEXT;")  # the edit's kind when the version started
     return conn
 
 
@@ -222,8 +226,8 @@ def detect_kind(edit, width, height, duration_s, now=None, save=True) -> str:
     every later version must keep it. Only abandoned uploads so far: the kind is detected afresh."""
     if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in (width, height, duration_s)):
         raise ValueError("width, height and duration_s of the file are needed")
-    shaped = "clip" if duration_s < SHORT_MAX_SECONDS and height > width else \
-        "video" if duration_s >= SHORT_MAX_SECONDS and width > height else None
+    short = duration_s < SHORT_MAX_SECONDS + 0.05  # the site rounds to 0.1 s: 179.96 shows as 180.0
+    shaped = "clip" if short and height > width else "video" if not short and width > height else None
     kept = edit["kind"]
     if kept != "reel" and not _c().execute(
             "SELECT 1 FROM iterations WHERE edit_id=? AND status!='abandoned' LIMIT 1", (edit["id"],)).fetchone():
@@ -295,13 +299,23 @@ def next_version(edit_id):
 
 
 def create_iteration(edit_id, filename, size, upload_url, now=None):
+    """A new version, stamped with the edit's kind as it is now (ensure_kind_kept compares later)."""
     now = time.time() if now is None else now
     cur = _c().execute(
-        "INSERT INTO iterations(edit_id, version, filename, size, status, upload_url, created_at, updated_at)"
+        "INSERT INTO iterations(edit_id, version, filename, size, status, upload_url, created_at, updated_at, kind)"
         " VALUES(?, (SELECT COALESCE(MAX(version), 0) + 1 FROM iterations WHERE edit_id=?),"
-        " ?,?,'uploading',?,?,?)",
-        (edit_id, edit_id, filename, size, upload_url, now, now))
+        " ?,?,'uploading',?,?,?, (SELECT kind FROM edits WHERE id=?))",
+        (edit_id, edit_id, filename, size, upload_url, now, now, edit_id))
     return get_iteration(cur.lastrowid)
+
+
+def ensure_kind_kept(it) -> None:
+    """ValueError when a version started as one kind and its output has since become another (a clip
+    abandoned, then a video uploaded): it may not be resumed or completed."""
+    kind = _c().execute("SELECT kind FROM edits WHERE id=?", (it["edit_id"],)).fetchone()[0]
+    if it["kind"] is not None and it["kind"] != kind:
+        raise ValueError(f"This version was started as a {it['kind']}, but this is now a {kind or 'new output'}:"
+                         " upload it again as a new version")
 
 
 def get_iteration(id):
@@ -331,6 +345,7 @@ def complete_iteration(id, file_id, now=None, actor=None):
             return row, False
         if row["status"] not in ("uploading", "abandoned"):
             raise ValueError(f"cannot complete an iteration that is {row['status']}")
+        ensure_kind_kept(row)
         conn.execute("UPDATE iterations SET status='ready', drive_file_id=?, uploaded_at=?, updated_at=?"
                      " WHERE id=?", (file_id, now, now, id))
         conn.execute("UPDATE edits SET status='in_review', updated_at=?"

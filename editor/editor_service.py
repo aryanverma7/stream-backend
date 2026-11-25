@@ -181,6 +181,7 @@ async def start_iteration_upload(edit_id, filename, size, mime, shape=None) -> d
     es._c()
     # The kind is checked and saved with the version row: two starts racing on a new output cannot both win.
     with db.transaction():
+        was = es.get_edit(edit_id)["kind"]
         kind = es.detect_kind(es.get_edit(edit_id), *shape) if shape else None
         it = es.create_iteration(edit_id, filename, size, "")
     try:
@@ -188,6 +189,8 @@ async def start_iteration_upload(edit_id, filename, size, mime, shape=None) -> d
     except BaseException:
         with db.transaction() as conn:
             conn.execute("DELETE FROM iterations WHERE id=?", (it["id"],))
+            if kind is not None and kind != was:  # no version came of it: the kind it set goes too
+                conn.execute("UPDATE edits SET kind=? WHERE id=? AND kind=?", (was, edit_id, kind))
         raise
     with db.transaction() as conn:
         conn.execute("UPDATE iterations SET upload_url=? WHERE id=?", (url, it["id"]))
@@ -202,10 +205,12 @@ async def renew_iteration_upload(iteration_id, mime) -> "str | None":
     project_id = _project_of(it["edit_id"])
     deletions.ensure_project_not_deleting(project_id)
     deletions.ensure_edit_not_deleting(it["edit_id"])
+    es.ensure_kind_kept(it)
     url = await _upload_session(it, await ensure_edit_folder(it["edit_id"]), mime)
     deletions.ensure_project_not_deleting(project_id)  # after the awaits, right before the write
     deletions.ensure_edit_not_deleting(it["edit_id"])
     with db.transaction() as conn:
+        es.ensure_kind_kept(it)
         # updated_at restarts reconcile's 8-day abandon clock: a renewal is someone still uploading.
         if not conn.execute("UPDATE iterations SET upload_url=?, status='uploading', updated_at=? WHERE id=?"
                             " AND status IN ('uploading','abandoned')",

@@ -247,6 +247,31 @@ async def test_failed_session_start_leaves_no_row_and_frees_version(_env, monkey
 
 
 @pytest.mark.asyncio
+async def test_failed_session_start_restores_the_kind_it_set(_env, monkeypatch):
+    _, t = _edit()
+    async def boom(*a, **k): raise gdrive.DriveError("x", 500)
+    monkeypatch.setattr(gdrive, "start_resumable_upload", boom)
+    with pytest.raises(gdrive.DriveError):
+        await svc.start_iteration_upload(t["id"], "a.mp4", 10, "video/mp4", (1080, 1920, 60))
+    assert es.get_edit(t["id"])["kind"] is None and es.list_iterations(t["id"]) == []
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_clip_cannot_come_back_once_the_output_is_a_video(_env):
+    _, t = _edit()
+    clip = await svc.start_iteration_upload(t["id"], "a.mp4", 10, "video/mp4", (1080, 1920, 60))
+    es.abandon_iteration(clip["iteration_id"])
+    video = await svc.start_iteration_upload(t["id"], "b.mp4", 10, "video/mp4", (1920, 1080, 600))
+    assert video["kind"] == "video" and es.get_iteration(clip["iteration_id"])["kind"] == "clip"
+    with pytest.raises(ValueError, match="started as a clip, but this is now a video"):
+        await svc.renew_iteration_upload(clip["iteration_id"], "video/mp4")
+    _env["file"] = {"parents": ["F2"], "appProperties": {"iteration_id": str(clip["iteration_id"])}, "size": 10}
+    with pytest.raises(ValueError, match="started as a clip"):
+        await svc.complete_iteration_upload(clip["iteration_id"], "fid", "x")
+    assert es.get_iteration(clip["iteration_id"])["status"] == "abandoned"
+
+
+@pytest.mark.asyncio
 async def test_refused_upload_makes_no_folder_or_row(_env):
     _, t = _edit()
     _env["quota"] = {"limit": 10, "usage": 10}

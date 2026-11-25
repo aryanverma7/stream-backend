@@ -122,7 +122,7 @@ def set_excused(week: str, excused: bool, note: str = "") -> None:
 
 def _credited(since: float) -> list:
     return [dict(r) for r in _c().execute(
-        "SELECT t.id, t.name, t.kind, t.project_id, p.name AS project_name, t.final_upload_at"
+        "SELECT t.id, t.name, COALESCE(t.kind, 'video') AS kind, t.project_id, p.name AS project_name, t.final_upload_at"
         " FROM edits t JOIN projects p ON p.id=t.project_id"
         " WHERE t.status='final' AND t.quota_exempt=0 AND t.final_upload_at IS NOT NULL AND t.final_upload_at>=?"
         " ORDER BY t.final_upload_at", (since,)).fetchall()]

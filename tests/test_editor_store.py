@@ -242,6 +242,24 @@ INSERT INTO delete_requests VALUES(40,'tape_files',10,'Highlights','aryan',1,2,'
 """
 
 
+def test_migration_stops_on_an_unexpected_check(tmp_path):
+    path = tmp_path / "odd.db"
+    old = sqlite3.connect(path)
+    old.executescript(_OLD_SCHEMA.replace("CHECK (kind IN ('tape','reel'))", "CHECK (kind IN ('tape','reel','x'))"))
+    old.close()
+    db.use_path_for_tests(path)
+    with pytest.raises(RuntimeError, match="not found in table edits"):
+        es._c()
+    assert db.get().execute("SELECT COUNT(*) FROM tapes").fetchone()[0] == 3  # rolled back whole
+
+
+def test_short_limit_allows_for_the_site_rounding_to_a_tenth(tmp_path):
+    db.use_path_for_tests(tmp_path / "x.db")
+    p = es.create_project("Ranked", "2026-10-20", "", "v.mp4", 5)
+    assert es.detect_kind(es.create_edit(p["id"], "a"), 1080, 1920, 180.04) == "clip"
+    assert es.detect_kind(es.create_edit(p["id"], "b"), 1920, 1080, 180.05) == "video"
+
+
 def test_old_schema_is_migrated_in_place_and_keeps_its_data(tmp_path):
     from editor import deletions, editor_personal as ep
     path = tmp_path / "old.db"
