@@ -257,6 +257,21 @@ async def test_failed_session_start_restores_the_kind_it_set(_env, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_failed_start_keeps_the_kind_while_another_start_of_it_is_uploading(_env, monkeypatch):
+    _, t = _edit()
+    async def boom(*a, **k):  # a second start of the same kind slips in while this one waits on Drive
+        es.create_iteration(t["id"], "b.mp4", 10, "")
+        raise gdrive.DriveError("x", 500)
+    monkeypatch.setattr(gdrive, "start_resumable_upload", boom)
+    with pytest.raises(gdrive.DriveError):
+        await svc.start_iteration_upload(t["id"], "a.mp4", 10, "video/mp4", (1080, 1920, 60))
+    (other,) = es.list_iterations(t["id"])
+    other = es.get_iteration(other["id"])
+    assert es.get_edit(t["id"])["kind"] == "clip" and other["kind"] == "clip"
+    es.ensure_kind_kept(other)
+
+
+@pytest.mark.asyncio
 async def test_an_abandoned_clip_cannot_come_back_once_the_output_is_a_video(_env):
     _, t = _edit()
     clip = await svc.start_iteration_upload(t["id"], "a.mp4", 10, "video/mp4", (1080, 1920, 60))

@@ -273,7 +273,7 @@ def test_old_schema_is_migrated_in_place_and_keeps_its_data(tmp_path):
     assert es.get_project(1)["kind"] == "vod" and es.get_project(2)["kind"] == "tape"
     assert es.get_project(2)["reel_edit_id"] == 11
     video, reel = es.get_edit(10), es.get_edit(11)
-    assert video["kind"] == "video" and video["status"] == "final" and video["final_upload_at"] == 50
+    assert video["kind"] is None and video["status"] == "final" and video["final_upload_at"] == 50
     assert reel["kind"] == "reel" and reel["source_project_ids"] == [2]
     assert es.list_iterations(10)[0]["id"] == 20
     [ev] = es.events_since(0)
@@ -290,6 +290,8 @@ def test_old_schema_is_migrated_in_place_and_keeps_its_data(tmp_path):
     short = es.create_edit(1, "Short")
     assert short["kind"] is None and es.get_edit(12)["kind"] is None  # no version yet: no kind
     assert es.detect_kind(short, 1080, 1920, 30) == "clip" and es.get_edit(short["id"])["kind"] == "clip"
+    # an old output with versions has no kind either: a vertical short next version makes it a clip
+    assert es.detect_kind(es.get_edit(10), 1080, 1920, 30) == "clip" and es.get_edit(10)["kind"] == "clip"
     with pytest.raises(sqlite3.IntegrityError):  # foreign keys still enforced against edits
         conn.execute("INSERT INTO iterations(edit_id, version, filename, size, status, created_at, updated_at)"
                      " VALUES(999,1,'x',1,'uploading',1,1)")

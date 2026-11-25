@@ -79,9 +79,8 @@ def _migrate():
             conn.execute("ALTER TABLE tapes RENAME TO edits")  # also repoints every REFERENCES tapes(id)
             _rebuild(conn, "edits", {"tape": "video"}, (("kind TEXT NOT NULL DEFAULT 'video' CHECK (kind IN ('video','reel'))",
                                                           "kind TEXT CHECK (kind IN ('video','clip','reel'))"),))
-            # no version yet: no kind, the first upload decides it
-            conn.execute("UPDATE edits SET kind=NULL WHERE kind='video'"
-                         " AND NOT EXISTS (SELECT 1 FROM iterations i WHERE i.tape_id=edits.id)")
+            # the old words never told video from clip: no kind, the next upload decides it (quota counts NULL as video)
+            conn.execute("UPDATE edits SET kind=NULL WHERE kind='video'")
             _rebuild(conn, "projects", {"clip": "tape"})
             if "delete_requests" in tables:
                 _rebuild(conn, "delete_requests", {"tape_files": "edit_files"})
