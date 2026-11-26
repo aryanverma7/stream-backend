@@ -657,6 +657,23 @@ async def get_transcript(request, me):
     return _ok({"status": row["status"], "segments": row["segments"], "error": row["error"]})
 
 
+@_route
+async def edit_transcript_line(request, me):
+    it = _iteration(_id(request))
+    try:
+        index = int(request.match_info["index"])
+    except ValueError:
+        raise _Fail(400, "No such line")
+    body = await _body(request)
+    try:
+        row = tr.edit_line(it["id"], index, body.get("text"), me["username"])
+    except tr.NotDone as e:
+        raise _Fail(409, str(e))
+    except ValueError as e:
+        raise _Fail(400, str(e))
+    return _ok({"status": row["status"], "segments": row["segments"], "error": row["error"]})
+
+
 # -- notification bell (both roles; whose bell is always the session's, never a parameter) --
 
 def _non_negative_int(v):
@@ -855,6 +872,7 @@ def register_routes(app: web.Application) -> None:
     r.add_put(f"{p}/transcriber", put_transcriber)
     r.add_post(f"{p}/iterations/{{id:{_ID}}}/transcript", request_transcript)
     r.add_get(f"{p}/iterations/{{id:{_ID}}}/transcript", get_transcript)
+    r.add_put(f"{p}/iterations/{{id:{_ID}}}/transcript/lines/{{index:\\d{{1,6}}}}", edit_transcript_line)
     r.add_get(f"{p}/notifications", notifications)
     r.add_post(f"{p}/notifications/seen", notifications_seen)
     r.add_get(f"{p}/notices", list_notices)

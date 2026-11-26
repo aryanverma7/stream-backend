@@ -165,6 +165,32 @@ def validate_segments(segments) -> list:
     return out
 
 
+class NotDone(Exception):
+    """The transcript is not finished, so there is no line to fix."""
+
+
+def edit_line(iteration_id, index, text, actor, now=None) -> dict:
+    """Fix one line's text (both roles). Marks the line `edited`; a later request never overwrites it."""
+    now = _now(now)
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("A line cannot be empty")
+    text = text.strip()
+    if len(text) > MAX_TEXT:
+        raise ValueError(f"A line can be at most {MAX_TEXT} characters")
+    conn = _c()
+    with db.transaction():
+        row = conn.execute("SELECT status, segments FROM transcripts WHERE iteration_id=?", (iteration_id,)).fetchone()
+        if row is None or row["status"] != "done":
+            raise NotDone("This transcript is not finished yet")
+        segs = json.loads(row["segments"] or "[]")
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(segs):
+            raise ValueError("No such line")
+        segs[index] = {**segs[index], "text": text, "edited": True}
+        conn.execute("UPDATE transcripts SET segments=?, updated_at=? WHERE iteration_id=?",
+                     (json.dumps(segs), now, iteration_id))
+    return get(iteration_id)
+
+
 def forget(iteration_ids) -> None:
     ids = list(iteration_ids)
     if ids:
