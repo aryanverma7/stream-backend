@@ -17,6 +17,7 @@ from core import db
 from editor import editor_attachments as ea
 from editor import editor_store as es
 from editor import gdrive
+from editor import transcripts
 from core import scheduler
 from core.logger import get_logger
 
@@ -63,6 +64,7 @@ def _c():
     # Both DDLs before any transaction: executescript COMMITs, which would end one early.
     es._c()
     ea._c()
+    transcripts._c()  # _finalize forgets transcripts inside its transaction
     db.ensure(_DDL)
     return db.get()
 
@@ -301,6 +303,8 @@ def _finalize(req, now):
         conn.execute("UPDATE iterations SET status='deleted', updated_at=? WHERE id IN"
                      " (SELECT target_id FROM delete_files WHERE request_id=? AND target_kind='iteration')",
                      (now, req["id"]))
+        transcripts.forget([r[0] for r in conn.execute(
+            "SELECT target_id FROM delete_files WHERE request_id=? AND target_kind='iteration'", (req["id"],))])
         if kind == "edit_files":
             conn.execute("UPDATE edits SET files_deleted_at=?, updated_at=? WHERE id=?", (now, now, tid))
             ea.mark_deleted(conn, [tid], now)

@@ -11,6 +11,7 @@ from editor import editor_comments
 from editor import editor_store as es
 from editor import gdrive
 from editor import gdrive_oauth
+from editor import transcripts
 from core.logger import get_logger
 
 log = get_logger("EditorService")
@@ -240,6 +241,7 @@ async def complete_iteration_upload(iteration_id, file_id, actor) -> dict:
     row, _ = es.complete_iteration(iteration_id, file_id, actor=actor)  # records iteration_ready atomically
     # Every time, not only on the transition: idempotent, so a retry after a crash here still carries over.
     editor_comments.carry_over(iteration_id)
+    transcripts.on_iteration_ready(iteration_id)  # queued only while "Auto for new versions" is on
     # The editor's own Google account opens per-version links; without this Drive asks him to request access.
     # Every completion (re-sharing is harmless), and never a reason to fail one.
     email = config.get("editor_google_email", "")

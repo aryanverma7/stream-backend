@@ -416,13 +416,19 @@ from the left, with a switch. The existing V key (switch at the same time) stays
 replies, uploaded from the browser straight to Drive into the tape's folder, and deleted with the
 tape's files.
 
-**Auto transcript (Hinglish), postponed 2026-10-31** (no access to the gaming PC). Off by default. A switch in the editor's top bar (either user)
-turns it on for every new version; each version also has a "Make transcript" button. Only review
-versions are transcribed, never VODs. Output is **romanized Hinglish** ("ye clutch dekho"), from the
-Hindi2Hinglish Whisper fine-tune, run on the **gaming PC's NVIDIA GPU** while the PC is on and not
-live. The PC downloads the version, extracts the audio, transcribes, posts the segments to the
-backend (stored in `app.db`) and deletes its temporary files. The player shows the transcript beside
-the comments (click a line to seek), and search covers it.
+**Auto transcript (Hinglish), decided with the streamer 2026-11-26.** Only review versions are transcribed, never
+VODs. Output is **romanized Hinglish** ("ye clutch dekho") from Oriserve's Whisper-Hindi2Hinglish-Apex (apache-2.0,
+whisper-large-v3-turbo base), converted once to CTranslate2 float16 and run with faster-whisper on the **gaming PC's
+NVIDIA GPU** (RTX 4070 SUPER, 12 GB) by a **Windows** program (`transcriber.py`, started at login like the uploader;
+not WSL, which stops when no terminal is open). One master switch in the editor's top bar, **Transcriber: On /
+Paused**, default **Paused**, either user can flip it (from a phone too); "Auto for new versions" (default off)
+queues every new version; each version has a "Make transcript" button. A job starts only when the switch is On, the
+streamer is not live, no full-screen game or listed game process is running, and the GPU has been nearly idle
+(< 15 %) for 10 minutes; a game, full screen or going live during a job stops it within seconds and the job goes
+back in the queue. The PC downloads the version straight from Drive (token from the backend, never in a URL),
+transcribes it, posts the lines to the backend (stored in `app.db`) and deletes its temporary files. The player
+shows the transcript beside the comments (click a line to seek, the current line follows playback), and search
+covers it.
 
 **Roadmap clean-up.** Tick what is built; the rest becomes tasks in the plan above.
 
