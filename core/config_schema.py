@@ -21,6 +21,20 @@ SECTIONS = [
 
 _SECRET_RE = re.compile(r"secret|token|password|api_key|webhook", re.I)
 _KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+DISCORD_ID_KEYS = ("editor_discord_user_id", "streamer_discord_user_id")
+_DISCORD_ID_RE = re.compile(r"^<@!?(\d+)>$|^(\d+)$")
+DISCORD_ID_HELP = ("Paste the numeric user ID: Discord > Settings > Advanced > Developer Mode on,"
+                   " then right-click the person > Copy User ID.")
+
+
+def clean_discord_id(value) -> "str | None":
+    """'' or 17-20 digits (spaces and a <@id>/<@!id> mention wrapper removed); None when not an id."""
+    s = "".join(str(value or "").split())
+    m = _DISCORD_ID_RE.match(s)
+    if not s:
+        return ""
+    digits = m and (m.group(1) or m.group(2))
+    return digits if digits and 17 <= len(digits) <= 20 else None
 
 # key: (section, type, label, description, extras)
 # extras "needed": True means the settings page flags the key while it is empty;
@@ -273,4 +287,9 @@ def validate_update(updates: dict, data: dict) -> "tuple[str, str] | None":
             err = _check_type(spec, value)
             if err:
                 return (key, err)
+        if key in DISCORD_ID_KEYS:
+            cleaned = clean_discord_id(value)
+            if cleaned is None:
+                return (key, DISCORD_ID_HELP)
+            updates[key] = cleaned  # store the digits, not the mention the user pasted
     return None

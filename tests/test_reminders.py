@@ -22,7 +22,7 @@ def setup(monkeypatch, tmp_path):
     time.tzset()
     db.use_path_for_tests(tmp_path / "t.db")
     monkeypatch.setattr(config, "_data", {"discord_notifications_enabled": True,
-                                          "editor_discord_user_id": "E1"})
+                                          "editor_discord_user_id": "123456789012345678"})
     yield
     monkeypatch.undo()
     time.tzset()

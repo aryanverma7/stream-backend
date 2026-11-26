@@ -89,3 +89,16 @@ def test_http_port_must_be_a_whole_number_in_range():
     for bad in (80, 70000, 8765.5):
         assert validate_update({"http_port": bad}, {"http_port": 8765}) is not None, bad
     assert validate_update({"http_port": 8080}, {"http_port": 8765}) is None
+
+
+def test_discord_user_ids_must_be_numeric_and_are_stored_cleaned():
+    for raw, clean in (("", ""), ("123456789012345678", "123456789012345678"),
+                       (" <@!123456789012345678> ", "123456789012345678"),
+                       ("<@12345678901234567>", "12345678901234567"),
+                       ("1234 5678 9012 3456 78", "123456789012345678")):
+        updates = {"editor_discord_user_id": raw}
+        assert validate_update(updates, {}) is None, raw
+        assert updates == {"editor_discord_user_id": clean}
+    for bad in ("someguy", "@someguy", "1234", "<#123456789012345678>", "123456789012345678901"):
+        err = validate_update({"streamer_discord_user_id": bad}, {})
+        assert err and err[0] == "streamer_discord_user_id" and "Copy User ID" in err[1], bad

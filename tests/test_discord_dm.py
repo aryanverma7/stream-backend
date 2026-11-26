@@ -81,6 +81,17 @@ async def test_403_raises_with_status():
         with pytest.raises(discord_dm.DiscordError) as e:
             await discord_dm.send_dm("u1", "hi")
     assert e.value.status == 403
+    assert str(e.value) == "Discord refused opening the DM (403, code 50007): Cannot send"
+
+
+@pytest.mark.asyncio
+async def test_send_failure_names_the_call():
+    db.meta_set("discord_dm_channel_u1", "c1")
+    with aioresponses() as m:
+        m.post(f"{API}/channels/c1/messages", status=400, payload={"code": 50035, "message": "Invalid Form Body"})
+        with pytest.raises(discord_dm.DiscordError) as e:
+            await discord_dm.send_dm("u1", "hi")
+    assert str(e.value) == "Discord refused sending (400, code 50035): Invalid Form Body"
 
 
 @pytest.mark.asyncio

@@ -11,12 +11,15 @@ from editor import notify_outbox as ob
 from core.config import config
 
 
+E1, S1 = "123456789012345678", "876543210987654321"
+
+
 @pytest.fixture(autouse=True)
 def setup(monkeypatch, tmp_path):
     db.use_path_for_tests(tmp_path / "t.db")
     ob._logged_roles.clear()
     monkeypatch.setattr(config, "_data", {"discord_notifications_enabled": True,
-                                          "editor_discord_user_id": "E1", "streamer_discord_user_id": "S1"})
+                                          "editor_discord_user_id": E1, "streamer_discord_user_id": S1})
     sent = []
 
     async def ok(uid, content):
@@ -47,7 +50,7 @@ def test_outbox_dedupes_and_survives_restart(tmp_path):
 async def test_sends_and_marks_sent(setup):
     ob.enqueue("streamer", "yo", "k", now=1)
     await ob.deliver_due(5)
-    assert setup == [("S1", "yo")]
+    assert setup == [(S1, "yo")]
     assert row()["status"] == "sent" and row()["sent_at"] == 5
     assert ob.status()["last_sent_at"] == 5
     await ob.deliver_due(6)
@@ -102,7 +105,7 @@ async def test_unexpected_exception_goes_back_to_pending(monkeypatch):
     ob.enqueue("editor", "hi", "k", now=1)
     await ob.deliver_due(100)
     r = row()
-    assert (r["status"], r["attempts"], r["last_error"]) == ("pending", 1, "ValueError")
+    assert (r["status"], r["attempts"], r["last_error"]) == ("pending", 1, "Editor: ValueError")
     assert ob.status()["sending"] == 0
 
 
@@ -128,8 +131,8 @@ async def test_failure_backs_off_and_keeps_pending(monkeypatch):
     ob.enqueue("editor", "hi", "k", now=1)
     await ob.deliver_due(100)
     r = row()
-    assert (r["status"], r["attempts"], r["next_attempt_at"], r["last_error"]) == ("pending", 1, 130, "boom")
-    assert ob.status()["last_error"] == "boom" and ob.status()["pending"] == 1
+    assert (r["status"], r["attempts"], r["next_attempt_at"], r["last_error"]) == ("pending", 1, 130, "Editor: boom")
+    assert ob.status()["last_error"] == "Editor: boom" and ob.status()["pending"] == 1
     await ob.deliver_due(110)  # not due yet
     assert row()["attempts"] == 1
 
@@ -147,6 +150,19 @@ async def test_success_clears_last_error(monkeypatch):
     monkeypatch.setattr(discord_dm, "send_dm", ok)
     await ob.deliver_due(1000)
     assert ob.status()["last_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_non_numeric_id_never_calls_discord_and_recovers_once_fixed(setup, monkeypatch):
+    monkeypatch.setitem(config._data, "editor_discord_user_id", "someguy#1234")
+    ob.enqueue("editor", "hi", "k", now=1)
+    await ob.deliver_due(5)
+    assert setup == [] and (row()["status"], row()["attempts"]) == ("pending", 0)
+    assert ob.status()["last_error"] == ("Editor Discord user ID is not a numeric user ID:"
+                                         " fix it in Settings > Editor app.")
+    monkeypatch.setitem(config._data, "editor_discord_user_id", f" <@!{E1}> ")  # old bad value, cleanable
+    await ob.deliver_due(6)
+    assert setup == [(E1, "hi")] and row()["status"] == "sent" and ob.status()["last_error"] is None
 
 
 @pytest.mark.asyncio
