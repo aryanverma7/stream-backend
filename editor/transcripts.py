@@ -185,9 +185,9 @@ def edit_line(iteration_id, index, text, actor, now=None) -> dict:
         segs = json.loads(row["segments"] or "[]")
         if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(segs):
             raise ValueError("No such line")
-        segs[index] = {**segs[index], "text": text, "edited": True}
+        segs[index] = {**segs[index], "text": text, "edited": True, "edited_by": actor}
         conn.execute("UPDATE transcripts SET segments=?, updated_at=? WHERE iteration_id=?",
-                     (json.dumps(segs), now, iteration_id))
+                     (json.dumps(segs, ensure_ascii=False), now, iteration_id))  # as complete(): search LIKE reads it raw
     return get(iteration_id)
 
 
