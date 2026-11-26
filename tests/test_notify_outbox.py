@@ -161,8 +161,19 @@ async def test_non_numeric_id_never_calls_discord_and_recovers_once_fixed(setup,
     assert ob.status()["last_error"] == ("Editor Discord user ID is not a numeric user ID:"
                                          " fix it in Settings > Editor app.")
     monkeypatch.setitem(config._data, "editor_discord_user_id", f" <@!{E1}> ")  # old bad value, cleanable
-    await ob.deliver_due(6)
+    await ob.deliver_due(5 + ob._BAD_ID_RETRY_SECONDS)
     assert setup == [(E1, "hi")] and row()["status"] == "sent" and ob.status()["last_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_pile_of_bad_id_rows_does_not_starve_the_other_role(setup, monkeypatch):
+    monkeypatch.setitem(config._data, "editor_discord_user_id", "someguy")
+    for i in range(21):
+        ob.enqueue("editor", f"e{i}", f"e{i}", now=1)
+    ob.enqueue("streamer", "s", "s", now=1)
+    await ob.deliver_due(5)
+    await ob.deliver_due(6)
+    assert setup == [(S1, "s")]
 
 
 @pytest.mark.asyncio

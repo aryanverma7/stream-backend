@@ -58,6 +58,9 @@ def enqueue(recipient_role: str, content: str, dedupe_key: str, now: "float | No
     return cur.rowcount == 1
 
 
+_BAD_ID_RETRY_SECONDS = 60
+
+
 def reset_stuck_sending() -> int:
     """Startup: 'sending' -> 'pending'. Accepted duplicate: Discord may have taken the message and the
     power died before the row was marked sent, so that one DM can arrive twice. A second path: our client
@@ -75,6 +78,9 @@ async def _deliver_one(row, now: float) -> None:
     if user_id is None:  # a username or mention: Discord would answer 400; wait pending until it is fixed
         db.meta_set(_ERR_KEY, f"{role.capitalize()} Discord user ID is not a numeric user ID:"
                               " fix it in Settings > Editor app.")
+        with db.transaction():  # step aside for a minute: a pile of these must not starve the other role's DMs
+            conn.execute("UPDATE dm_outbox SET next_attempt_at=? WHERE id=? AND status='pending'",
+                         (now + _BAD_ID_RETRY_SECONDS, row["id"]))
         return
     if not user_id:
         if role not in _logged_roles:
