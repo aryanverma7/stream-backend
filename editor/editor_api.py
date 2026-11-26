@@ -28,6 +28,7 @@ from editor import gdrive_oauth
 from editor import notices
 from editor import notify_outbox
 from editor import share_links as sl
+from editor import transcripts as tr
 from core import scheduler
 
 ONLY_STREAMER = "Only the streamer can do this."
@@ -611,7 +612,49 @@ async def set_resolved(request, me):
 
 @_route
 async def search(request, me):
-    return _ok({"hits": ec.search(request.query.get("q", ""))})
+    q = request.query.get("q", "")
+    hits = ec.search(q)
+    for h in tr.search(q):  # after the comment hits; snippet/start_s keep the comment hit's keys
+        hits.append({"kind": "transcript", "comment_id": None, **h, "snippet": h["text"], "start_s": h["start"]})
+    return _ok({"hits": hits})
+
+
+# -- transcripts (both roles) --
+
+def _transcriber_view():
+    last_seen = db.meta_get("transcriber_last_seen")
+    return {**tr.settings(), "last_seen": float(last_seen) if last_seen else None, **tr.queue_status()}
+
+
+@_route
+async def get_transcriber(request, me):
+    return _ok(_transcriber_view())
+
+
+@_route
+async def put_transcriber(request, me):
+    body = await _body(request)
+    for key in ("enabled", "auto"):
+        if body.get(key) is not None and not isinstance(body[key], bool):
+            raise _Fail(400, f"{key} must be true or false")
+    tr.set_settings(body.get("enabled"), body.get("auto"))
+    return _ok(_transcriber_view())
+
+
+@_route
+async def request_transcript(request, me):
+    it = _iteration(_id(request))
+    if it["status"] != "ready":
+        raise _Fail(409, "This version is not ready")
+    return _ok(tr.request(it["id"], me["username"]))
+
+
+@_route
+async def get_transcript(request, me):
+    row = tr.get(_iteration(_id(request))["id"])
+    if row is None:
+        return _ok({"status": "none", "segments": None, "error": None})
+    return _ok({"status": row["status"], "segments": row["segments"], "error": row["error"]})
 
 
 # -- notification bell (both roles; whose bell is always the session's, never a parameter) --
@@ -808,6 +851,10 @@ def register_routes(app: web.Application) -> None:
     r.add_post(f"{p}/attachments/{{id:{_ID}}}/complete", complete_attachment)
     r.add_get(f"{p}/attachments/{{id:{_ID}}}/link", attachment_link)
     r.add_get(f"{p}/search", search)
+    r.add_get(f"{p}/transcriber", get_transcriber)
+    r.add_put(f"{p}/transcriber", put_transcriber)
+    r.add_post(f"{p}/iterations/{{id:{_ID}}}/transcript", request_transcript)
+    r.add_get(f"{p}/iterations/{{id:{_ID}}}/transcript", get_transcript)
     r.add_get(f"{p}/notifications", notifications)
     r.add_post(f"{p}/notifications/seen", notifications_seen)
     r.add_get(f"{p}/notices", list_notices)
