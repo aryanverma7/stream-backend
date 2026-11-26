@@ -308,6 +308,7 @@ OPEN_PATHS = (
     "/api/ocr/reset",  # same reasoning as above - also called by the agent, no GitHub session
     "/api/ocr/heartbeat",  # and again - the agent's liveness ping, same X-Agent-Secret check
     "/api/uploader",  # the gaming-PC VOD uploader, same X-Agent-Secret check, same reason
+    "/api/transcriber",  # the gaming-PC transcriber, same X-Agent-Secret check, same reason
     "/privacy", "/terms",  # Google's OAuth consent screen links these; they must open logged out
     "/s",          # a share link's guest page; its token is in the URL fragment, never sent here
     "/api/share",  # the guest API: the token in the JSON body is checked in the handlers

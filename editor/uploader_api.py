@@ -133,10 +133,10 @@ async def complete(request):
     return _ok({"status": "ready"})
 
 
-@_agent
-async def live(request):
+async def live_now() -> "bool | None":
     """Is the streamer live on Twitch right now? Asked directly (cached LIVE_CACHE_SECONDS), so it does
-    not depend on go-live announcements being on; the announcer's last poll is the fallback."""
+    not depend on go-live announcements being on; the announcer's last poll is the fallback.
+    Also the transcriber's live check."""
     global _live_cache
     channel = config.get("twitch_channel", "")
     now = time.time()
@@ -146,7 +146,12 @@ async def live(request):
         except Exception as e:
             log.warning("Twitch live check failed (%s); using the last poll", type(e).__name__)
             _live_cache = None
-    return _ok({"live": _live_cache[1] if channel and _live_cache else discord_live.live_state()["live"]})
+    return _live_cache[1] if channel and _live_cache else discord_live.live_state()["live"]
+
+
+@_agent
+async def live(request):
+    return _ok({"live": await live_now()})
 
 
 def register_routes(app: web.Application) -> None:

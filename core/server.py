@@ -32,6 +32,7 @@ from stream import twitch_oauth
 from editor import gdrive_oauth
 from stream import streamlabs_oauth
 from editor import share_api
+from editor import transcriber_api
 from editor import uploader_api
 from core.logger import get_logger
 from stream.widget_hub import widget_hub
@@ -120,6 +121,7 @@ def build_app() -> web.Application:
     editor_api.register_routes(app)
     # The gaming-PC VOD uploader: no session, X-Agent-Secret checked in the handlers.
     uploader_api.register_routes(app)
+    transcriber_api.register_routes(app)
     # Share-link guests: no session, the token in the body is checked in the handlers.
     share_api.register_routes(app)
 
