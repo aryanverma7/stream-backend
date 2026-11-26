@@ -90,10 +90,12 @@ def claim(now=None) -> "dict | None":
     with db.transaction():
         conn.execute("UPDATE transcripts SET status='queued', claim_token=NULL, updated_at=?"
                      " WHERE status='running' AND claimed_at<?", (now, now - CLAIM_TTL_SECONDS))
-        conn.execute("DELETE FROM transcripts WHERE iteration_id NOT IN (SELECT id FROM iterations"
-                     " WHERE status='ready')")
-        row = conn.execute("SELECT iteration_id FROM transcripts WHERE status='queued'"
-                           " ORDER BY queued_at, iteration_id LIMIT 1").fetchone()
+        # Only rows whose version is gone entirely; a version in its delete grace hour can still be undone,
+        # so its transcript (done or queued) waits, and is simply not handed out while it is not ready.
+        conn.execute("DELETE FROM transcripts WHERE iteration_id NOT IN (SELECT id FROM iterations)")
+        row = conn.execute("SELECT t.iteration_id FROM transcripts t JOIN iterations i ON i.id=t.iteration_id"
+                           " WHERE t.status='queued' AND i.status='ready'"
+                           " ORDER BY t.queued_at, t.iteration_id LIMIT 1").fetchone()
         if row is None:
             return None
         token = secrets.token_hex(16)

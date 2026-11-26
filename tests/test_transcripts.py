@@ -117,10 +117,21 @@ def test_release_without_error_requeues_and_errors_fail_after_three():
     assert tr.claim(now=100) is None
 
 
-def test_deleted_iteration_dropped_on_claim():
+def test_version_in_delete_grace_is_skipped_not_dropped_and_survives_undo():
     it = _ready()
     tr.request(it["id"], "x", now=0)
     es._c().execute("UPDATE iterations SET status='deleting' WHERE id=?", (it["id"],))
+    assert tr.claim(now=1) is None
+    assert tr.get(it["id"])["status"] == "queued"  # kept while the delete can still be undone
+    es._c().execute("UPDATE iterations SET status='ready' WHERE id=?", (it["id"],))  # undo
+    assert tr.claim(now=2)["iteration_id"] == it["id"]
+
+
+def test_row_of_a_vanished_version_dropped_on_claim():
+    it = _ready()
+    tr.request(it["id"], "x", now=0)
+    es._c().execute("PRAGMA foreign_keys=OFF")
+    es._c().execute("DELETE FROM iterations WHERE id=?", (it["id"],))
     assert tr.claim(now=1) is None
     assert tr.get(it["id"]) is None
 
