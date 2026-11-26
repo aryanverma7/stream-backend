@@ -99,6 +99,7 @@ def test_discord_user_ids_must_be_numeric_and_are_stored_cleaned():
         updates = {"editor_discord_user_id": raw}
         assert validate_update(updates, {}) is None, raw
         assert updates == {"editor_discord_user_id": clean}
-    for bad in ("someguy", "@someguy", "1234", "<#123456789012345678>", "123456789012345678901"):
+    for bad in ("someguy", "@someguy", "1234", "<#123456789012345678>", "123456789012345678901",
+                "\uff11\uff12\uff13\uff14\uff15\uff16\uff17\uff18\uff19\uff10\uff11\uff12\uff13\uff14\uff15\uff16\uff17\uff18"):  # full-width digits
         err = validate_update({"streamer_discord_user_id": bad}, {})
         assert err and err[0] == "streamer_discord_user_id" and "Copy User ID" in err[1], bad

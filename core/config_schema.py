@@ -22,7 +22,7 @@ SECTIONS = [
 _SECRET_RE = re.compile(r"secret|token|password|api_key|webhook", re.I)
 _KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 DISCORD_ID_KEYS = ("editor_discord_user_id", "streamer_discord_user_id")
-_DISCORD_ID_RE = re.compile(r"^<@!?(\d+)>$|^(\d+)$")
+_DISCORD_ID_RE = re.compile(r"^<@!?([0-9]+)>$|^([0-9]+)$")
 DISCORD_ID_HELP = ("Paste the numeric user ID: Discord > Settings > Advanced > Developer Mode on,"
                    " then right-click the person > Copy User ID.")
 
