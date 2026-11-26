@@ -111,7 +111,7 @@ truth; if a decision changes, change the spec first, then this map.
 - [x] 6C · Side-by-side compare, synced, sound switch
 - [x] 6D · Comment attachments (images, 20 MB, browser to Drive, deleted with the tape's files)
 - [x] 6E · Share links (streamer only, 1/2/10/24 h/7 d, Live links + Revoke, revoked early on an untrusted clock) and guest notes (approved by the streamer before the editor sees them)
-- [ ] Later · 6F Hinglish auto transcript on the gaming PC (postponed 2026-10-31: no access to the gaming PC)
+- [x] 6F Hinglish auto transcript on the gaming PC (backend Part A built 2026-11-26, branch transcripts; PC and site parts follow)
 
 ### Carried from Plan 2's final review (do first in Plan 3)
 - [x] 3 · `complete_iteration_upload` refuses while a tape_files delete for that tape is pending/running (an abandoned iteration completed during the hour would escape the request)
