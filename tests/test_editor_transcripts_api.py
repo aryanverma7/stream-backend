@@ -74,3 +74,46 @@ async def test_new_version_queued_only_when_auto(drive):
         await svc.complete_iteration_upload(nxt["id"], "F2", "cutguy")
         got = tr.get(nxt["id"])
         assert (got and got["status"]) == expect
+
+
+@pytest.mark.asyncio
+async def test_fix_a_line_both_roles_searchable_and_kept_on_rerequest():
+    p, t, it, c = _world()
+    tr.request(it["id"], "aryan")
+    tr.complete(it["id"], tr.claim()["token"], SEGS, "m")
+    path = f"/api/editor/iterations/{it['id']}/transcript/lines"
+    async with api() as a:
+        status, got = await a.editor("PUT", f"{path}/1", {"text": "  bahut lamba hai bhai  "})
+        assert status == 200 and got["segments"][1] == {"start": 2.0, "end": 4.0, "text": "bahut lamba hai bhai",
+                                                         "edited": True, "edited_by": "cutguy"}
+        assert got["segments"][0]["text"] == "ye clutch dekho" and "edited" not in got["segments"][0]
+        assert (await a.admin("PUT", f"{path}/0", {"text": "ye clutch dekho yaar"}))[0] == 200
+        hits = (await a.admin("GET", "/api/editor/search?q=lamba"))[1]["hits"]
+        assert any(h["kind"] == "transcript" for h in hits)
+        for bad in ({"text": ""}, {"text": "   "}, {"text": "x" * 2001}, {"text": 5}, {}):
+            assert (await a.admin("PUT", f"{path}/0", bad))[0] == 400
+        assert (await a.admin("PUT", f"{path}/2", {"text": "x"}))[0] == 400  # no third line
+        assert (await a.admin("POST", f"/api/editor/iterations/{it['id']}/transcript"))[1]["status"] == "done"
+    assert tr.get(it["id"])["segments"][1]["text"] == "bahut lamba hai bhai"
+
+
+@pytest.mark.asyncio
+async def test_fix_a_line_before_done_is_409():
+    p, t, it, c = _world()
+    path = f"/api/editor/iterations/{it['id']}/transcript/lines/0"
+    async with api() as a:
+        assert (await a.admin("PUT", path, {"text": "x"}))[0] == 409  # never requested
+        tr.request(it["id"], "aryan")
+        assert (await a.admin("PUT", path, {"text": "x"}))[0] == 409  # queued
+
+
+@pytest.mark.asyncio
+async def test_fixing_a_line_keeps_non_ascii_text_searchable():
+    p, t, it, c = _world()
+    tr.request(it["id"], "aryan")
+    tr.complete(it["id"], tr.claim()["token"], [{"start": 0, "end": 1, "text": "ये clutch"}, *SEGS], "m")
+    async with api() as a:
+        assert (await a.admin("PUT", f"/api/editor/iterations/{it['id']}/transcript/lines/1", {"text": "नमस्ते bhai"}))[0] == 200
+        for q in ("ये", "नमस्ते"):
+            hits = (await a.admin("GET", f"/api/editor/search?q={q}"))[1]["hits"]
+            assert any(h["kind"] == "transcript" for h in hits), q
