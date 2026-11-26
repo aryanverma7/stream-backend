@@ -45,6 +45,7 @@ async def api():
     try:
         async def call(method, path, json=None, headers=SECRET, data=None):
             resp = await client.request(method, path, json=json, data=data, headers=headers)
+            call.headers = resp.headers
             return resp.status, await resp.json()
         yield call
     finally:
@@ -116,6 +117,7 @@ async def test_on_and_idle_claims_job(setup):
         job = resp["job"]
         assert job == {"iteration_id": it["id"], "token": tr.get(it["id"])["claim_token"], "file_id": "FILE1",
                        "access_token": "DRIVETOKEN", "name": "cut.mp4", "size": 1234}
+        assert call.headers.get("Cache-Control") == "no-store"  # carries a live Drive token
         assert (await call("GET", "/api/transcriber/next"))[1]["job"] is None  # nothing else queued
         assert await call("GET", "/api/transcriber/status") == (200, {"enabled": True, "live": None})
         assert await call("POST", f"/api/transcriber/jobs/{it['id']}/complete",

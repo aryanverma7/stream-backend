@@ -44,7 +44,9 @@ async def next_job(request):
             job = {**claimed, "file_id": it["drive_file_id"], "access_token": token, "name": it["filename"],
                    "size": it["size"]}
             log.info("Transcript job claimed for version %s", it["id"])
-    return _ok({"enabled": enabled, "live": live, "job": job})
+    resp = _ok({"enabled": enabled, "live": live, "job": job})
+    resp.headers["Cache-Control"] = "no-store"  # may carry a live Drive access token
+    return resp
 
 
 @uploader_api._agent
