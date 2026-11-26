@@ -9,7 +9,8 @@ from editor import editor_store as es
 from editor.notifier import label
 
 _FIELDS = "id, at, actor, kind, summary, project_id, edit_id, iteration_id"
-_WHERE = ("lower(actor)<>lower(?) AND (actor<>'system' OR kind='iteration_ready')")  # recovered uploads
+_WHERE = ("lower(actor)<>lower(?) AND (actor<>'system' OR kind='iteration_ready')"  # recovered uploads
+          " AND NOT (kind='notice_posted' AND summary='')")  # notices.delete blanks a deleted notice's event
 _LABELS = {"comment_added": "commented on", "reply_added": "replied on", "guest_notes_added": "left a guest note on"}
 _STREAMER_ONLY = " AND kind<>'guest_notes_added'"  # unapproved guest notes never reach the editor
 

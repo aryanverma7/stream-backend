@@ -7,6 +7,7 @@ import time
 from core import db
 from editor import discord_dm
 from core.config import config
+from core.config_schema import clean_discord_id
 from core.logger import get_logger
 from core.scheduler import backoff_seconds
 
@@ -57,6 +58,9 @@ def enqueue(recipient_role: str, content: str, dedupe_key: str, now: "float | No
     return cur.rowcount == 1
 
 
+_BAD_ID_RETRY_SECONDS = 60
+
+
 def reset_stuck_sending() -> int:
     """Startup: 'sending' -> 'pending'. Accepted duplicate: Discord may have taken the message and the
     power died before the row was marked sent, so that one DM can arrive twice. A second path: our client
@@ -70,7 +74,14 @@ def reset_stuck_sending() -> int:
 async def _deliver_one(row, now: float) -> None:
     conn = _c()
     role = row["recipient_role"]
-    user_id = str(config.get(_ID_KEYS[role], "") or "").strip()
+    user_id = clean_discord_id(config.get(_ID_KEYS[role], ""))
+    if user_id is None:  # a username or mention: Discord would answer 400; wait pending until it is fixed
+        db.meta_set(_ERR_KEY, f"{role.capitalize()} Discord user ID is not a numeric user ID:"
+                              " fix it in Settings > Editor app.")
+        with db.transaction():  # step aside for a minute: a pile of these must not starve the other role's DMs
+            conn.execute("UPDATE dm_outbox SET next_attempt_at=? WHERE id=? AND status='pending'",
+                         (now + _BAD_ID_RETRY_SECONDS, row["id"]))
+        return
     if not user_id:
         if role not in _logged_roles:
             _logged_roles.add(role)
@@ -88,7 +99,7 @@ async def _deliver_one(row, now: float) -> None:
         await discord_dm.send_dm(user_id, row["content"])
     except Exception as e:
         known = isinstance(e, (discord_dm.DiscordError, discord_dm.DiscordNotConfigured))
-        err = str(e)[:300] if known else type(e).__name__
+        err = f"{role.capitalize()}: " + (str(e)[:300] if known else type(e).__name__)
         if not known:
             log.exception("Unexpected error sending DM row %s", row["id"])
         wait = max(backoff_seconds(row["attempts"]), getattr(e, "retry_after", None) or 0)

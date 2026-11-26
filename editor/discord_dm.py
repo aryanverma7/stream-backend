@@ -59,14 +59,16 @@ async def _post(url: str, body: dict, token: str, *, retried: bool = False) -> "
     return status, data
 
 
-def _fail(status: int, data: dict) -> DiscordError:
-    return DiscordError(f"Discord refused ({status}): {data.get('message', '')}", status)
+def _fail(step: str, status: int, data: dict) -> DiscordError:
+    """step names the call; Discord's numeric code (50035 bad form, 50007 cannot DM) tells why."""
+    code = f", code {data['code']}" if isinstance(data.get("code"), int) else ""
+    return DiscordError(f"Discord refused {step} ({status}{code}): {data.get('message', '')}", status)
 
 
 async def _create_channel(user_id: str, token: str) -> str:
     status, data = await _post(f"{API}/users/@me/channels", {"recipient_id": user_id}, token)
     if status >= 400 or not data.get("id"):
-        raise _fail(status, data)
+        raise _fail("opening the DM", status, data)
     db.meta_set(f"discord_dm_channel_{user_id}", str(data["id"]))
     return str(data["id"])
 
@@ -88,5 +90,5 @@ async def send_dm(user_id: str, content: str) -> str:
         channel = await _create_channel(user_id, token)
         status, data = await _post(f"{API}/channels/{channel}/messages", {"content": content}, token)
     if status >= 400 or not data.get("id"):
-        raise _fail(status, data)
+        raise _fail("sending", status, data)
     return str(data["id"])

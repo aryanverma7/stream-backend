@@ -96,3 +96,12 @@ def test_a_new_notice_never_reuses_a_deleted_ones_id():
 
 def test_limit_is_2000_characters():
     assert notices.create("x" * 2000, "aryan")["text"] == "x" * 2000
+
+
+def test_a_deleted_notice_leaves_no_empty_bell_item():
+    gone = notices.create("secret plan", "aryan")
+    notices.create("stays", "aryan")
+    notices.delete(gone["id"])
+    feed = editor_bell.feed("ed")
+    assert [i["summary"] for i in feed["items"] if i["kind"] == "notice_posted"] == ["aryan posted a notice: stays"]
+    assert feed["unseen"] == len(feed["items"])
