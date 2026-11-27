@@ -404,13 +404,15 @@ def pick_track(query: str, items: list) -> "dict | None":
     "(feat. ...)") appears in the request, the longest such title winning,
     so "starboy daft punk" still picks Starboy and not a track called "Star".
     """
+    items = [t for t in items if isinstance(t, dict)]  # Spotify's search can return null entries
+
     def words(text: str) -> str:
         return " ".join(re.sub(r"[^\w\s]", "", text.lower()).split())
 
     q = words(query)
 
     def title(t: dict) -> str:
-        return words(re.split(r" - |\(|\[", t.get("name") or "")[0])
+        return words(re.split(r" - |\(|\[", str(t.get("name") or ""))[0])
 
     # A title must be whole words of the request and either open it ("starboy daft punk") or be
     # at least 40% of its words, so a short title ("Now") never beats Spotify's first pick by accident.

@@ -664,3 +664,7 @@ class TestPickTrack:
         assert spotify.pick_track("dont start now dua lipa", items)["name"] == "Don't Start Now"
         # a short title that is a small part of the request never beats Spotify's first pick
         assert spotify.pick_track("dont start now dua lipa", [self.t("Levitating"), self.t("Now")])["name"] == "Levitating"
+
+    def test_null_and_odd_entries(self):
+        assert spotify.pick_track("x", [None, {"name": None}, self.t("x")])["name"] == "x"
+        assert spotify.pick_track("x", [None]) is None
