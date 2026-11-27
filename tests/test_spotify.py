@@ -658,3 +658,9 @@ class TestPickTrack:
     def test_falls_back_to_first_and_none(self):
         assert spotify.pick_track("xyz", [self.t("A"), self.t("B")])["name"] == "A"
         assert spotify.pick_track("xyz", []) is None
+
+    def test_punctuation_and_short_titles(self):
+        items = [self.t("Levitating"), self.t("Now"), self.t("Don't Start Now")]
+        assert spotify.pick_track("dont start now dua lipa", items)["name"] == "Don't Start Now"
+        # a short title that is a small part of the request never beats Spotify's first pick
+        assert spotify.pick_track("dont start now dua lipa", [self.t("Levitating"), self.t("Now")])["name"] == "Levitating"
