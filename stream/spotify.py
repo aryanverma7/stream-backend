@@ -371,7 +371,7 @@ def describe(track: dict) -> str:
 
 async def search_track(query: str) -> "dict | None":
     """
-    The first track match, or None.
+    The best of the first ten matches (see pick_track), or None.
 
     **No `market` parameter.** This used to send `market=from_token`, to
     get results playable on the streamer's account - and that is the
@@ -388,10 +388,37 @@ async def search_track(query: str) -> "dict | None":
     data = await _api(
         "GET",
         "/search",
-        params={"q": query, "type": "track", "limit": "1"},
+        params={"q": query, "type": "track", "limit": "10"},
     )
     items = ((data or {}).get("tracks") or {}).get("items") or []
-    return items[0] if items else None
+    return pick_track(query, items)
+
+
+def pick_track(query: str, items: list) -> "dict | None":
+    """
+    The result whose title the request names, else Spotify's first.
+
+    Spotify's ranking with `limit=1` is not its ranking with a bigger page:
+    "!song blinding lights" came back as Starboy (2026-11-27). So ask for ten
+    and prefer the track whose title (before any " - Remastered" or
+    "(feat. ...)") appears in the request, the longest such title winning,
+    so "starboy daft punk" still picks Starboy and not a track called "Star".
+    """
+    items = [t for t in items if isinstance(t, dict)]  # Spotify's search can return null entries
+
+    def words(text: str) -> str:
+        return " ".join(re.sub(r"[^\w\s]", "", text.lower()).split())
+
+    q = words(query)
+
+    def title(t: dict) -> str:
+        return words(re.split(r" - |\(|\[", str(t.get("name") or ""))[0])
+
+    # A title must be whole words of the request and either open it ("starboy daft punk") or be
+    # at least 40% of its words, so a short title ("Now") never beats Spotify's first pick by accident.
+    named = [t for t in items if title(t) and f" {title(t)} " in f" {q} "
+             and (f"{q} ".startswith(f"{title(t)} ") or len(title(t).split()) >= 0.4 * len(q.split()))]
+    return max(named, key=lambda t: len(title(t))) if named else (items[0] if items else None)
 
 
 async def get_track(track_id: str) -> "dict | None":
