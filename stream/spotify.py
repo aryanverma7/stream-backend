@@ -371,7 +371,7 @@ def describe(track: dict) -> str:
 
 async def search_track(query: str) -> "dict | None":
     """
-    The first track match, or None.
+    The best of the first ten matches (see pick_track), or None.
 
     **No `market` parameter.** This used to send `market=from_token`, to
     get results playable on the streamer's account - and that is the
