@@ -388,10 +388,30 @@ async def search_track(query: str) -> "dict | None":
     data = await _api(
         "GET",
         "/search",
-        params={"q": query, "type": "track", "limit": "1"},
+        params={"q": query, "type": "track", "limit": "10"},
     )
     items = ((data or {}).get("tracks") or {}).get("items") or []
-    return items[0] if items else None
+    return pick_track(query, items)
+
+
+def pick_track(query: str, items: list) -> "dict | None":
+    """
+    The result whose title the request names, else Spotify's first.
+
+    Spotify's ranking with `limit=1` is not its ranking with a bigger page:
+    "!song blinding lights" came back as Starboy (2026-11-27). So ask for ten
+    and prefer the track whose title (before any " - Remastered" or
+    "(feat. ...)") appears in the request, the longest such title winning,
+    so "starboy daft punk" still picks Starboy and not a track called "Star".
+    """
+    q = " ".join(query.lower().split())
+
+    def title(t: dict) -> str:
+        name = (t.get("name") or "").lower()
+        return " ".join(re.split(r" - |\(|\[", name)[0].split())
+
+    named = [t for t in items if title(t) and f" {title(t)} " in f" {q} "]
+    return max(named, key=lambda t: len(title(t))) if named else (items[0] if items else None)
 
 
 async def get_track(track_id: str) -> "dict | None":

@@ -633,3 +633,28 @@ class TestOptionalScopes:
         monkeypatch.setattr(config, "_data", dict(CONNECTED))
         monkeypatch.setattr(spotify, "_granted_scopes", set(spotify.SCOPES.split()))
         assert spotify.missing_scopes() == []
+
+
+class TestPickTrack:
+    """Spotify's limit=1 answer to "blinding lights" was Starboy (2026-11-27)."""
+
+    def t(self, name):
+        return {"name": name, "uri": f"spotify:track:{name}"}
+
+    def test_prefers_the_title_the_request_names(self):
+        items = [self.t("Starboy"), self.t("Blinding Lights"), self.t("Save Your Tears")]
+        assert spotify.pick_track("blinding lights", items)["name"] == "Blinding Lights"
+
+    def test_ignores_remaster_and_feat_suffixes(self):
+        items = [self.t("Other"), self.t("Starboy (feat. Daft Punk)")]
+        assert spotify.pick_track("Starboy  daft punk", items)["name"].startswith("Starboy")
+
+    def test_whole_words_only_and_longest_title_wins(self):
+        items = [self.t("Hell"), self.t("Star"), self.t("Starboy")]
+        assert spotify.pick_track("hello", items)["name"] == "Hell"  # first item, not a title match
+        assert spotify.pick_track("starboy weeknd", [self.t("Star"), self.t("Starboy")])["name"] == "Starboy"
+        assert spotify.pick_track("star", [self.t("Starboy"), self.t("Star")])["name"] == "Star"
+
+    def test_falls_back_to_first_and_none(self):
+        assert spotify.pick_track("xyz", [self.t("A"), self.t("B")])["name"] == "A"
+        assert spotify.pick_track("xyz", []) is None
